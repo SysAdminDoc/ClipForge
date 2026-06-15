@@ -55,32 +55,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 async function initFFmpeg() {
     await window.coiReady;
 
-    // Detect which globals the UMD scripts registered
-    const FFmpegLib = window.FFmpegWASM || window.FFmpeg;
-    const UtilLib = window.FFmpegUtil;
-
-    if (!FFmpegLib || !UtilLib) {
-        const missing = [];
-        if (!FFmpegLib) missing.push('@ffmpeg/ffmpeg');
-        if (!UtilLib) missing.push('@ffmpeg/util');
-        document.getElementById('loadingOverlay').innerHTML = `
-            <div style="text-align: center;">
-                <div style="font-size: 48px; margin-bottom: 16px;">⚠️</div>
-                <div style="font-size: 14px; margin-bottom: 16px; color: var(--text-1);">Failed to load: ${missing.join(', ')}</div>
-                <div style="font-size: 12px; margin-bottom: 16px; color: var(--text-2);">CDN scripts may be blocked. Check browser console.</div>
-                <button class="btn primary" onclick="location.reload()">Retry</button>
-            </div>
-        `;
-        return;
-    }
-
     try {
-        const FFmpegClass = FFmpegLib.FFmpeg || FFmpegLib;
-        const toBlobURL = UtilLib.toBlobURL;
-        const fetchFileFn = UtilLib.fetchFile;
+        document.getElementById('loadingText').textContent = 'Loading FFmpeg modules...';
 
-        ffmpeg = new FFmpegClass();
-        window.ffmpegFetchFile = fetchFileFn;
+        const { FFmpeg } = await import('https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/+esm');
+        const { toBlobURL, fetchFile } = await import('https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/+esm');
+
+        ffmpeg = new FFmpeg();
+        window.ffmpegFetchFile = fetchFile;
 
         ffmpeg.on("progress", ({ progress }) => {
             const pct = Math.round((progress || 0) * 100);
@@ -92,15 +74,12 @@ async function initFFmpeg() {
 
         document.getElementById('loadingText').textContent = 'Downloading FFmpeg core (~31 MB)...';
 
-        const ffmpegBase = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd';
         const coreBase = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/esm';
-
-        const classWorkerURL = await toBlobURL(`${ffmpegBase}/814.ffmpeg.js`, 'text/javascript');
         const coreURL = await toBlobURL(`${coreBase}/ffmpeg-core.js`, 'text/javascript');
         const wasmURL = await toBlobURL(`${coreBase}/ffmpeg-core.wasm`, 'application/wasm');
 
         document.getElementById('loadingText').textContent = 'Initializing FFmpeg...';
-        await ffmpeg.load({ classWorkerURL, coreURL, wasmURL });
+        await ffmpeg.load({ coreURL, wasmURL });
 
         ffmpegLoaded = true;
         document.getElementById('loadingOverlay').classList.add('hidden');
@@ -1456,3 +1435,13 @@ function toast(type, message) {
     el.addEventListener('click', dismiss);
     setTimeout(dismiss, 3500);
 }
+
+// ==================== MODULE EXPORTS ====================
+// Expose functions to inline onclick/oninput handlers in index.html
+Object.assign(window, {
+    addToTimeline, togglePlay, goToStart, goToEnd, stepForward, stepBackward,
+    setTool, setZoom, splitClip, deleteSelected, copyClip, cutClip, pasteClip,
+    selectAllClips, addTransition, selectTransitionType, unlinkAudio,
+    setVolume, toggleMute, showExportModal, hideExportModal, exportVideo,
+    saveProject, showEditMenu, updateClipProperty,
+});
