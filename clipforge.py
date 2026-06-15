@@ -152,6 +152,12 @@ BUILTIN_PRESETS = {
                       "fps": "30", "speed": 1.0},
     "GIF": {"container": "GIF", "vcodec": "H.264 (libx264)", "acodec": "None (remove audio)",
             "crf": 18, "preset": "medium", "resolution": "Original", "fps": "15", "speed": 1.0},
+    "Web AV1": {"container": "MP4", "vcodec": "SVT-AV1 (libsvtav1)", "acodec": "Opus",
+                "crf": 30, "preset": "6", "resolution": "1920x1080 (1080p)",
+                "fps": "Original", "speed": 1.0},
+    "AV1 High Quality": {"container": "MKV", "vcodec": "SVT-AV1 (libsvtav1)", "acodec": "Opus",
+                         "crf": 24, "preset": "4", "resolution": "Original",
+                         "fps": "Original", "speed": 1.0},
 }
 
 # ---------------------------------------------------------------------------
@@ -777,11 +783,45 @@ def estimate_output_size(duration, crf, width, height, fps=30):
 # Workers
 # ---------------------------------------------------------------------------
 
+def _kill_process_tree(proc):
+    try:
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        else:
+            import signal
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except OSError:
+        try:
+            proc.kill()
+        except OSError:
+            pass
+
+_FFMPEG_ERROR_PATTERNS = [
+    (r"No such file or directory", "Input file not found"),
+    (r"Permission denied", "Permission denied — check file/folder permissions"),
+    (r"No space left on device", "Disk full — free space and retry"),
+    (r"Unknown encoder", "Encoder not available — your FFmpeg build may lack this codec"),
+    (r"Encoder .+ not found", "Encoder not available — your FFmpeg build may lack this codec"),
+    (r"Unknown decoder", "Decoder not available for this input format"),
+    (r"Invalid data found when processing input", "Input file is corrupt or unsupported"),
+    (r"Output file is empty", "Encoding produced no output — check settings"),
+    (r"does not support the audio codec", "Container does not support the chosen audio codec"),
+    (r"does not support the video codec", "Container does not support the chosen video codec"),
+    (r"Avi duration\|Error", "AVI container limit exceeded"),
+]
+
+def _parse_ffmpeg_error(stderr_text):
+    for pattern, msg in _FFMPEG_ERROR_PATTERNS:
+        if re.search(pattern, stderr_text, re.IGNORECASE):
+            return msg
+    return None
+
 class FFmpegWorker(QThread):
     progress = pyqtSignal(float)
     log_output = pyqtSignal(str)
     finished_signal = pyqtSignal(bool, str)
-    speed_info = pyqtSignal(str)  # "45.2 fps | 1.8x | ETA: 0:32"
+    speed_info = pyqtSignal(str)
 
     def __init__(self, cmd, duration=0, parent=None):
         super().__init__(parent)
@@ -789,6 +829,7 @@ class FFmpegWorker(QThread):
         self.duration = duration
         self._cancelled = False
         self._start_time = 0
+        self._stderr_buffer = []
 
     def cancel(self):
         self._cancelled = True
@@ -797,17 +838,20 @@ class FFmpegWorker(QThread):
         try:
             self._start_time = _time.time()
             self.log_output.emit(f"$ {' '.join(self.cmd)}\n")
-            process = subprocess.Popen(
-                self.cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
-            )
+            popen_kwargs = dict(stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            if sys.platform == "win32":
+                popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
+            else:
+                popen_kwargs["start_new_session"] = True
+            process = subprocess.Popen(self.cmd, **popen_kwargs)
             ema_speed = 0
             for line in process.stderr:
                 if self._cancelled:
-                    process.kill()
+                    _kill_process_tree(process)
                     self.finished_signal.emit(False, "Cancelled")
                     return
                 self.log_output.emit(line)
+                self._stderr_buffer.append(line)
                 match = re.search(r"time=(\d{2}):(\d{2}):(\d{2}\.\d+)", line)
                 if match and self.duration > 0:
                     h, m, s = float(match.group(1)), float(match.group(2)), float(match.group(3))
@@ -833,7 +877,12 @@ class FFmpegWorker(QThread):
                 self.progress.emit(100)
                 self.finished_signal.emit(True, f"Complete ({format_duration_short(elapsed)})")
             else:
-                self.finished_signal.emit(False, f"FFmpeg exited with code {process.returncode}")
+                stderr_text = "".join(self._stderr_buffer)
+                friendly = _parse_ffmpeg_error(stderr_text)
+                if friendly:
+                    self.finished_signal.emit(False, friendly)
+                else:
+                    self.finished_signal.emit(False, f"FFmpeg exited with code {process.returncode}")
         except Exception as e:
             self.finished_signal.emit(False, str(e))
 
@@ -934,7 +983,7 @@ class UpscaleWorker(QThread):
             )
             for line in proc.stderr:
                 if self._cancelled:
-                    proc.kill()
+                    _kill_process_tree(proc)
                     self.finished_signal.emit(False, "Cancelled")
                     return
                 self.log_output.emit(line)
@@ -1045,7 +1094,7 @@ class InterpolateWorker(QThread):
             )
             for line in proc.stderr:
                 if self._cancelled:
-                    proc.kill()
+                    _kill_process_tree(proc)
                     self.finished_signal.emit(False, "Cancelled")
                     return
                 self.log_output.emit(line)
@@ -2328,10 +2377,18 @@ class ConvertPanel(QWidget):
             except (ValueError, IndexError):
                 pass
         est = estimate_output_size(dur, crf, w, h)
-        quality_labels = {range(0, 5): "Lossless", range(5, 15): "High quality",
-                          range(15, 21): "Visually lossless", range(21, 28): "Good quality",
-                          range(28, 35): "Medium quality", range(35, 45): "Low quality",
-                          range(45, 52): "Very low quality"}
+        vcodec_text = self.cmb_vcodec.currentText()
+        is_av1 = "AV1" in vcodec_text or "svtav1" in vcodec_text.lower()
+        if is_av1:
+            quality_labels = {range(0, 10): "Lossless / near-lossless",
+                              range(10, 20): "Very high quality", range(20, 28): "High quality",
+                              range(28, 35): "Good quality (recommended)", range(35, 45): "Medium quality",
+                              range(45, 56): "Low quality", range(56, 64): "Very low quality"}
+        else:
+            quality_labels = {range(0, 5): "Lossless", range(5, 15): "High quality",
+                              range(15, 21): "Visually lossless", range(21, 28): "Good quality",
+                              range(28, 35): "Medium quality", range(35, 45): "Low quality",
+                              range(45, 52): "Very low quality"}
         hint = "Unknown"
         for r, label in quality_labels.items():
             if crf in r:
@@ -2386,6 +2443,21 @@ class ConvertPanel(QWidget):
                     cmd += ["-crf", str(self.spn_crf.value()), "-preset", self.cmb_enc_preset.currentText()]
                 elif vcodec == "libsvtav1":
                     cmd += ["-crf", str(self.spn_crf.value())]
+                    enc_preset = self.cmb_enc_preset.currentText()
+                    if enc_preset.isdigit():
+                        cmd += ["-preset", enc_preset]
+                    else:
+                        svt_map = {"ultrafast": "12", "superfast": "11", "veryfast": "10",
+                                   "faster": "9", "fast": "8", "medium": "6",
+                                   "slow": "4", "slower": "2", "veryslow": "0"}
+                        cmd += ["-preset", svt_map.get(enc_preset, "6")]
+                elif vcodec == "libaom-av1":
+                    cmd += ["-crf", str(self.spn_crf.value()), "-b:v", "0"]
+                    enc_preset = self.cmb_enc_preset.currentText()
+                    aom_map = {"ultrafast": "8", "superfast": "7", "veryfast": "6",
+                               "faster": "5", "fast": "4", "medium": "4",
+                               "slow": "3", "slower": "2", "veryslow": "1"}
+                    cmd += ["-cpu-used", aom_map.get(enc_preset, "4")]
                 elif "nvenc" in vcodec or "qsv" in vcodec or "amf" in vcodec:
                     cmd += ["-rc", "constqp", "-qp", str(self.spn_crf.value())]
             else:
