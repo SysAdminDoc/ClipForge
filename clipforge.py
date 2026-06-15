@@ -13,7 +13,30 @@ import tempfile
 import re
 import time as _time
 import glob as _glob
+import atexit
 from pathlib import Path
+
+_active_temp_dirs = []
+
+def _register_temp_dir(path):
+    _active_temp_dirs.append(path)
+
+def _unregister_temp_dir(path):
+    if path in _active_temp_dirs:
+        _active_temp_dirs.remove(path)
+
+def _cleanup_temp_dirs():
+    for d in list(_active_temp_dirs):
+        shutil.rmtree(d, ignore_errors=True)
+    _active_temp_dirs.clear()
+    for d in Path(tempfile.gettempdir()).glob("clipforge_*"):
+        if d.is_dir():
+            try:
+                shutil.rmtree(d)
+            except OSError:
+                pass
+
+atexit.register(_cleanup_temp_dirs)
 
 # ---------------------------------------------------------------------------
 # Bootstrap
@@ -34,9 +57,13 @@ def _bootstrap():
                 missing.append(pkg)
     if missing:
         print(f"[ClipForge] Installing: {', '.join(missing)}")
+        pip_args = [sys.executable, "-m", "pip", "install", *missing]
+        in_venv = (hasattr(sys, "real_prefix")
+                   or (hasattr(sys, "base_prefix") and sys.base_prefix != sys.prefix))
+        if not in_venv:
+            pip_args.append("--user")
         subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", *missing, "--break-system-packages"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            pip_args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
 
 _bootstrap()
@@ -240,12 +267,19 @@ def load_user_presets():
     except Exception:
         return {}
 
+def _sanitize_preset_name(name):
+    safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', name.strip())
+    safe = safe.strip('. ')
+    return safe[:100] or "preset"
+
 def save_user_preset(name, data):
     try:
         PRESETS_DIR.mkdir(parents=True, exist_ok=True)
-        (PRESETS_DIR / f"{name}.json").write_text(json.dumps(data, indent=2))
-    except Exception:
-        pass
+        safe_name = _sanitize_preset_name(name)
+        (PRESETS_DIR / f"{safe_name}.json").write_text(json.dumps(data, indent=2))
+        return safe_name
+    except OSError:
+        return None
 
 def delete_user_preset(name):
     try:
@@ -605,6 +639,17 @@ QStatusBar {{
 """
 
 # ---------------------------------------------------------------------------
+# Path validation
+# ---------------------------------------------------------------------------
+
+def validate_media_path(filepath):
+    if not filepath:
+        return False
+    if "\x00" in filepath:
+        return False
+    return os.path.isfile(filepath)
+
+# ---------------------------------------------------------------------------
 # Utility functions
 # ---------------------------------------------------------------------------
 
@@ -853,6 +898,7 @@ class UpscaleWorker(QThread):
             return
         try:
             tmpdir = tempfile.mkdtemp(prefix="clipforge_upscale_")
+            _register_temp_dir(tmpdir)
             frames_dir = os.path.join(tmpdir, "frames")
             upscaled_dir = os.path.join(tmpdir, "upscaled")
             os.makedirs(frames_dir)
@@ -929,6 +975,7 @@ class UpscaleWorker(QThread):
         finally:
             if 'tmpdir' in locals():
                 shutil.rmtree(tmpdir, ignore_errors=True)
+                _unregister_temp_dir(tmpdir)
 
 
 class InterpolateWorker(QThread):
@@ -962,6 +1009,7 @@ class InterpolateWorker(QThread):
             return
         try:
             tmpdir = tempfile.mkdtemp(prefix="clipforge_interp_")
+            _register_temp_dir(tmpdir)
             frames_dir = os.path.join(tmpdir, "frames")
             interp_dir = os.path.join(tmpdir, "interpolated")
             os.makedirs(frames_dir)
@@ -1044,6 +1092,7 @@ class InterpolateWorker(QThread):
         finally:
             if 'tmpdir' in locals():
                 shutil.rmtree(tmpdir, ignore_errors=True)
+                _unregister_temp_dir(tmpdir)
 
 
 # ---------------------------------------------------------------------------
@@ -1303,6 +1352,7 @@ class VideoPlayer(QWidget):
         self._duration = 0
         self._filepath = None
         self._thumb_worker = None
+        self._fps = 30.0
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -1405,11 +1455,14 @@ class VideoPlayer(QWidget):
         self.lbl_timecode.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.lbl_timecode)
 
-    def load(self, filepath):
+    def load(self, filepath, info=None):
         self._filepath = filepath
+        if info:
+            self._fps = info.get("fps", 30.0) or 30.0
+        else:
+            self._fps = 30.0
         self.player.setSource(QUrl.fromLocalFile(filepath))
         self.btn_play.setText("Play")
-        # Generate thumbnails in background
         self._thumb_worker = ThumbnailWorker(filepath, 16)
         self._thumb_worker.thumbnails_ready.connect(self.thumb_strip.set_thumbnails)
         self._thumb_worker.start()
@@ -1424,15 +1477,13 @@ class VideoPlayer(QWidget):
 
     def _frame_back(self):
         if self._duration > 0:
-            fps = 30  # approximate
-            step = int(1000 / fps)
+            step = int(1000 / self._fps)
             pos = max(0, self.player.position() - step)
             self.player.setPosition(pos)
 
     def _frame_forward(self):
         if self._duration > 0:
-            fps = 30
-            step = int(1000 / fps)
+            step = int(1000 / self._fps)
             pos = min(self._duration, self.player.position() + step)
             self.player.setPosition(pos)
 
@@ -1467,9 +1518,8 @@ class VideoPlayer(QWidget):
         self.lbl_time.setText(
             f"{format_duration_short(pos_ms / 1000)} / {format_duration_short(self._duration / 1000)}"
         )
-        # Timecode + frame number
         sec = pos_ms / 1000
-        frame = int(sec * 30)  # approximate
+        frame = int(sec * self._fps)
         self.lbl_timecode.setText(f"{format_duration(sec)} | Frame: {frame}")
         self.positionChanged.emit(pos_ms / 1000)
         # A-B loop
@@ -1495,7 +1545,7 @@ class VideoPlayer(QWidget):
         return self.player.position() / 1000
 
     def get_fps(self):
-        return 30  # default; will be updated from file info
+        return self._fps
 
 
 # ---------------------------------------------------------------------------
@@ -1537,6 +1587,9 @@ class FileInfoBar(QWidget):
             self.load_file(path)
 
     def load_file(self, path):
+        if not validate_media_path(path):
+            self.lbl_name.setText("Invalid file path")
+            return
         self._filepath = path
         self._info = probe_video(path)
         add_recent(path)
@@ -2231,9 +2284,12 @@ class ConvertPanel(QWidget):
             "fps": self.cmb_fps.currentText(),
             "speed": self.spn_speed.value(),
         }
-        save_user_preset(name.strip(), data)
-        self._refresh_presets()
-        self.requestToast.emit(f"Preset '{name.strip()}' saved", C["green"])
+        saved_name = save_user_preset(name.strip(), data)
+        if saved_name:
+            self._refresh_presets()
+            self.requestToast.emit(f"Preset '{saved_name}' saved", C["green"])
+        else:
+            self.requestToast.emit("Failed to save preset", C["red"])
 
     def _delete_preset(self):
         text = self.cmb_preset_select.currentText()
@@ -2349,9 +2405,14 @@ class ConvertPanel(QWidget):
                     while atempo_val < 0.5:
                         atempo_parts.append("atempo=0.5")
                         atempo_val /= 0.5
-                    atempo_parts.append(f"atempo={atempo_val}")
+                    atempo_parts.append(f"atempo={atempo_val:.4f}")
+                elif atempo_val > 2.0:
+                    while atempo_val > 2.0:
+                        atempo_parts.append("atempo=2.0")
+                        atempo_val /= 2.0
+                    atempo_parts.append(f"atempo={atempo_val:.4f}")
                 else:
-                    atempo_parts.append(f"atempo={atempo_val}")
+                    atempo_parts.append(f"atempo={atempo_val:.4f}")
                 cmd += ["-af", ",".join(atempo_parts)]
             fps = self.cmb_fps.currentText()
             if fps != "Original":
@@ -2552,14 +2613,19 @@ class FiltersPanel(QWidget):
         s = self._sliders["saturation"].value()
         h = self._sliders["hue"].value()
         g = self._sliders["gamma"].value()
-        if b != 0 or c != 0:
-            vf.append(f"eq=brightness={b/100:.2f}:contrast={1 + c/100:.2f}")
+        eq_parts = []
+        if b != 0:
+            eq_parts.append(f"brightness={b/100:.2f}")
+        if c != 0:
+            eq_parts.append(f"contrast={1 + c/100:.2f}")
         if s != 100:
-            vf.append(f"eq=saturation={s/100:.2f}")
+            eq_parts.append(f"saturation={s/100:.2f}")
+        if g != 100:
+            eq_parts.append(f"gamma={g/100:.2f}")
+        if eq_parts:
+            vf.append(f"eq={':'.join(eq_parts)}")
         if h != 0:
             vf.append(f"hue=h={h}")
-        if g != 100:
-            vf.append(f"eq=gamma={g/100:.2f}")
         if self.chk_deinterlace.isChecked():
             vf.append("yadif")
         if self.chk_denoise.isChecked():
@@ -2592,21 +2658,36 @@ class FiltersPanel(QWidget):
 
         duration = self._info.get("duration", 0) if self._info else 0
 
+        self.progress.setValue(0)
+        self.btn_apply.setEnabled(False)
+
         if self.chk_stabilize.isChecked():
-            # Two-pass stabilization
-            tmpdir = tempfile.mkdtemp(prefix="clipforge_stab_")
-            transforms = os.path.join(tmpdir, "transforms.trf")
-            # Pass 1: analyze
+            self._stab_tmpdir = tempfile.mkdtemp(prefix="clipforge_stab_")
+            _register_temp_dir(self._stab_tmpdir)
+            transforms = os.path.join(self._stab_tmpdir, "transforms.trf")
             cmd1 = [FFMPEG, "-y", "-i", self._filepath,
                     "-vf", f"vidstabdetect=result='{transforms}'",
                     "-f", "null", "-"]
             self.console.append("[Stabilization] Pass 1: Analyzing motion...\n")
-            subprocess.run(cmd1, capture_output=True,
-                           creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
-            # Pass 2: apply
-            stab_filter = f"vidstabtransform=input='{transforms}':smoothing=10"
-            vf.insert(0, stab_filter)
+            self._stab_pass1 = FFmpegWorker(cmd1, duration)
+            self._stab_pass1.progress.connect(lambda v: self.progress.setValue(int(v * 0.4)))
+            self._stab_pass1.log_output.connect(self.console.append)
+            self._stab_pass1.finished_signal.connect(
+                lambda ok, msg: self._on_stab_pass1_done(ok, msg, vf, af, duration, out_path, transforms))
+            self._stab_pass1.start()
+        else:
+            self._run_filter_encode(vf, af, duration, out_path)
 
+    def _on_stab_pass1_done(self, ok, msg, vf, af, duration, out_path, transforms):
+        if not ok:
+            self.btn_apply.setEnabled(True)
+            self.requestToast.emit(f"Stabilization analysis failed: {msg}", C["red"])
+            return
+        stab_filter = f"vidstabtransform=input='{transforms}':smoothing=10"
+        vf.insert(0, stab_filter)
+        self._run_filter_encode(vf, af, duration, out_path)
+
+    def _run_filter_encode(self, vf, af, duration, out_path):
         cmd = [FFMPEG, "-y", "-i", self._filepath]
         if vf:
             cmd += ["-vf", ",".join(vf)]
@@ -2619,10 +2700,8 @@ class FiltersPanel(QWidget):
             cmd += ["-c:a", "aac", "-b:a", "192k"]
         cmd.append(out_path)
 
-        self.progress.setValue(0)
-        self.btn_apply.setEnabled(False)
         self._worker = FFmpegWorker(cmd, duration)
-        self._worker.progress.connect(lambda v: self.progress.setValue(int(v)))
+        self._worker.progress.connect(lambda v: self.progress.setValue(40 + int(v * 0.6)))
         self._worker.speed_info.connect(self.lbl_progress_detail.setText)
         self._worker.log_output.connect(self.console.append)
         self._worker.finished_signal.connect(lambda ok, msg: self._on_done(ok, msg, out_path))
@@ -2831,9 +2910,10 @@ class AudioPanel(QWidget):
 class StreamsPanel(QWidget):
     requestToast = pyqtSignal(str, str)
 
-    def __init__(self, console, parent=None):
+    def __init__(self, console, player=None, parent=None):
         super().__init__(parent)
         self.console = console
+        self._player = player
         self._filepath = None
         self._info = None
         self._worker = None
@@ -3003,8 +3083,10 @@ class StreamsPanel(QWidget):
             "Images (*.png *.jpg);;All Files (*)")
         if not out_path:
             return
-        # Extract at position 0 for now (could be current player position)
-        cmd = [FFMPEG, "-y", "-i", self._filepath, "-frames:v", "1", "-q:v", "1", out_path]
+        seek_sec = 0
+        if self._player:
+            seek_sec = self._player.get_position_sec()
+        cmd = [FFMPEG, "-y", "-ss", str(seek_sec), "-i", self._filepath, "-frames:v", "1", "-q:v", "1", out_path]
         subprocess.run(cmd, capture_output=True,
                        creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
         if os.path.exists(out_path):
@@ -3460,7 +3542,7 @@ class MainWindow(QMainWindow):
         self.convert_panel = ConvertPanel(self.console)
         self.filters_panel = FiltersPanel(self.console)
         self.audio_panel = AudioPanel(self.console)
-        self.streams_panel = StreamsPanel(self.console)
+        self.streams_panel = StreamsPanel(self.console, self.player)
         self.batch_panel = BatchPanel(self.console)
 
         for panel in [self.trim_panel, self.crop_panel, self.upscale_panel,
@@ -3538,7 +3620,7 @@ class MainWindow(QMainWindow):
             self.file_bar.load_file(path)
 
     def _on_file_loaded(self, filepath, info):
-        self.player.load(filepath)
+        self.player.load(filepath, info)
         self.trim_panel.load_file(filepath, info)
         self.crop_panel.load_file(filepath, info)
         self.upscale_panel.load_file(filepath, info)

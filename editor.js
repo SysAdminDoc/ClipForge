@@ -297,9 +297,9 @@ function renderMediaList() {
                 }
             </div>
             <div class="media-info">
-                <div class="media-name">${media.name}</div>
+                <div class="media-name">${escapeHtml(media.name)}</div>
                 <div class="media-meta">
-                    <span>${media.type}</span>
+                    <span>${escapeHtml(media.type)}</span>
                     <span class="media-duration">${formatTimecode(media.duration)}</span>
                 </div>
             </div>
@@ -450,7 +450,7 @@ function renderTimeline() {
         }
         
         clipEl.innerHTML = `
-            <div class="clip-header">${clip.name}</div>
+            <div class="clip-header">${escapeHtml(clip.name)}</div>
             <div class="clip-content">
                 ${clip.thumbnail && clip.type === 'video' ? `<img class="clip-thumbnail" src="${clip.thumbnail}">` : ''}
                 ${clip.waveform ? `<canvas class="waveform-canvas" data-clip="${clip.id}"></canvas>` : ''}
@@ -1294,6 +1294,12 @@ function showEditMenu(e) {
 }
 
 // ==================== UTILITIES ====================
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
 function formatTimecode(seconds) {
     if (!seconds || isNaN(seconds)) return '00:00:00:00';
     
