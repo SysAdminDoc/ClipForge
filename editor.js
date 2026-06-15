@@ -306,8 +306,8 @@ function renderMediaList() {
     if (mediaItems.length === 0) {
         list.innerHTML = `
             <div style="text-align: center; padding: 40px 20px; color: var(--text-3);">
-                <div style="font-size: 32px; margin-bottom: 12px;">📂</div>
-                <div style="font-size: 12px;">No media imported</div>
+                <div style="font-size: 20px; margin-bottom: 10px; opacity: 0.4;">⊕</div>
+                <div style="font-size: 11px; line-height: 1.5; color: var(--text-2);">No media yet<br><span style="color: var(--text-3);">Import files to start editing</span></div>
             </div>
         `;
         return;
