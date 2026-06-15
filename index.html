@@ -10,7 +10,8 @@
     <script>
         window.coiReady=(async()=>{if(window.crossOriginIsolated)return true;if(navigator.serviceWorker?.controller){await new Promise(r=>setTimeout(r,100));if(!window.crossOriginIsolated){window.location.reload();return new Promise(()=>{});}return true;}if(!navigator.serviceWorker)return false;try{const n=document.createElement('div');n.style.cssText='position:fixed;inset:0;background:#0d0d0f;display:flex;align-items:center;justify-content:center;z-index:9999;flex-direction:column;gap:16px;';n.innerHTML='<div style="width:48px;height:48px;border:3px solid #222;border-top-color:#6366f1;border-radius:50%;animation:spin 1s linear infinite;"></div><div style="color:white;font-family:system-ui;font-size:14px;">Initializing ClipForge...</div><style>@keyframes spin{to{transform:rotate(360deg)}}</style>';document.documentElement.appendChild(n);await navigator.serviceWorker.register('coi-serviceworker.js');await navigator.serviceWorker.ready;await new Promise(r=>setTimeout(r,100));window.location.reload();return new Promise(()=>{});}catch(e){return false;}})();
     </script>
-    <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.10.1/dist/ffmpeg.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd/ffmpeg.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/umd/index.js"></script>
     <style>
         :root {
             --bg-0: #0d0d0f;

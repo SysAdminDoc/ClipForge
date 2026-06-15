@@ -21,6 +21,20 @@ let draggingClip = null;
 let draggingHandle = null;
 let isDraggingPlayhead = false;
 
+// Undo/redo history
+const undoStack = [];
+const redoStack = [];
+const MAX_UNDO = 50;
+
+function pushUndo() {
+    undoStack.push({
+        clips: clips.map(c => ({ ...c })),
+        transitions: transitions.map(t => ({ ...t })),
+    });
+    if (undoStack.length > MAX_UNDO) undoStack.shift();
+    redoStack.length = 0;
+}
+
 // Audio context for waveforms
 let audioContext = null;
 
@@ -40,7 +54,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 async function initFFmpeg() {
     await window.coiReady;
-    
+
     if (typeof SharedArrayBuffer === 'undefined') {
         document.getElementById('loadingText').textContent = 'Refresh required';
         document.getElementById('loadingOverlay').innerHTML = `
@@ -52,27 +66,37 @@ async function initFFmpeg() {
         `;
         return;
     }
-    
+
     try {
-        const { createFFmpeg, fetchFile } = FFmpeg;
-        ffmpeg = createFFmpeg({
-            log: true,
-            corePath: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.10.0/dist/ffmpeg-core.js',
-            progress: ({ ratio }) => {
-                const pct = Math.round(ratio * 100);
-                document.getElementById('loadingProgress').style.width = pct + '%';
-            }
-        });
+        const { FFmpeg: FFmpegClass } = FFmpeg;
+        const { fetchFile } = FFmpegUtil;
+        ffmpeg = new FFmpegClass();
         window.ffmpegFetchFile = fetchFile;
-        
+
+        ffmpeg.on("progress", ({ progress }) => {
+            const pct = Math.round(progress * 100);
+            document.getElementById('loadingProgress').style.width = pct + '%';
+        });
+        ffmpeg.on("log", ({ message }) => {
+            console.log('[ffmpeg]', message);
+        });
+
         document.getElementById('loadingText').textContent = 'Loading FFmpeg engine...';
-        await ffmpeg.load();
-        
+        const useMT = typeof SharedArrayBuffer !== 'undefined';
+        const coreBase = useMT
+            ? 'https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@0.12.6/dist/esm'
+            : 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/esm';
+        await ffmpeg.load({
+            coreURL: `${coreBase}/ffmpeg-core.js`,
+            wasmURL: `${coreBase}/ffmpeg-core.wasm`,
+            ...(useMT ? { workerURL: `${coreBase}/ffmpeg-core.worker.js` } : {}),
+        });
+
         ffmpegLoaded = true;
         document.getElementById('loadingOverlay').classList.add('hidden');
         document.getElementById('statusDot').classList.add('ready');
-        document.getElementById('statusText').textContent = 'Ready';
-        
+        document.getElementById('statusText').textContent = useMT ? 'Ready (MT)' : 'Ready';
+
         toast('success', 'ClipForge ready!');
     } catch (e) {
         console.error('FFmpeg load error:', e);
@@ -155,7 +179,8 @@ function handleKeyboard(e) {
     if (e.ctrlKey && key === 'x') cutClip();
     if (e.ctrlKey && key === 'v') pasteClip();
     if (e.ctrlKey && key === 'a') { e.preventDefault(); selectAllClips(); }
-    if (e.ctrlKey && key === 'z') undo();
+    if (e.ctrlKey && e.shiftKey && key === 'z') { e.preventDefault(); redo(); }
+    else if (e.ctrlKey && key === 'z') { e.preventDefault(); undo(); }
     if (e.ctrlKey && key === 's') { e.preventDefault(); saveProject(); }
 }
 
@@ -311,6 +336,7 @@ function renderMediaList() {
 function addToTimeline(mediaId) {
     const media = mediaItems.find(m => m.id == mediaId);
     if (!media) return;
+    pushUndo();
     
     // Find the end of existing clips
     const track = media.type === 'audio' ? 'music' : 'video';
@@ -377,17 +403,17 @@ async function generateVideoWaveform(media) {
     try {
         // Extract audio from video for waveform
         const inputName = 'input_wf' + media.file.name.substring(media.file.name.lastIndexOf('.'));
-        ffmpeg.FS('writeFile', inputName, await window.ffmpegFetchFile(media.file));
-        
-        await ffmpeg.run('-i', inputName, '-ac', '1', '-ar', '8000', '-f', 'f32le', '-acodec', 'pcm_f32le', 'audio.raw');
-        
-        const audioData = ffmpeg.FS('readFile', 'audio.raw');
+        await ffmpeg.writeFile(inputName, await window.ffmpegFetchFile(media.file));
+
+        await ffmpeg.exec(['-i', inputName, '-ac', '1', '-ar', '8000', '-f', 'f32le', '-acodec', 'pcm_f32le', 'audio.raw']);
+
+        const audioData = await ffmpeg.readFile('audio.raw');
         const floatArray = new Float32Array(audioData.buffer);
-        
+
         const samples = 200;
         const blockSize = Math.floor(floatArray.length / samples);
         const waveformData = [];
-        
+
         for (let i = 0; i < samples; i++) {
             let sum = 0;
             for (let j = 0; j < blockSize; j++) {
@@ -398,11 +424,11 @@ async function generateVideoWaveform(media) {
             }
             waveformData.push(sum / blockSize);
         }
-        
+
         const max = Math.max(...waveformData);
-        
-        ffmpeg.FS('unlink', inputName);
-        ffmpeg.FS('unlink', 'audio.raw');
+
+        await ffmpeg.deleteFile(inputName);
+        await ffmpeg.deleteFile('audio.raw');
         
         return waveformData.map(v => max > 0 ? v / max : 0);
     } catch (e) {
@@ -572,6 +598,7 @@ function onTimelineMouseDown(e) {
         const clipEl = handle.closest('.clip');
         const clip = clips.find(c => c.id == clipEl.dataset.id);
         if (clip) {
+            pushUndo();
             draggingHandle = {
                 clip,
                 side: handle.classList.contains('left') ? 'left' : 'right',
@@ -612,7 +639,8 @@ function onTimelineMouseDown(e) {
                     }
                 }
             }
-            
+
+            pushUndo();
             draggingClip = {
                 clip,
                 startX: x,
@@ -822,6 +850,7 @@ function splitClip() {
 
 function splitClipAt(clip, time) {
     if (time <= clip.startTime || time >= clip.startTime + clip.duration) return;
+    pushUndo();
     
     const splitPoint = time - clip.startTime;
     
@@ -866,7 +895,8 @@ function splitClipAt(clip, time) {
 
 function deleteSelected() {
     if (selectedClips.length === 0) return;
-    
+    pushUndo();
+
     selectedClips.forEach(clip => {
         // Also delete linked clip
         if (clip.linkedTo) {
@@ -895,7 +925,8 @@ function cutClip() {
 
 function pasteClip() {
     if (!clipboard || clipboard.length === 0) return;
-    
+    pushUndo();
+
     const pasteTime = currentTime;
     const newClips = [];
     
@@ -933,7 +964,7 @@ function selectAllClips() {
 }
 
 function addTransition() {
-    // Add transition at cut point or between selected clips
+    pushUndo();
     const videoClips = clips.filter(c => c.track === 'video').sort((a, b) => a.startTime - b.startTime);
     
     for (let i = 0; i < videoClips.length - 1; i++) {
@@ -1174,91 +1205,127 @@ function hideExportModal() {
 
 async function exportVideo() {
     if (!ffmpegLoaded || clips.length === 0) return;
-    
+
     hideExportModal();
-    
+
     const overlay = document.getElementById('loadingOverlay');
     overlay.classList.remove('hidden');
     document.getElementById('loadingText').textContent = 'Exporting video...';
     document.getElementById('loadingProgress').style.width = '0%';
-    
+
     try {
         const format = document.getElementById('exportFormat').value;
         const resolution = document.getElementById('exportResolution').value;
         const quality = document.getElementById('exportQuality').value;
         const filename = document.getElementById('exportFilename').value || 'export';
-        
-        // For now, export the first video clip
-        // In a full implementation, this would composite all clips
-        const videoClip = clips.find(c => c.type === 'video');
-        if (!videoClip) {
-            throw new Error('No video clips to export');
+
+        const videoClips = clips
+            .filter(c => c.type === 'video')
+            .sort((a, b) => a.startTime - b.startTime);
+
+        if (videoClips.length === 0) throw new Error('No video clips to export');
+
+        const segmentFiles = [];
+
+        for (let i = 0; i < videoClips.length; i++) {
+            const clip = videoClips[i];
+            const media = mediaItems.find(m => m.id === clip.mediaId);
+            if (!media) continue;
+
+            document.getElementById('loadingText').textContent =
+                `Processing clip ${i + 1}/${videoClips.length}...`;
+
+            const inputName = `input_${i}${media.file.name.substring(media.file.name.lastIndexOf('.'))}`;
+            const segName = `seg_${i}.mp4`;
+            await ffmpeg.writeFile(inputName, await window.ffmpegFetchFile(media.file));
+
+            const args = [];
+            if (clip.inPoint > 0) args.push('-ss', String(clip.inPoint));
+            args.push('-i', inputName);
+            args.push('-t', String(clip.duration));
+
+            const vf = [];
+            if (resolution && resolution !== 'original') {
+                const [w, h] = resolution.split(':');
+                vf.push(`scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2`);
+            }
+            if (clip.brightness || clip.contrast || clip.saturation) {
+                const br = clip.brightness / 100;
+                const ct = 1 + clip.contrast / 100;
+                const st = 1 + clip.saturation / 100;
+                vf.push(`eq=brightness=${br}:contrast=${ct}:saturation=${st}`);
+            }
+            if (clip.rotation) {
+                vf.push(`rotate=${clip.rotation}*PI/180`);
+            }
+            if (vf.length > 0) args.push('-vf', vf.join(','));
+
+            args.push('-c:v', 'libx264', '-crf', quality, '-preset', 'fast');
+            args.push('-c:a', 'aac', '-b:a', '192k');
+            args.push('-y', segName);
+
+            await ffmpeg.exec(args);
+            await ffmpeg.deleteFile(inputName);
+            segmentFiles.push(segName);
         }
-        
-        const media = mediaItems.find(m => m.id === videoClip.mediaId);
-        if (!media) {
-            throw new Error('Source media not found');
-        }
-        
-        const inputName = 'input' + media.file.name.substring(media.file.name.lastIndexOf('.'));
+
+        let finalOutput;
         const outputName = `output.${format}`;
-        
-        ffmpeg.FS('writeFile', inputName, await window.ffmpegFetchFile(media.file));
-        
-        const args = ['-i', inputName];
-        
-        // Trim
-        if (videoClip.inPoint > 0) {
-            args.unshift('-ss', String(videoClip.inPoint));
+
+        if (segmentFiles.length === 1) {
+            if (format === 'mp4') {
+                finalOutput = segmentFiles[0];
+            } else {
+                const args = ['-i', segmentFiles[0]];
+                if (format === 'webm') {
+                    args.push('-c:v', 'libvpx-vp9', '-crf', quality, '-b:v', '0', '-c:a', 'libopus');
+                } else if (format === 'gif') {
+                    args.push('-vf', 'fps=15,scale=480:-1:flags=lanczos', '-loop', '0');
+                }
+                args.push('-y', outputName);
+                await ffmpeg.exec(args);
+                await ffmpeg.deleteFile(segmentFiles[0]);
+                finalOutput = outputName;
+            }
+        } else {
+            const concatList = segmentFiles.map(f => `file '${f}'`).join('\n');
+            const encoder = new TextEncoder();
+            await ffmpeg.writeFile('concat.txt', encoder.encode(concatList));
+
+            document.getElementById('loadingText').textContent = 'Joining clips...';
+            const joinArgs = ['-f', 'concat', '-safe', '0', '-i', 'concat.txt'];
+            if (format === 'mp4') {
+                joinArgs.push('-c', 'copy', '-movflags', '+faststart');
+            } else if (format === 'webm') {
+                joinArgs.push('-c:v', 'libvpx-vp9', '-crf', quality, '-b:v', '0', '-c:a', 'libopus');
+            } else if (format === 'gif') {
+                joinArgs.push('-vf', 'fps=15,scale=480:-1:flags=lanczos', '-loop', '0');
+            } else {
+                joinArgs.push('-c', 'copy');
+            }
+            joinArgs.push('-y', outputName);
+            await ffmpeg.exec(joinArgs);
+
+            for (const f of segmentFiles) {
+                try { await ffmpeg.deleteFile(f); } catch (_) {}
+            }
+            try { await ffmpeg.deleteFile('concat.txt'); } catch (_) {}
+            finalOutput = outputName;
         }
-        args.push('-t', String(videoClip.duration));
-        
-        // Video filters
-        const vf = [];
-        if (resolution && resolution !== 'original') {
-            const [w, h] = resolution.split(':');
-            vf.push(`scale=${w}:${h}:force_original_aspect_ratio=decrease`);
-        }
-        if (videoClip.brightness || videoClip.contrast || videoClip.saturation) {
-            const br = videoClip.brightness / 100;
-            const ct = 1 + videoClip.contrast / 100;
-            const st = 1 + videoClip.saturation / 100;
-            vf.push(`eq=brightness=${br}:contrast=${ct}:saturation=${st}`);
-        }
-        if (videoClip.rotation) {
-            vf.push(`rotate=${videoClip.rotation}*PI/180`);
-        }
-        
-        if (vf.length > 0) {
-            args.push('-vf', vf.join(','));
-        }
-        
-        // Codec settings
-        if (format === 'mp4') {
-            args.push('-c:v', 'libx264', '-crf', quality, '-c:a', 'aac', '-b:a', '192k');
-        } else if (format === 'webm') {
-            args.push('-c:v', 'libvpx-vp9', '-crf', quality, '-b:v', '0', '-c:a', 'libopus');
-        } else if (format === 'gif') {
-            args.push('-vf', `fps=15,scale=480:-1:flags=lanczos`, '-loop', '0');
-        }
-        
-        args.push('-y', outputName);
-        
-        await ffmpeg.run(...args);
-        
-        const data = ffmpeg.FS('readFile', outputName);
-        const blob = new Blob([data.buffer], { type: format === 'gif' ? 'image/gif' : `video/${format}` });
-        
+
+        const data = await ffmpeg.readFile(finalOutput);
+        const mimeType = format === 'gif' ? 'image/gif' : `video/${format}`;
+        const blob = new Blob([data.buffer], { type: mimeType });
+
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
         a.download = `${filename}.${format}`;
         a.click();
-        
-        ffmpeg.FS('unlink', inputName);
-        ffmpeg.FS('unlink', outputName);
-        
+
+        try { await ffmpeg.deleteFile(finalOutput); } catch (_) {}
+
         overlay.classList.add('hidden');
-        toast('success', 'Video exported successfully!');
+        toast('success', `Exported ${videoClips.length} clip(s) successfully!`);
     } catch (e) {
         console.error('Export error:', e);
         overlay.classList.add('hidden');
@@ -1286,7 +1353,35 @@ function saveProject() {
 }
 
 function undo() {
-    toast('info', 'Undo not yet implemented');
+    if (undoStack.length === 0) return;
+    redoStack.push({
+        clips: clips.map(c => ({ ...c })),
+        transitions: transitions.map(t => ({ ...t })),
+    });
+    const state = undoStack.pop();
+    clips = state.clips;
+    transitions = state.transitions;
+    selectedClips = [];
+    updateDuration();
+    renderTimeline();
+    clearClipPropertiesPanel();
+    toast('info', 'Undo');
+}
+
+function redo() {
+    if (redoStack.length === 0) return;
+    undoStack.push({
+        clips: clips.map(c => ({ ...c })),
+        transitions: transitions.map(t => ({ ...t })),
+    });
+    const state = redoStack.pop();
+    clips = state.clips;
+    transitions = state.transitions;
+    selectedClips = [];
+    updateDuration();
+    renderTimeline();
+    clearClipPropertiesPanel();
+    toast('info', 'Redo');
 }
 
 function showEditMenu(e) {
