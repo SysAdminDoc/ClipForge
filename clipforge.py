@@ -293,11 +293,6 @@ def load_user_presets():
     except OSError:
         return {}
 
-def _sanitize_preset_name(name):
-    safe = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', name.strip())
-    safe = safe.strip('. ')
-    return safe[:100] or "preset"
-
 def save_user_preset(name, data):
     try:
         PRESETS_DIR.mkdir(parents=True, exist_ok=True)
@@ -808,13 +803,6 @@ def _probe_cache_key(filepath):
 # Path validation
 # ---------------------------------------------------------------------------
 
-def validate_media_path(filepath):
-    if not filepath:
-        return False
-    if "\x00" in filepath:
-        return False
-    return os.path.isfile(filepath)
-
 # ---------------------------------------------------------------------------
 # Utility functions
 # ---------------------------------------------------------------------------
@@ -876,46 +864,11 @@ def probe_video(filepath):
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError, KeyError, ValueError):
         return None
 
-def _parse_fps(rate_str):
-    try:
-        if "/" in rate_str:
-            num, den = rate_str.split("/")
-            return round(int(num) / int(den), 2)
-        return float(rate_str)
-    except (ValueError, ZeroDivisionError):
-        return 0.0
-
-def format_duration(seconds):
-    if seconds <= 0:
-        return "00:00:00.000"
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = seconds % 60
-    return f"{h:02d}:{m:02d}:{s:06.3f}"
-
-def format_duration_short(seconds):
-    if seconds <= 0:
-        return "0:00"
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = int(seconds % 60)
-    if h > 0:
-        return f"{h}:{m:02d}:{s:02d}"
-    return f"{m}:{s:02d}"
-
-def format_size(size_bytes):
-    for unit in ("B", "KB", "MB", "GB"):
-        if size_bytes < 1024:
-            return f"{size_bytes:.1f} {unit}"
-        size_bytes /= 1024
-    return f"{size_bytes:.1f} TB"
-
-def format_bitrate(bps):
-    if bps <= 0:
-        return "N/A"
-    if bps >= 1_000_000:
-        return f"{bps / 1_000_000:.1f} Mbps"
-    return f"{bps / 1_000:.0f} kbps"
+from clipforge_utils import (
+    _parse_fps, format_duration, format_duration_short,
+    format_size, format_bitrate, estimate_output_size,
+    _sanitize_preset_name, validate_media_path,
+)
 
 def extract_frame(filepath, time_sec=0):
     if not FFMPEG:
@@ -935,14 +888,6 @@ def extract_frame(filepath, time_sec=0):
     except (OSError, subprocess.TimeoutExpired):
         pass
     return None
-
-def estimate_output_size(duration, crf, width, height, fps=30):
-    """Rough estimate of output file size based on CRF and resolution."""
-    pixels = width * height
-    base_bpp = 0.15
-    crf_factor = 2.0 ** ((18 - crf) / 6.0)
-    bps = pixels * base_bpp * crf_factor * (fps / 30.0)
-    return int(bps * duration / 8)
 
 # ---------------------------------------------------------------------------
 # Workers
@@ -988,10 +933,11 @@ class FFmpegWorker(QThread):
     finished_signal = pyqtSignal(bool, str)
     speed_info = pyqtSignal(str)
 
-    def __init__(self, cmd, duration=0, parent=None):
+    def __init__(self, cmd, duration=0, parse_progress=True, parent=None):
         super().__init__(parent)
         self.cmd = cmd
         self.duration = duration
+        self.parse_progress = parse_progress
         self._cancelled = False
         self._start_time = 0
         self._stderr_buffer = []
@@ -1017,6 +963,8 @@ class FFmpegWorker(QThread):
                     return
                 self.log_output.emit(line)
                 self._stderr_buffer.append(line)
+                if not self.parse_progress:
+                    continue
                 match = re.search(r"time=(\d{2}):(\d{2}):(\d{2}\.\d+)", line)
                 if match and self.duration > 0:
                     h, m, s = float(match.group(1)), float(match.group(2)), float(match.group(3))
@@ -1043,11 +991,13 @@ class FFmpegWorker(QThread):
                 self.finished_signal.emit(True, f"Complete ({format_duration_short(elapsed)})")
             else:
                 stderr_text = "".join(self._stderr_buffer)
-                friendly = _parse_ffmpeg_error(stderr_text)
+                friendly = _parse_ffmpeg_error(stderr_text) if self.parse_progress else None
                 if friendly:
                     self.finished_signal.emit(False, friendly)
                 else:
-                    self.finished_signal.emit(False, f"FFmpeg exited with code {process.returncode}")
+                    last_lines = stderr_text.strip().split("\n")[-3:]
+                    hint = " | ".join(l.strip() for l in last_lines if l.strip())[:200]
+                    self.finished_signal.emit(False, hint or f"Process exited with code {process.returncode}")
         except Exception as e:
             self.finished_signal.emit(False, str(e))
 
@@ -2748,6 +2698,7 @@ class ConvertPanel(QWidget):
 
     def _on_done(self, ok, msg, out_path):
         self.btn_convert.setEnabled(True)
+        self.btn_run_custom.setEnabled(True)
         self.lbl_progress_detail.setText("")
         if ok:
             self.progress.setValue(100)
@@ -2972,22 +2923,31 @@ class FiltersPanel(QWidget):
         if not vf:
             self.requestToast.emit("No video filters to preview", C["yellow"])
             return
-        try:
-            tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
-            tmp.close()
-            cmd = [FFMPEG, "-y", "-i", self._filepath, "-vf", ",".join(vf),
-                   "-frames:v", "1", "-q:v", "2", tmp.name]
-            subprocess.run(cmd, capture_output=True, timeout=15,
-                           creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
-            if os.path.exists(tmp.name) and os.path.getsize(tmp.name) > 0:
-                pix = QPixmap(tmp.name)
-                scaled = pix.scaledToHeight(120, Qt.TransformationMode.SmoothTransformation)
-                self.lbl_preview_after.setPixmap(scaled)
-            else:
-                self.lbl_preview_after.setText("Preview failed")
-            os.unlink(tmp.name)
-        except (OSError, subprocess.TimeoutExpired):
+        self.btn_preview.setEnabled(False)
+        self.btn_preview.setText("Generating...")
+        self._preview_tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+        self._preview_tmp.close()
+        cmd = [FFMPEG, "-y", "-i", self._filepath, "-vf", ",".join(vf),
+               "-frames:v", "1", "-q:v", "2", self._preview_tmp.name]
+        self._preview_worker = FFmpegWorker(cmd, 0, parse_progress=False)
+        self._preview_worker.finished_signal.connect(self._on_preview_done)
+        self._preview_worker.start()
+
+    def _on_preview_done(self, ok, msg):
+        self.btn_preview.setEnabled(True)
+        self.btn_preview.setText("Generate Preview")
+        tmp_path = self._preview_tmp.name if hasattr(self, '_preview_tmp') else None
+        if tmp_path and os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 0:
+            pix = QPixmap(tmp_path)
+            scaled = pix.scaledToHeight(120, Qt.TransformationMode.SmoothTransformation)
+            self.lbl_preview_after.setPixmap(scaled)
+        else:
             self.lbl_preview_after.setText("Preview failed")
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
     def _do_gen_captions(self):
         if not self._filepath or not self._whisper_path:
@@ -3011,7 +2971,7 @@ class FiltersPanel(QWidget):
         self.btn_gen_srt.setEnabled(False)
         self.progress.setValue(0)
         self.progress.setRange(0, 0)
-        self._worker = FFmpegWorker(cmd, 0)
+        self._worker = FFmpegWorker(cmd, 0, parse_progress=False)
         self._worker.log_output.connect(self.console.append)
         self._worker.finished_signal.connect(
             lambda ok, msg: self._on_caption_done(ok, msg, out_path))
@@ -3022,9 +2982,20 @@ class FiltersPanel(QWidget):
         self.btn_gen_srt.setEnabled(True)
         if ok:
             self.progress.setValue(100)
+            out_dir = Path(out_path).parent
+            input_stem = Path(self._filepath).stem
+            whisper_generated = out_dir / f"{input_stem}.srt"
+            actual_path = out_path
+            if whisper_generated.exists() and str(whisper_generated) != out_path:
+                try:
+                    shutil.move(str(whisper_generated), out_path)
+                except OSError:
+                    actual_path = str(whisper_generated)
+            elif not Path(out_path).exists() and whisper_generated.exists():
+                actual_path = str(whisper_generated)
             self.requestToast.emit("Subtitles generated", C["green"])
-            self._sub_path = out_path
-            self.lbl_sub_file.setText(Path(out_path).name)
+            self._sub_path = actual_path
+            self.lbl_sub_file.setText(Path(actual_path).name)
         else:
             self.requestToast.emit(f"Caption generation failed: {msg}", C["red"])
 
