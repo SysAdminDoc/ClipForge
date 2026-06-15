@@ -223,6 +223,16 @@ def find_rife():
         local = local.with_suffix(".exe")
     return str(local) if local.exists() else None
 
+def find_span():
+    name = "span-ncnn-vulkan"
+    path = shutil.which(name)
+    if path:
+        return path
+    local = Path(__file__).parent / name
+    if sys.platform == "win32":
+        local = local.with_suffix(".exe")
+    return str(local) if local.exists() else None
+
 FFMPEG = find_tool("ffmpeg")
 FFPROBE = find_tool("ffprobe")
 
@@ -1036,26 +1046,34 @@ class UpscaleWorker(QThread):
     log_output = pyqtSignal(str)
     finished_signal = pyqtSignal(bool, str)
 
-    def __init__(self, input_path, output_path, scale=2, model="realesrgan-x4plus", parent=None):
+    def __init__(self, input_path, output_path, scale=2, model="realesrgan-x4plus", engine="realesrgan", parent=None):
         super().__init__(parent)
         self.input_path = input_path
         self.output_path = output_path
         self.scale = scale
         self.model = model
+        self.engine = engine
         self._cancelled = False
 
     def cancel(self):
         self._cancelled = True
 
     def run(self):
-        realesrgan = find_realesrgan()
-        if not realesrgan:
+        if self.engine == "span":
+            upscaler = find_span()
+            upscaler_name = "SPAN"
+            upscaler_url = "github.com/TNTwise/SPAN-ncnn-vulkan/releases"
+        else:
+            upscaler = find_realesrgan()
+            upscaler_name = "Real-ESRGAN"
+            upscaler_url = "github.com/xinntao/Real-ESRGAN/releases"
+        if not upscaler:
             self.log_output.emit(
-                "[ERROR] realesrgan-ncnn-vulkan not found.\n"
-                "Download: https://github.com/xinntao/Real-ESRGAN/releases\n"
-                "Place in ClipForge directory or add to PATH.\n"
+                f"[ERROR] {upscaler_name} not found.\n"
+                f"Download: https://{upscaler_url}\n"
+                f"Place in ClipForge directory or add to PATH.\n"
             )
-            self.finished_signal.emit(False, "Real-ESRGAN not found")
+            self.finished_signal.emit(False, f"{upscaler_name} not found")
             return
         if not FFMPEG:
             self.finished_signal.emit(False, "FFmpeg not found")
@@ -1088,8 +1106,8 @@ class UpscaleWorker(QThread):
             self.log_output.emit(f"  Extracted {total} frames\n")
             self.progress.emit(10)
 
-            self.log_output.emit("[2/3] Upscaling with Real-ESRGAN...\n")
-            cmd_up = [realesrgan, "-i", frames_dir, "-o", upscaled_dir,
+            self.log_output.emit(f"[2/3] Upscaling with {upscaler_name}...\n")
+            cmd_up = [upscaler, "-i", frames_dir, "-o", upscaled_dir,
                       "-n", self.model, "-s", str(self.scale), "-f", "jpg"]
             self.log_output.emit(f"$ {' '.join(cmd_up)}\n")
             proc = subprocess.Popen(
@@ -1107,7 +1125,7 @@ class UpscaleWorker(QThread):
                     self.progress.emit(10 + float(m.group(1)) * 0.7)
             proc.wait()
             if proc.returncode != 0:
-                self.finished_signal.emit(False, "Real-ESRGAN failed")
+                self.finished_signal.emit(False, f"{upscaler_name} failed")
                 return
             self.progress.emit(80)
 
@@ -2202,21 +2220,31 @@ class UpscalePanel(QWidget):
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
 
-        grp = QGroupBox("AI Upscale (Real-ESRGAN)")
-        gl = QHBoxLayout(grp)
-        gl.addWidget(QLabel("Scale:"))
+        grp = QGroupBox("AI Upscale")
+        gl = QVBoxLayout(grp)
+        engine_row = QHBoxLayout()
+        engine_row.addWidget(QLabel("Engine:"))
+        self.cmb_engine = QComboBox()
+        self.cmb_engine.addItems(["Real-ESRGAN (quality)", "SPAN (fast)"])
+        self.cmb_engine.currentTextChanged.connect(self._on_engine_changed)
+        engine_row.addWidget(self.cmb_engine)
+        engine_row.addWidget(QLabel("Scale:"))
         self.cmb_scale = QComboBox()
         self.cmb_scale.addItems(["2x", "3x", "4x"])
         self.cmb_scale.currentTextChanged.connect(self._update_output_res)
-        gl.addWidget(self.cmb_scale)
-        gl.addWidget(QLabel("Model:"))
+        engine_row.addWidget(self.cmb_scale)
+        engine_row.addStretch()
+        gl.addLayout(engine_row)
+        model_row = QHBoxLayout()
+        model_row.addWidget(QLabel("Model:"))
         self.cmb_model = QComboBox()
         self.cmb_model.addItems(["realesrgan-x4plus", "realesrgan-x4plus-anime", "realesr-animevideov3"])
-        gl.addWidget(self.cmb_model)
+        model_row.addWidget(self.cmb_model)
         self.lbl_output_res = QLabel("")
         self.lbl_output_res.setProperty("class", "accentLabel")
-        gl.addStretch()
-        gl.addWidget(self.lbl_output_res)
+        model_row.addStretch()
+        model_row.addWidget(self.lbl_output_res)
+        gl.addLayout(model_row)
         layout.addWidget(grp)
 
         interp_grp = QGroupBox("Frame Interpolation (RIFE)")
@@ -2278,12 +2306,26 @@ class UpscalePanel(QWidget):
         else:
             self.lbl_esrgan.setText("Real-ESRGAN: Not found - download from github.com/xinntao/Real-ESRGAN/releases")
             self.lbl_esrgan.setStyleSheet(f"color: {C['yellow']};")
+        if find_span():
+            self.lbl_esrgan.setText(self.lbl_esrgan.text() + "  |  SPAN: Found")
         if find_rife():
             self.lbl_rife.setText("RIFE: Found")
             self.lbl_rife.setStyleSheet(f"color: {C['green']};")
         else:
             self.lbl_rife.setText("RIFE: Not found - download from github.com/nihui/rife-ncnn-vulkan/releases")
             self.lbl_rife.setStyleSheet(f"color: {C['yellow']};")
+
+    def _on_engine_changed(self, text):
+        if "SPAN" in text:
+            self.cmb_model.clear()
+            self.cmb_model.addItems(["spanx4_ch48", "spanx2_ch48", "ClearRealityV1"])
+            self.cmb_scale.clear()
+            self.cmb_scale.addItems(["2x", "4x"])
+        else:
+            self.cmb_model.clear()
+            self.cmb_model.addItems(["realesrgan-x4plus", "realesrgan-x4plus-anime", "realesr-animevideov3"])
+            self.cmb_scale.clear()
+            self.cmb_scale.addItems(["2x", "3x", "4x"])
 
     def load_file(self, filepath, info):
         self._filepath = filepath
@@ -2313,6 +2355,7 @@ class UpscalePanel(QWidget):
             return
         scale = int(self.cmb_scale.currentText().replace("x", ""))
         model = self.cmb_model.currentText()
+        engine = "span" if "SPAN" in self.cmb_engine.currentText() else "realesrgan"
         src = Path(self._filepath)
         out_path, _ = QFileDialog.getSaveFileName(
             self, "Save Upscaled Video", str(src.parent / f"{src.stem}_{scale}x{src.suffix}"),
@@ -2321,7 +2364,7 @@ class UpscalePanel(QWidget):
             return
         self.progress.setValue(0)
         self._set_processing(True)
-        self._worker = UpscaleWorker(self._filepath, out_path, scale, model)
+        self._worker = UpscaleWorker(self._filepath, out_path, scale, model, engine=engine)
         self._worker.progress.connect(lambda v: self.progress.setValue(int(v)))
         self._worker.log_output.connect(self.console.append)
         self._worker.finished_signal.connect(lambda ok, msg: self._on_done(ok, msg, out_path))
