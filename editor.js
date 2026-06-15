@@ -1335,9 +1335,11 @@ async function exportVideo() {
         const blob = new Blob([data.buffer], { type: mimeType });
 
         const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
+        const blobUrl = URL.createObjectURL(blob);
+        a.href = blobUrl;
         a.download = `${filename}.${format}`;
         a.click();
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
 
         try { await ffmpeg.deleteFile(finalOutput); } catch (_) {}
 
@@ -1362,9 +1364,11 @@ function saveProject() {
     const json = JSON.stringify(project, null, 2);
     const blob = new Blob([json], { type: 'application/json' });
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
+    const blobUrl = URL.createObjectURL(blob);
+    a.href = blobUrl;
     a.download = 'project.clipforge';
     a.click();
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
     
     toast('success', 'Project saved');
 }

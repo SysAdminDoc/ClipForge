@@ -316,6 +316,7 @@ class FiltersPanel(QWidget):
                "-af", f"silencedetect=noise={threshold}dB:d={min_dur}",
                "-f", "null", "-"]
         self._silence_worker = FFmpegWorker(cmd, 0, parse_progress=False)
+        self._silence_worker.log_output.connect(self.console.append)
         self._silence_worker.finished_signal.connect(self._on_silence_detected)
         self._silence_worker.start()
 
@@ -350,7 +351,7 @@ class FiltersPanel(QWidget):
         out_path, _ = QFileDialog.getSaveFileName(
             self, "Save Without Silence", str(src.parent / f"{src.stem}_no_silence{src.suffix}"),
             "Video Files (*.mp4 *.mkv *.mov);;All Files (*)")
-        if not out_path:
+        if not out_path or not _confirm_overwrite(self, out_path):
             return
         duration = self._info.get("duration", 0) if self._info else 0
         keep_segments = []

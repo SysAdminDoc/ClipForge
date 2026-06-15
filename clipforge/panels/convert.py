@@ -148,6 +148,7 @@ class ConvertPanel(QWidget):
         for widget in [self.cmb_container, self.cmb_vcodec, self.cmb_acodec, self.cmb_enc_preset,
                        self.cmb_resolution, self.cmb_fps]:
             widget.currentTextChanged.connect(self._update_cmd_preview)
+        self.cmb_vcodec.currentTextChanged.connect(self._on_vcodec_changed)
         self.spn_crf.valueChanged.connect(self._update_cmd_preview)
         self.spn_speed.valueChanged.connect(self._update_cmd_preview)
 
@@ -242,6 +243,13 @@ class ConvertPanel(QWidget):
             self.cmb_acodec.setCurrentText("Opus")
         elif container == "GIF":
             self.cmb_acodec.setCurrentText("None (remove audio)")
+
+    def _on_vcodec_changed(self, vcodec_text):
+        is_av1 = "AV1" in vcodec_text or "svtav1" in vcodec_text.lower()
+        max_crf = 63 if is_av1 else 51
+        if self.spn_crf.maximum() != max_crf:
+            self.spn_crf.setRange(0, max_crf)
+        self._update_estimate()
 
     def load_file(self, filepath, info):
         self._filepath = filepath

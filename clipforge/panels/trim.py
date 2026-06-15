@@ -126,9 +126,12 @@ class TrimPanel(QWidget):
         self.range_slider.set_range(self.range_slider.low(), pos)
 
     def _on_mode_changed(self, checked):
-        if not checked:
-            return
         sender = self.sender()
+        if not checked:
+            sender.blockSignals(True)
+            sender.setChecked(True)
+            sender.blockSignals(False)
+            return
         for chk in (self.chk_lossless, self.chk_smart, self.chk_reencode):
             if chk is not sender:
                 chk.blockSignals(True)
@@ -201,28 +204,41 @@ class TrimPanel(QWidget):
         self.progress.setRange(0, 0)
         self.console.append("[Smart Cut] Finding keyframes and preparing segments...\n")
         prev_kf = self._find_prev_keyframe(self._filepath, start)
-        next_kf_after_start = start
         tmpdir = tempfile.mkdtemp(prefix="clipforge_smartcut_")
         _register_temp_dir(tmpdir)
         self._smart_tmpdir = tmpdir
+
         head_seg = os.path.join(tmpdir, "head.mp4")
-        cmd_head = [FFMPEG, "-y", "-i", self._filepath,
-                    "-ss", str(prev_kf), "-to", str(start),
-                    "-c:v", "libx264", "-crf", "18", "-preset", "fast",
-                    "-c:a", "aac", "-b:a", "192k", head_seg]
         mid_seg = os.path.join(tmpdir, "mid.mp4")
+        concat_list = os.path.join(tmpdir, "concat.txt")
+
+        steps = []
+        use_head = prev_kf < start - 0.05
+
+        if use_head:
+            cmd_head = [FFMPEG, "-y", "-i", self._filepath,
+                        "-ss", str(prev_kf), "-to", str(start),
+                        "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+                        "-c:a", "aac", "-b:a", "192k", head_seg]
+            steps.append(("Re-encoding head segment...", cmd_head))
+
         cmd_mid = [FFMPEG, "-y", "-ss", str(start), "-i", self._filepath,
                    "-t", str(end - start), "-c", "copy",
                    "-avoid_negative_ts", "make_zero", mid_seg]
-        concat_list = os.path.join(tmpdir, "concat.txt")
+        steps.append(("Copying middle (lossless)...", cmd_mid))
+
+        parts = []
+        if use_head:
+            parts.append(f"file '{head_seg}'")
+        parts.append(f"file '{mid_seg}'")
         with open(concat_list, "w") as f:
-            f.write(f"file '{mid_seg}'\n")
+            f.write("\n".join(parts) + "\n")
+
         cmd_concat = [FFMPEG, "-y", "-f", "concat", "-safe", "0",
                       "-i", concat_list, "-c", "copy", out_path]
-        self._smart_steps = [
-            ("Copying middle (lossless)...", cmd_mid),
-            ("Joining segments...", cmd_concat),
-        ]
+        steps.append(("Joining segments...", cmd_concat))
+
+        self._smart_steps = steps
         self._smart_out_path = out_path
         self._smart_step_idx = 0
         self._run_next_smart_step()

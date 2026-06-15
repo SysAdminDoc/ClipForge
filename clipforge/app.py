@@ -118,7 +118,6 @@ class MainWindow(QMainWindow):
         sb_layout.addWidget(self.lbl_hw_status)
         if HW_ENCODERS:
             hw_names = ", ".join(HW_ENCODERS.keys())
-            short = hw_names[:30] + "..." if len(hw_names) > 30 else hw_names
             self.lbl_hw_status.setText(f"GPU: {len(HW_ENCODERS)} encoder(s)")
             self.lbl_hw_status.setToolTip(hw_names)
             self.lbl_hw_status.setStyleSheet(f"color: {C['green']};")
