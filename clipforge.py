@@ -1148,11 +1148,12 @@ class InterpolateWorker(QThread):
     log_output = pyqtSignal(str)
     finished_signal = pyqtSignal(bool, str)
 
-    def __init__(self, input_path, output_path, multiplier=2, parent=None):
+    def __init__(self, input_path, output_path, multiplier=2, model="rife-v4.25", parent=None):
         super().__init__(parent)
         self.input_path = input_path
         self.output_path = output_path
         self.multiplier = multiplier
+        self.model = model
         self._cancelled = False
 
     def cancel(self):
@@ -1201,7 +1202,7 @@ class InterpolateWorker(QThread):
 
             self.log_output.emit(f"[2/3] Interpolating {self.multiplier}x with RIFE...\n")
             cmd_rife = [rife, "-i", frames_dir, "-o", interp_dir,
-                        "-m", f"rife-v4.6", "-n", str(len(frames) * self.multiplier)]
+                        "-m", self.model, "-n", str(len(frames) * self.multiplier)]
             self.log_output.emit(f"$ {' '.join(cmd_rife)}\n")
             proc = subprocess.Popen(
                 cmd_rife, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
@@ -2220,11 +2221,15 @@ class UpscalePanel(QWidget):
 
         interp_grp = QGroupBox("Frame Interpolation (RIFE)")
         il = QHBoxLayout(interp_grp)
-        il.addWidget(QLabel("Frame Multiplier:"))
+        il.addWidget(QLabel("Multiplier:"))
         self.cmb_interp = QComboBox()
         self.cmb_interp.addItems(["2x (double fps)", "4x (quadruple fps)", "8x"])
         self.cmb_interp.currentTextChanged.connect(lambda: self._update_interp_info())
         il.addWidget(self.cmb_interp)
+        il.addWidget(QLabel("Model:"))
+        self.cmb_rife_model = QComboBox()
+        self.cmb_rife_model.addItems(["rife-v4.25", "rife-v4.6", "rife-v4.22", "rife-v4"])
+        il.addWidget(self.cmb_rife_model)
         self.lbl_interp_info = QLabel("")
         self.lbl_interp_info.setProperty("class", "accentLabel")
         il.addStretch()
@@ -2336,7 +2341,8 @@ class UpscalePanel(QWidget):
             return
         self.progress.setValue(0)
         self._set_processing(True)
-        self._worker = InterpolateWorker(self._filepath, out_path, mult)
+        rife_model = self.cmb_rife_model.currentText()
+        self._worker = InterpolateWorker(self._filepath, out_path, mult, model=rife_model)
         self._worker.progress.connect(lambda v: self.progress.setValue(int(v)))
         self._worker.log_output.connect(self.console.append)
         self._worker.finished_signal.connect(lambda ok, msg: self._on_done(ok, msg, out_path))
@@ -3956,9 +3962,19 @@ class BatchPanel(QWidget):
         if out_dir:
             try:
                 usage = shutil.disk_usage(out_dir)
-                total_input_size = sum(
-                    os.path.getsize(p) for p in self._items if os.path.exists(p))
-                estimated_needed = int(total_input_size * 1.2)
+                estimated_needed = 0
+                operation = self.cmb_operation.currentText()
+                for p in self._items:
+                    if not os.path.exists(p):
+                        continue
+                    info = probe_video(p)
+                    if info and "Downscale" in operation or "Convert" in operation:
+                        w = info.get("width", 1920)
+                        h = info.get("height", 1080)
+                        dur = info.get("duration", 0)
+                        estimated_needed += estimate_output_size(dur, 18, w, h)
+                    else:
+                        estimated_needed += int(os.path.getsize(p) * 1.2)
                 if usage.free < estimated_needed:
                     self.requestToast.emit(
                         f"Low disk space: {format_size(usage.free)} free, ~{format_size(estimated_needed)} needed",
