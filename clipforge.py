@@ -80,16 +80,14 @@ from PyQt6.QtWidgets import (
     QGraphicsView, QGraphicsScene,
     QListWidget, QListWidgetItem, QAbstractItemView,
     QScrollArea, QStatusBar, QGridLayout, QLineEdit,
-    QToolTip, QSizePolicy, QFrame,
 )
 from PyQt6.QtCore import (
     Qt, QThread, pyqtSignal, QUrl, QTimer, QPointF, QSize,
     QPropertyAnimation, QEasingCurve, QRect,
 )
 from PyQt6.QtGui import (
-    QFont, QPainter, QPen, QColor, QBrush, QPixmap,
-    QDragEnterEvent, QDropEvent, QPalette, QIcon, QLinearGradient,
-    QAction,
+    QPainter, QPen, QColor, QPixmap,
+    QDragEnterEvent, QDropEvent, QPalette,
 )
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PyQt6.QtMultimediaWidgets import QVideoWidget
@@ -478,6 +476,10 @@ QPushButton#dangerBtn {{
 QPushButton#dangerBtn:hover {{
     background-color: {C['flamingo']};
 }}
+QPushButton#dangerBtn:disabled {{
+    background-color: {C['surface1']};
+    color: {C['overlay0']};
+}}
 QPushButton#successBtn {{
     background-color: {C['green']};
     color: {C['crust']};
@@ -486,6 +488,10 @@ QPushButton#successBtn {{
 }}
 QPushButton#successBtn:hover {{
     background-color: #b8eeac;
+}}
+QPushButton#successBtn:disabled {{
+    background-color: {C['surface1']};
+    color: {C['overlay0']};
 }}
 QPushButton.playerBtn {{
     background-color: transparent;
@@ -518,6 +524,11 @@ QComboBox {{
 }}
 QComboBox:focus {{
     border-color: {C['blue']};
+}}
+QComboBox:disabled {{
+    color: {C['overlay0']};
+    background-color: {C['mantle']};
+    border-color: {C['surface0']};
 }}
 QComboBox::drop-down {{ border: none; width: 24px; }}
 QComboBox::down-arrow {{
@@ -593,6 +604,9 @@ QSlider::handle:horizontal {{
 }}
 QSlider::handle:horizontal:hover {{
     background: {C['blue']};
+}}
+QSlider::handle:horizontal:pressed {{
+    background: {C['sapphire']};
 }}
 QSlider::sub-page:horizontal {{
     background: {C['blue']};
@@ -1772,7 +1786,7 @@ class FileInfoBar(QWidget):
         self.btn_open.setAccessibleName("Open video file")
         self.btn_open.clicked.connect(self._open_file)
 
-        self.lbl_name = QLabel("No file loaded")
+        self.lbl_name = QLabel("Open a video to get started")
         self.lbl_name.setProperty("class", "dimLabel")
         self.lbl_info = QLabel("")
         self.lbl_info.setProperty("class", "dimLabel")
@@ -2810,7 +2824,7 @@ class FiltersPanel(QWidget):
         # Subtitle burn-in
         sub_grp = QGroupBox("Subtitle Burn-in")
         sl = QHBoxLayout(sub_grp)
-        self.lbl_sub_file = QLabel("No subtitle file")
+        self.lbl_sub_file = QLabel("No subtitle selected")
         self.lbl_sub_file.setProperty("class", "dimLabel")
         self.btn_browse_sub = QPushButton("Browse .srt/.ass")
         self.btn_browse_sub.clicked.connect(self._browse_sub)
@@ -2855,7 +2869,7 @@ class FiltersPanel(QWidget):
         # LUT
         lut_grp = QGroupBox("LUT Color Grading")
         ll = QHBoxLayout(lut_grp)
-        self.lbl_lut_file = QLabel("No .cube LUT loaded")
+        self.lbl_lut_file = QLabel("No LUT selected")
         self.lbl_lut_file.setProperty("class", "dimLabel")
         self.btn_browse_lut = QPushButton("Browse .cube")
         self.btn_browse_lut.clicked.connect(self._browse_lut)
@@ -3156,7 +3170,7 @@ class AudioPanel(QWidget):
 
         info_grp = QGroupBox("Audio Stream Info")
         il = QVBoxLayout(info_grp)
-        self.lbl_audio_info = QLabel("No file loaded")
+        self.lbl_audio_info = QLabel("Open a video to see audio details")
         self.lbl_audio_info.setProperty("class", "dimLabel")
         il.addWidget(self.lbl_audio_info)
         layout.addWidget(info_grp)
@@ -3178,7 +3192,7 @@ class AudioPanel(QWidget):
         rep_grp = QGroupBox("Replace Audio")
         rl = QVBoxLayout(rep_grp)
         rep_row = QHBoxLayout()
-        self.lbl_replace_file = QLabel("No audio file selected")
+        self.lbl_replace_file = QLabel("No replacement audio selected")
         self.lbl_replace_file.setProperty("class", "dimLabel")
         self.btn_browse_audio = QPushButton("Browse Audio")
         self.btn_browse_audio.clicked.connect(self._browse_audio)
@@ -3357,7 +3371,7 @@ class StreamsPanel(QWidget):
         # Stream list with toggles
         stream_grp = QGroupBox("Streams (toggle for remux)")
         self._stream_layout = QVBoxLayout(stream_grp)
-        self.lbl_no_streams = QLabel("No file loaded")
+        self.lbl_no_streams = QLabel("Open a video to inspect streams")
         self.lbl_no_streams.setProperty("class", "dimLabel")
         self._stream_layout.addWidget(self.lbl_no_streams)
         self._stream_checks = []
@@ -3403,7 +3417,7 @@ class StreamsPanel(QWidget):
 
     def _update_info(self):
         if not self._info:
-            self.txt_media_info.setText("No file loaded")
+            self.txt_media_info.setText("Open a video to see media information")
             return
         lines = []
         lines.append(f"File: {self._info.get('path', 'N/A')}")
@@ -3961,6 +3975,7 @@ class MainWindow(QMainWindow):
         self.console.setObjectName("console")
         self.console.setReadOnly(True)
         self.console.setMaximumHeight(150)
+        self.console.setPlaceholderText("FFmpeg output will appear here")
 
         self.stack = QStackedWidget()
         self.trim_panel = TrimPanel(self.console, self.player)
@@ -4022,12 +4037,17 @@ class MainWindow(QMainWindow):
             self.lbl_ffmpeg_status.setText("FFmpeg: Found")
             self.lbl_ffmpeg_status.setStyleSheet(f"color: {C['green']};")
         else:
-            self.lbl_ffmpeg_status.setText("FFmpeg: Not found")
+            self.lbl_ffmpeg_status.setText("FFmpeg: Missing")
             self.lbl_ffmpeg_status.setStyleSheet(f"color: {C['red']};")
+            self.lbl_ffmpeg_status.setToolTip("FFmpeg is required for all operations")
             self.console.append(
-                "[WARNING] FFmpeg not found in PATH.\n"
-                "Install: winget install ffmpeg\n"
-                "Or download: https://ffmpeg.org/download.html\n\n"
+                "FFmpeg was not found on this system.\n"
+                "Most features require FFmpeg to be installed.\n\n"
+                "Install options:\n"
+                "  Windows:  winget install ffmpeg\n"
+                "  macOS:    brew install ffmpeg\n"
+                "  Linux:    sudo apt install ffmpeg\n\n"
+                "Or download from https://ffmpeg.org/download.html\n\n"
             )
 
     def _load_recent(self):

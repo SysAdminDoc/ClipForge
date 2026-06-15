@@ -149,6 +149,7 @@
         .btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
         .btn.primary:active { background: #5558e6; }
         .btn:disabled { opacity: 0.4; cursor: not-allowed; pointer-events: none; }
+        .btn.btn-sm { padding: 5px 10px; font-size: 11px; }
         
         /* Main Content Area */
         .main-content {
@@ -330,7 +331,7 @@
         .transport-btn.play:active { transform: scale(0.92); }
         
         .timecode {
-            font-family: 'JetBrains Mono', monospace;
+            font-family: 'Consolas', 'Menlo', 'Courier New', monospace;
             font-size: 13px;
             color: var(--text-0);
             background: var(--bg-2);
@@ -799,7 +800,7 @@
         .context-divider {
             height: 1px;
             background: var(--border);
-            margin: 6px 0;
+            margin: 6px 8px;
         }
         .context-shortcut {
             margin-left: auto;
@@ -934,6 +935,7 @@
             margin-bottom: 16px;
         }
         .export-label {
+            display: block;
             font-size: 12px;
             color: var(--text-2);
             margin-bottom: 6px;
@@ -946,6 +948,8 @@
             border-radius: var(--radius);
             color: var(--text-0);
             font-size: 13px;
+            font-family: inherit;
+            transition: border-color var(--transition);
         }
         .export-select:focus, .export-input:focus {
             outline: none;
