@@ -74,12 +74,18 @@ async function initFFmpeg() {
 
         document.getElementById('loadingText').textContent = 'Downloading FFmpeg core (~31 MB)...';
 
+        const ffmpegBase = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm';
         const coreBase = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/esm';
+        // ffmpeg.wasm starts a wrapper worker before loading the core; wrap it in a
+        // same-origin blob so GitHub Pages can construct the worker from CDN code.
+        const classWorkerURL = URL.createObjectURL(new Blob([
+            `import "${ffmpegBase}/worker.js";`
+        ], { type: 'text/javascript' }));
         const coreURL = await toBlobURL(`${coreBase}/ffmpeg-core.js`, 'text/javascript');
         const wasmURL = await toBlobURL(`${coreBase}/ffmpeg-core.wasm`, 'application/wasm');
 
         document.getElementById('loadingText').textContent = 'Initializing FFmpeg...';
-        await ffmpeg.load({ coreURL, wasmURL });
+        await ffmpeg.load({ classWorkerURL, coreURL, wasmURL });
 
         ffmpegLoaded = true;
         document.getElementById('loadingOverlay').classList.add('hidden');

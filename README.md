@@ -1,11 +1,11 @@
-# ClipForge v0.5.0
+# ClipForge v0.5.1
 
 All-in-one video editor — Trim, Crop, Upscale, Interpolate, Convert, Filter, Audio, Streams, Batch — one tool, zero hassle.
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python)
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)
-![Version](https://img.shields.io/badge/Version-0.5.0-orange)
+![Version](https://img.shields.io/badge/Version-0.5.1-orange)
 
 **Web Editor:** [sysadmindoc.github.io/ClipForge](https://sysadmindoc.github.io/ClipForge/) — browser-based timeline editor with ffmpeg.wasm 0.12, undo/redo, and multi-clip export.
 
