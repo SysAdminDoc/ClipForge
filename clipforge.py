@@ -231,7 +231,7 @@ def detect_hw_encoders():
             if name in result.stdout:
                 hw[label] = name
         return hw
-    except Exception:
+    except (OSError, subprocess.TimeoutExpired):
         return {}
 
 HW_ENCODERS = detect_hw_encoders()
@@ -245,7 +245,7 @@ def load_settings():
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         if SETTINGS_FILE.exists():
             return json.loads(SETTINGS_FILE.read_text())
-    except Exception:
+    except (OSError, json.JSONDecodeError, ValueError):
         pass
     return {}
 
@@ -253,7 +253,7 @@ def save_settings(settings):
     try:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         SETTINGS_FILE.write_text(json.dumps(settings, indent=2))
-    except Exception:
+    except OSError:
         pass
 
 # ---------------------------------------------------------------------------
@@ -267,10 +267,10 @@ def load_user_presets():
         for f in PRESETS_DIR.glob("*.json"):
             try:
                 presets[f.stem] = json.loads(f.read_text())
-            except Exception:
+            except (OSError, json.JSONDecodeError, ValueError):
                 pass
         return presets
-    except Exception:
+    except OSError:
         return {}
 
 def _sanitize_preset_name(name):
@@ -292,7 +292,7 @@ def delete_user_preset(name):
         p = PRESETS_DIR / f"{name}.json"
         if p.exists():
             p.unlink()
-    except Exception:
+    except OSError:
         pass
 
 # ---------------------------------------------------------------------------
@@ -304,7 +304,7 @@ def load_recent():
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         if RECENT_FILE.exists():
             return json.loads(RECENT_FILE.read_text())[:10]
-    except Exception:
+    except (OSError, json.JSONDecodeError, ValueError):
         pass
     return []
 
@@ -312,7 +312,7 @@ def save_recent(paths):
     try:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         RECENT_FILE.write_text(json.dumps(paths[:10]))
-    except Exception:
+    except OSError:
         pass
 
 def add_recent(filepath):
@@ -708,7 +708,7 @@ def probe_video(filepath):
                 si["title"] = s.get("tags", {}).get("title", "")
             info["streams"].append(si)
         return info
-    except Exception:
+    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError, KeyError, ValueError):
         return None
 
 def _parse_fps(rate_str):
@@ -767,7 +767,7 @@ def extract_frame(filepath, time_sec=0):
             os.unlink(tmp.name)
             return pix
         os.unlink(tmp.name)
-    except Exception:
+    except (OSError, subprocess.TimeoutExpired):
         pass
     return None
 
@@ -2243,17 +2243,29 @@ class ConvertPanel(QWidget):
         self.lbl_estimate.setProperty("class", "dimLabel")
         layout.addWidget(self.lbl_estimate)
 
-        # FFmpeg command preview
-        cmd_grp = QGroupBox("FFmpeg Command Preview")
+        cmd_grp = QGroupBox("FFmpeg Command Preview (editable)")
         cmd_layout = QVBoxLayout(cmd_grp)
         self.txt_cmd_preview = QTextEdit()
         self.txt_cmd_preview.setObjectName("cmdPreview")
-        self.txt_cmd_preview.setReadOnly(True)
+        self.txt_cmd_preview.setReadOnly(False)
         self.txt_cmd_preview.setMaximumHeight(60)
         cmd_layout.addWidget(self.txt_cmd_preview)
-        btn_copy_cmd = QPushButton("Copy Command")
+        cmd_btn_row = QHBoxLayout()
+        btn_copy_cmd = QPushButton("Copy")
         btn_copy_cmd.clicked.connect(self._copy_cmd)
-        cmd_layout.addWidget(btn_copy_cmd, alignment=Qt.AlignmentFlag.AlignRight)
+        self.btn_reset_cmd = QPushButton("Reset")
+        self.btn_reset_cmd.setToolTip("Regenerate command from current settings")
+        self.btn_reset_cmd.clicked.connect(self._update_cmd_preview)
+        self.btn_run_custom = QPushButton("Run Custom")
+        self.btn_run_custom.setObjectName("primaryBtn")
+        self.btn_run_custom.setToolTip("Execute the edited command as-is")
+        self.btn_run_custom.clicked.connect(self._run_custom_cmd)
+        self.btn_run_custom.setEnabled(False)
+        cmd_btn_row.addStretch()
+        cmd_btn_row.addWidget(btn_copy_cmd)
+        cmd_btn_row.addWidget(self.btn_reset_cmd)
+        cmd_btn_row.addWidget(self.btn_run_custom)
+        cmd_layout.addLayout(cmd_btn_row)
         layout.addWidget(cmd_grp)
 
         # Connect signals for live preview
@@ -2359,6 +2371,7 @@ class ConvertPanel(QWidget):
         self._filepath = filepath
         self._info = info
         self.btn_convert.setEnabled(bool(FFMPEG))
+        self.btn_run_custom.setEnabled(bool(FFMPEG))
         self._update_estimate()
         self._update_cmd_preview()
 
@@ -2502,6 +2515,43 @@ class ConvertPanel(QWidget):
     def _copy_cmd(self):
         QApplication.clipboard().setText(self.txt_cmd_preview.toPlainText())
         self.requestToast.emit("Command copied to clipboard", C["blue"])
+
+    def _run_custom_cmd(self):
+        if not self._filepath or not FFMPEG:
+            return
+        cmd_text = self.txt_cmd_preview.toPlainText().strip()
+        if not cmd_text:
+            return
+        import shlex
+        try:
+            if sys.platform == "win32":
+                parts = cmd_text.split()
+            else:
+                parts = shlex.split(cmd_text)
+        except ValueError:
+            self.requestToast.emit("Invalid command syntax", C["red"])
+            return
+        if not parts:
+            return
+        out_path = parts[-1] if not parts[-1].startswith("-") else None
+        if out_path and out_path == "<output>":
+            out_path, _ = QFileDialog.getSaveFileName(
+                self, "Save Output", str(Path(self._filepath).parent / "custom_output.mp4"),
+                "All Files (*)")
+            if not out_path:
+                return
+            parts[-1] = out_path
+        duration = self._info.get("duration", 0) if self._info else 0
+        self.progress.setValue(0)
+        self.btn_convert.setEnabled(False)
+        self.btn_run_custom.setEnabled(False)
+        self._worker = FFmpegWorker(parts, duration)
+        self._worker.progress.connect(lambda v: self.progress.setValue(int(v)))
+        self._worker.speed_info.connect(self.lbl_progress_detail.setText)
+        self._worker.log_output.connect(self.console.append)
+        self._worker.finished_signal.connect(
+            lambda ok, msg: self._on_done(ok, msg, out_path or ""))
+        self._worker.start()
 
     def _do_convert(self):
         if not self._filepath or not FFMPEG:
@@ -3469,7 +3519,7 @@ class BatchPanel(QWidget):
                 if sys.platform == "win32":
                     import winsound
                     winsound.MessageBeep(winsound.MB_OK)
-            except Exception:
+            except (ImportError, OSError):
                 pass
 
 # ---------------------------------------------------------------------------
