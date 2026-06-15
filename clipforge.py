@@ -1832,16 +1832,27 @@ class TrimPanel(QWidget):
         gl.addLayout(marker_row)
         layout.addWidget(grp)
 
-        opts = QGroupBox("Options")
-        ol = QHBoxLayout(opts)
-        self.chk_lossless = QCheckBox("Lossless (fast, no re-encode)")
+        opts = QGroupBox("Cut Mode")
+        ol = QVBoxLayout(opts)
+        mode_row = QHBoxLayout()
+        self.chk_lossless = QCheckBox("Lossless (keyframe-aligned, fastest)")
         self.chk_lossless.setChecked(True)
-        ol.addWidget(self.chk_lossless)
+        self.chk_lossless.toggled.connect(self._on_mode_changed)
+        self.chk_smart = QCheckBox("Smart Cut (re-encode edges only)")
+        self.chk_smart.toggled.connect(self._on_mode_changed)
+        self.chk_reencode = QCheckBox("Full re-encode (frame-accurate)")
+        self.chk_reencode.toggled.connect(self._on_mode_changed)
+        mode_row.addWidget(self.chk_lossless)
+        mode_row.addWidget(self.chk_smart)
+        mode_row.addWidget(self.chk_reencode)
+        ol.addLayout(mode_row)
+        fmt_row = QHBoxLayout()
         self.cmb_format = QComboBox()
         self.cmb_format.addItems(["Same as source", "MP4", "MKV", "MOV", "WebM"])
-        ol.addWidget(QLabel("Format:"))
-        ol.addWidget(self.cmb_format)
-        ol.addStretch()
+        fmt_row.addWidget(QLabel("Format:"))
+        fmt_row.addWidget(self.cmb_format)
+        fmt_row.addStretch()
+        ol.addLayout(fmt_row)
         layout.addWidget(opts)
 
         self.progress = QProgressBar()
@@ -1880,6 +1891,40 @@ class TrimPanel(QWidget):
         pos = self.player.get_position_sec()
         self.range_slider.set_range(self.range_slider.low(), pos)
 
+    def _on_mode_changed(self, checked):
+        if not checked:
+            return
+        sender = self.sender()
+        for chk in (self.chk_lossless, self.chk_smart, self.chk_reencode):
+            if chk is not sender:
+                chk.blockSignals(True)
+                chk.setChecked(False)
+                chk.blockSignals(False)
+
+    def _find_prev_keyframe(self, filepath, time_sec):
+        if not FFPROBE:
+            return time_sec
+        try:
+            cmd = [FFPROBE, "-v", "quiet", "-select_streams", "v:0",
+                   "-show_entries", "packet=pts_time,flags",
+                   "-of", "csv=p=0", "-read_intervals", f"%{time_sec+0.5}",
+                   filepath]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=10,
+                                    creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+            last_kf = 0
+            for line in result.stdout.strip().split("\n"):
+                parts = line.split(",")
+                if len(parts) >= 2:
+                    try:
+                        pts = float(parts[0])
+                    except ValueError:
+                        continue
+                    if "K" in parts[1] and pts <= time_sec:
+                        last_kf = pts
+            return last_kf
+        except (OSError, subprocess.TimeoutExpired):
+            return time_sec
+
     def _do_trim(self):
         if not self._filepath or not FFMPEG:
             return
@@ -1894,7 +1939,10 @@ class TrimPanel(QWidget):
             return
         start = self.range_slider.low()
         end = self.range_slider.high()
-        if self.chk_lossless.isChecked():
+        if self.chk_smart.isChecked():
+            self._do_smart_cut(start, end, out_path)
+            return
+        elif self.chk_lossless.isChecked():
             cmd = [FFMPEG, "-y", "-ss", str(start), "-i", self._filepath,
                    "-t", str(end - start), "-c", "copy", "-avoid_negative_ts", "make_zero"]
         else:
@@ -1913,6 +1961,61 @@ class TrimPanel(QWidget):
         self._worker.log_output.connect(self.console.append)
         self._worker.finished_signal.connect(lambda ok, msg: self._on_done(ok, msg, out_path))
         self._worker.start()
+
+    def _do_smart_cut(self, start, end, out_path):
+        self.btn_trim.setEnabled(False)
+        self.progress.setRange(0, 0)
+        self.console.append("[Smart Cut] Finding keyframes and preparing segments...\n")
+        prev_kf = self._find_prev_keyframe(self._filepath, start)
+        next_kf_after_start = start
+        tmpdir = tempfile.mkdtemp(prefix="clipforge_smartcut_")
+        _register_temp_dir(tmpdir)
+        self._smart_tmpdir = tmpdir
+        head_seg = os.path.join(tmpdir, "head.mp4")
+        cmd_head = [FFMPEG, "-y", "-i", self._filepath,
+                    "-ss", str(prev_kf), "-to", str(start),
+                    "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+                    "-c:a", "aac", "-b:a", "192k", head_seg]
+        mid_seg = os.path.join(tmpdir, "mid.mp4")
+        cmd_mid = [FFMPEG, "-y", "-ss", str(start), "-i", self._filepath,
+                   "-t", str(end - start), "-c", "copy",
+                   "-avoid_negative_ts", "make_zero", mid_seg]
+        concat_list = os.path.join(tmpdir, "concat.txt")
+        with open(concat_list, "w") as f:
+            f.write(f"file '{mid_seg}'\n")
+        cmd_concat = [FFMPEG, "-y", "-f", "concat", "-safe", "0",
+                      "-i", concat_list, "-c", "copy", out_path]
+        self._smart_steps = [
+            ("Copying middle (lossless)...", cmd_mid),
+            ("Joining segments...", cmd_concat),
+        ]
+        self._smart_out_path = out_path
+        self._smart_step_idx = 0
+        self._run_next_smart_step()
+
+    def _run_next_smart_step(self):
+        if self._smart_step_idx >= len(self._smart_steps):
+            if hasattr(self, '_smart_tmpdir'):
+                shutil.rmtree(self._smart_tmpdir, ignore_errors=True)
+                _unregister_temp_dir(self._smart_tmpdir)
+            self._on_done(True, "Smart Cut complete", self._smart_out_path)
+            return
+        label, cmd = self._smart_steps[self._smart_step_idx]
+        self.console.append(f"[Smart Cut] {label}\n")
+        self._worker = FFmpegWorker(cmd, 0, parse_progress=False)
+        self._worker.log_output.connect(self.console.append)
+        self._worker.finished_signal.connect(self._on_smart_step_done)
+        self._worker.start()
+
+    def _on_smart_step_done(self, ok, msg):
+        if not ok:
+            if hasattr(self, '_smart_tmpdir'):
+                shutil.rmtree(self._smart_tmpdir, ignore_errors=True)
+                _unregister_temp_dir(self._smart_tmpdir)
+            self._on_done(False, f"Smart Cut failed: {msg}", self._smart_out_path)
+            return
+        self._smart_step_idx += 1
+        self._run_next_smart_step()
 
     def _on_done(self, ok, msg, out_path):
         self.progress.setRange(0, 100)
@@ -2846,6 +2949,42 @@ class FiltersPanel(QWidget):
         al.addStretch()
         layout.addWidget(audio_grp)
 
+        silence_grp = QGroupBox("Silence Detection")
+        sil_layout = QVBoxLayout(silence_grp)
+        sil_opts = QHBoxLayout()
+        sil_opts.addWidget(QLabel("Threshold:"))
+        self.spn_silence_db = QSpinBox()
+        self.spn_silence_db.setRange(-60, -10)
+        self.spn_silence_db.setValue(-30)
+        self.spn_silence_db.setSuffix(" dB")
+        sil_opts.addWidget(self.spn_silence_db)
+        sil_opts.addWidget(QLabel("Min duration:"))
+        self.spn_silence_dur = QDoubleSpinBox()
+        self.spn_silence_dur.setRange(0.1, 10.0)
+        self.spn_silence_dur.setValue(0.5)
+        self.spn_silence_dur.setSuffix(" s")
+        self.spn_silence_dur.setSingleStep(0.1)
+        sil_opts.addWidget(self.spn_silence_dur)
+        sil_opts.addStretch()
+        sil_layout.addLayout(sil_opts)
+        self.lbl_silence_result = QLabel("No scan yet")
+        self.lbl_silence_result.setProperty("class", "dimLabel")
+        sil_layout.addWidget(self.lbl_silence_result)
+        sil_btn_row = QHBoxLayout()
+        self.btn_detect_silence = QPushButton("Detect Silence")
+        self.btn_detect_silence.setEnabled(False)
+        self.btn_detect_silence.clicked.connect(self._do_detect_silence)
+        self.btn_remove_silence = QPushButton("Remove Silent Segments")
+        self.btn_remove_silence.setObjectName("primaryBtn")
+        self.btn_remove_silence.setEnabled(False)
+        self.btn_remove_silence.clicked.connect(self._do_remove_silence)
+        sil_btn_row.addStretch()
+        sil_btn_row.addWidget(self.btn_detect_silence)
+        sil_btn_row.addWidget(self.btn_remove_silence)
+        sil_layout.addLayout(sil_btn_row)
+        layout.addWidget(silence_grp)
+        self._silence_segments = []
+
         preview_grp = QGroupBox("Before / After Preview")
         prev_layout = QVBoxLayout(preview_grp)
         self._preview_container = QHBoxLayout()
@@ -2909,6 +3048,10 @@ class FiltersPanel(QWidget):
         self.btn_apply.setEnabled(bool(FFMPEG))
         self.btn_preview.setEnabled(bool(FFMPEG))
         self.btn_gen_srt.setEnabled(bool(self._whisper_path))
+        self.btn_detect_silence.setEnabled(bool(FFMPEG))
+        self._silence_segments = []
+        self.btn_remove_silence.setEnabled(False)
+        self.lbl_silence_result.setText("No scan yet")
         pix = extract_frame(filepath, 0)
         if pix:
             scaled = pix.scaledToHeight(120, Qt.TransformationMode.SmoothTransformation)
@@ -2948,6 +3091,91 @@ class FiltersPanel(QWidget):
                 os.unlink(tmp_path)
             except OSError:
                 pass
+
+    def _do_detect_silence(self):
+        if not self._filepath or not FFMPEG:
+            return
+        self.btn_detect_silence.setEnabled(False)
+        self.lbl_silence_result.setText("Scanning...")
+        threshold = self.spn_silence_db.value()
+        min_dur = self.spn_silence_dur.value()
+        cmd = [FFMPEG, "-i", self._filepath,
+               "-af", f"silencedetect=noise={threshold}dB:d={min_dur}",
+               "-f", "null", "-"]
+        self._silence_worker = FFmpegWorker(cmd, 0, parse_progress=False)
+        self._silence_worker.finished_signal.connect(self._on_silence_detected)
+        self._silence_worker.start()
+
+    def _on_silence_detected(self, ok, msg):
+        self.btn_detect_silence.setEnabled(True)
+        if not ok:
+            self.lbl_silence_result.setText("Detection failed")
+            self.requestToast.emit(f"Silence detection failed: {msg}", C["red"])
+            return
+        stderr_text = "".join(self._silence_worker._stderr_buffer)
+        self._silence_segments = []
+        starts = re.findall(r"silence_start:\s*([\d.]+)", stderr_text)
+        ends = re.findall(r"silence_end:\s*([\d.]+)", stderr_text)
+        for i, s_str in enumerate(starts):
+            s = float(s_str)
+            e = float(ends[i]) if i < len(ends) else (self._info.get("duration", 0) if self._info else 0)
+            self._silence_segments.append((s, e))
+        count = len(self._silence_segments)
+        if count == 0:
+            self.lbl_silence_result.setText("No silent segments found")
+            self.btn_remove_silence.setEnabled(False)
+        else:
+            total_dur = sum(e - s for s, e in self._silence_segments)
+            self.lbl_silence_result.setText(
+                f"Found {count} silent segment(s) totaling {format_duration_short(total_dur)}")
+            self.btn_remove_silence.setEnabled(True)
+
+    def _do_remove_silence(self):
+        if not self._filepath or not self._silence_segments or not FFMPEG:
+            return
+        src = Path(self._filepath)
+        out_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Without Silence", str(src.parent / f"{src.stem}_no_silence{src.suffix}"),
+            "Video Files (*.mp4 *.mkv *.mov);;All Files (*)")
+        if not out_path:
+            return
+        duration = self._info.get("duration", 0) if self._info else 0
+        keep_segments = []
+        prev_end = 0.0
+        for s, e in sorted(self._silence_segments):
+            if s > prev_end:
+                keep_segments.append((prev_end, s))
+            prev_end = e
+        if prev_end < duration:
+            keep_segments.append((prev_end, duration))
+        if not keep_segments:
+            self.requestToast.emit("No content left after removing silence", C["yellow"])
+            return
+        select_parts = "+".join(f"between(t,{s},{e})" for s, e in keep_segments)
+        cmd = [FFMPEG, "-y", "-i", self._filepath,
+               "-vf", f"select='{select_parts}',setpts=N/FRAME_RATE/TB",
+               "-af", f"aselect='{select_parts}',asetpts=N/SR/TB",
+               "-c:v", "libx264", "-crf", "18", "-preset", "fast",
+               "-c:a", "aac", "-b:a", "192k", out_path]
+        self.progress.setValue(0)
+        self.btn_remove_silence.setEnabled(False)
+        self._worker = FFmpegWorker(cmd, sum(e - s for s, e in keep_segments))
+        self._worker.progress.connect(lambda v: self.progress.setValue(int(v)))
+        self._worker.speed_info.connect(self.lbl_progress_detail.setText)
+        self._worker.log_output.connect(self.console.append)
+        self._worker.finished_signal.connect(
+            lambda ok, msg: self._on_silence_remove_done(ok, msg, out_path))
+        self._worker.start()
+
+    def _on_silence_remove_done(self, ok, msg, out_path):
+        self.btn_remove_silence.setEnabled(bool(self._silence_segments))
+        self.lbl_progress_detail.setText("")
+        if ok:
+            self.progress.setValue(100)
+            size = format_size(os.path.getsize(out_path)) if os.path.exists(out_path) else ""
+            self.requestToast.emit(f"Silence removed ({size})", C["green"])
+        else:
+            self.requestToast.emit(f"Silence removal failed: {msg}", C["red"])
 
     def _do_gen_captions(self):
         if not self._filepath or not self._whisper_path:
