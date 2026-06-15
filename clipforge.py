@@ -667,6 +667,19 @@ QStatusBar {{
 """
 
 # ---------------------------------------------------------------------------
+# ffprobe cache
+# ---------------------------------------------------------------------------
+
+_probe_cache = {}
+
+def _probe_cache_key(filepath):
+    try:
+        stat = os.stat(filepath)
+        return (filepath, stat.st_size, stat.st_mtime)
+    except OSError:
+        return None
+
+# ---------------------------------------------------------------------------
 # Path validation
 # ---------------------------------------------------------------------------
 
@@ -684,6 +697,9 @@ def validate_media_path(filepath):
 def probe_video(filepath):
     if not FFPROBE:
         return None
+    cache_key = _probe_cache_key(filepath)
+    if cache_key and cache_key in _probe_cache:
+        return _probe_cache[cache_key]
     try:
         cmd = [FFPROBE, "-v", "quiet", "-print_format", "json",
                "-show_format", "-show_streams", filepath]
@@ -729,6 +745,8 @@ def probe_video(filepath):
                 si["language"] = s.get("tags", {}).get("language", "")
                 si["title"] = s.get("tags", {}).get("title", "")
             info["streams"].append(si)
+        if cache_key:
+            _probe_cache[cache_key] = info
         return info
     except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError, KeyError, ValueError):
         return None
@@ -3592,6 +3610,19 @@ class BatchPanel(QWidget):
     def _start_batch(self):
         if not self._items or not FFMPEG:
             return
+        out_dir = self._out_dir or (str(Path(self._items[0]).parent) if self._items else "")
+        if out_dir:
+            try:
+                usage = shutil.disk_usage(out_dir)
+                total_input_size = sum(
+                    os.path.getsize(p) for p in self._items if os.path.exists(p))
+                estimated_needed = int(total_input_size * 1.2)
+                if usage.free < estimated_needed:
+                    self.requestToast.emit(
+                        f"Low disk space: {format_size(usage.free)} free, ~{format_size(estimated_needed)} needed",
+                        C["yellow"])
+            except OSError:
+                pass
         self._current_idx = 0
         self.btn_start.setEnabled(False)
         self.btn_cancel.setVisible(True)
