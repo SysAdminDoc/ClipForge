@@ -2753,11 +2753,20 @@ class FiltersPanel(QWidget):
         layout.addWidget(lut_grp)
         self._lut_path = None
 
-        # Audio normalization
         audio_grp = QGroupBox("Audio Normalization")
         al = QHBoxLayout(audio_grp)
-        self.chk_normalize = QCheckBox("Loudness normalize (EBU R128, -14 LUFS)")
+        self.chk_normalize = QCheckBox("Loudness normalize")
         al.addWidget(self.chk_normalize)
+        al.addWidget(QLabel("Target:"))
+        self.cmb_loudness_target = QComboBox()
+        self.cmb_loudness_target.addItems([
+            "YouTube / Streaming (-14 LUFS)",
+            "Podcast (-16 LUFS)",
+            "Broadcast (-23 LUFS)",
+            "Spotify (-14 LUFS)",
+            "Apple Music (-16 LUFS)",
+        ])
+        al.addWidget(self.cmb_loudness_target)
         al.addStretch()
         layout.addWidget(audio_grp)
 
@@ -2928,7 +2937,16 @@ class FiltersPanel(QWidget):
             escaped = self._sub_path.replace("\\", "/").replace(":", "\\\\:")
             vf.append(f"subtitles='{escaped}'")
         if self.chk_normalize.isChecked():
-            af.append("loudnorm=I=-14:TP=-1:LRA=11")
+            target_text = self.cmb_loudness_target.currentText()
+            lufs_map = {
+                "YouTube / Streaming (-14 LUFS)": -14,
+                "Podcast (-16 LUFS)": -16,
+                "Broadcast (-23 LUFS)": -23,
+                "Spotify (-14 LUFS)": -14,
+                "Apple Music (-16 LUFS)": -16,
+            }
+            lufs = lufs_map.get(target_text, -14)
+            af.append(f"loudnorm=I={lufs}:TP=-1:LRA=11")
         return vf, af
 
     def _do_apply(self):
