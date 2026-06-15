@@ -110,7 +110,7 @@ VIDEO_EXTS = (".mp4", ".mkv", ".avi", ".mov", ".webm", ".flv", ".wmv",
 AUDIO_EXTS = (".mp3", ".aac", ".wav", ".flac", ".ogg", ".m4a", ".wma", ".opus")
 SUBTITLE_EXTS = (".srt", ".ass", ".ssa", ".vtt", ".sub")
 
-C = {
+C_MOCHA = {
     "crust":    "#11111b", "mantle":   "#181825", "base":     "#1e1e2e",
     "surface0": "#313244", "surface1": "#45475a", "surface2": "#585b70",
     "overlay0": "#6c7086", "overlay1": "#7f849c", "text":     "#cdd6f4",
@@ -120,6 +120,28 @@ C = {
     "lavender": "#b4befe", "pink":     "#f5c2e7", "sky":      "#89dceb",
     "flamingo": "#f2cdcd", "rosewater":"#f5e0dc", "sapphire": "#74c7ec",
 }
+
+C_HIGH_CONTRAST = {
+    "crust":    "#000000", "mantle":   "#0a0a0a", "base":     "#1a1a1a",
+    "surface0": "#2a2a2a", "surface1": "#3a3a3a", "surface2": "#4a4a4a",
+    "overlay0": "#6a6a6a", "overlay1": "#8a8a8a", "text":     "#ffffff",
+    "subtext0": "#d0d0d0", "subtext1": "#e0e0e0", "blue":     "#5dade2",
+    "green":    "#58d68d", "red":      "#ec7063", "mauve":    "#bb8fce",
+    "peach":    "#f0b27a", "yellow":   "#f7dc6f", "teal":     "#76d7c4",
+    "lavender": "#a9cce3", "pink":     "#f5b7b1", "sky":      "#85c1e9",
+    "flamingo": "#fadbd8", "rosewater":"#fdebd0", "sapphire": "#5499c7",
+}
+
+def _load_theme():
+    try:
+        s = load_settings()
+        if s.get("high_contrast"):
+            return C_HIGH_CONTRAST
+    except (OSError, ValueError):
+        pass
+    return C_MOCHA
+
+C = _load_theme()
 
 # Built-in social media / device presets
 BUILTIN_PRESETS = {
@@ -1438,6 +1460,7 @@ class VideoPlayer(QWidget):
         self.btn_frame_back = QPushButton("<<")
         self.btn_frame_back.setProperty("class", "playerBtn")
         self.btn_frame_back.setToolTip("Previous frame")
+        self.btn_frame_back.setAccessibleName("Previous frame")
         self.btn_frame_back.setFixedWidth(36)
         self.btn_frame_back.clicked.connect(self._frame_back)
         cl.addWidget(self.btn_frame_back)
@@ -1451,6 +1474,7 @@ class VideoPlayer(QWidget):
         self.btn_frame_fwd = QPushButton(">>")
         self.btn_frame_fwd.setProperty("class", "playerBtn")
         self.btn_frame_fwd.setToolTip("Next frame")
+        self.btn_frame_fwd.setAccessibleName("Next frame")
         self.btn_frame_fwd.setFixedWidth(36)
         self.btn_frame_fwd.clicked.connect(self._frame_forward)
         cl.addWidget(self.btn_frame_fwd)
@@ -1616,6 +1640,7 @@ class FileInfoBar(QWidget):
         self.btn_open = QPushButton("Open Video")
         self.btn_open.setObjectName("primaryBtn")
         self.btn_open.setFixedWidth(120)
+        self.btn_open.setAccessibleName("Open video file")
         self.btn_open.clicked.connect(self._open_file)
 
         self.lbl_name = QLabel("No file loaded")
@@ -2685,6 +2710,26 @@ class FiltersPanel(QWidget):
         al.addStretch()
         layout.addWidget(audio_grp)
 
+        preview_grp = QGroupBox("Before / After Preview")
+        prev_layout = QVBoxLayout(preview_grp)
+        self._preview_container = QHBoxLayout()
+        self.lbl_preview_before = QLabel("Original")
+        self.lbl_preview_before.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_preview_before.setMinimumHeight(120)
+        self.lbl_preview_before.setStyleSheet(f"background: {C['crust']}; border-radius: 4px;")
+        self.lbl_preview_after = QLabel("Filtered")
+        self.lbl_preview_after.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_preview_after.setMinimumHeight(120)
+        self.lbl_preview_after.setStyleSheet(f"background: {C['crust']}; border-radius: 4px;")
+        self._preview_container.addWidget(self.lbl_preview_before)
+        self._preview_container.addWidget(self.lbl_preview_after)
+        prev_layout.addLayout(self._preview_container)
+        self.btn_preview = QPushButton("Generate Preview")
+        self.btn_preview.setEnabled(False)
+        self.btn_preview.clicked.connect(self._do_preview)
+        prev_layout.addWidget(self.btn_preview, alignment=Qt.AlignmentFlag.AlignRight)
+        layout.addWidget(preview_grp)
+
         self.progress = QProgressBar()
         layout.addWidget(self.progress)
         self.lbl_progress_detail = QLabel("")
@@ -2726,6 +2771,37 @@ class FiltersPanel(QWidget):
         self._filepath = filepath
         self._info = info
         self.btn_apply.setEnabled(bool(FFMPEG))
+        self.btn_preview.setEnabled(bool(FFMPEG))
+        pix = extract_frame(filepath, 0)
+        if pix:
+            scaled = pix.scaledToHeight(120, Qt.TransformationMode.SmoothTransformation)
+            self.lbl_preview_before.setPixmap(scaled)
+        else:
+            self.lbl_preview_before.setText("Original")
+
+    def _do_preview(self):
+        if not self._filepath or not FFMPEG:
+            return
+        vf, _ = self._build_filters()
+        if not vf:
+            self.requestToast.emit("No video filters to preview", C["yellow"])
+            return
+        try:
+            tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+            tmp.close()
+            cmd = [FFMPEG, "-y", "-i", self._filepath, "-vf", ",".join(vf),
+                   "-frames:v", "1", "-q:v", "2", tmp.name]
+            subprocess.run(cmd, capture_output=True, timeout=15,
+                           creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+            if os.path.exists(tmp.name) and os.path.getsize(tmp.name) > 0:
+                pix = QPixmap(tmp.name)
+                scaled = pix.scaledToHeight(120, Qt.TransformationMode.SmoothTransformation)
+                self.lbl_preview_after.setPixmap(scaled)
+            else:
+                self.lbl_preview_after.setText("Preview failed")
+            os.unlink(tmp.name)
+        except (OSError, subprocess.TimeoutExpired):
+            self.lbl_preview_after.setText("Preview failed")
 
     def _build_filters(self):
         vf = []
@@ -3589,6 +3665,8 @@ class MainWindow(QMainWindow):
             btn = QPushButton(f"  {name}")
             btn.setProperty("class", "navBtn")
             btn.setToolTip(tooltip)
+            btn.setAccessibleName(f"{name} panel")
+            btn.setAccessibleDescription(tooltip)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
             btn.clicked.connect(lambda checked, idx=i: self._switch_panel(idx))
             sb_layout.addWidget(btn)
