@@ -813,6 +813,18 @@ def _probe_cache_key(filepath):
 # Path validation
 # ---------------------------------------------------------------------------
 
+def _confirm_overwrite(parent, filepath):
+    if not os.path.exists(filepath):
+        return True
+    from PyQt6.QtWidgets import QMessageBox
+    result = QMessageBox.question(
+        parent, "Overwrite File?",
+        f"'{Path(filepath).name}' already exists.\n\nOverwrite it?",
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.No,
+    )
+    return result == QMessageBox.StandardButton.Yes
+
 # ---------------------------------------------------------------------------
 # Utility functions
 # ---------------------------------------------------------------------------
@@ -1954,7 +1966,7 @@ class TrimPanel(QWidget):
         out_path, _ = QFileDialog.getSaveFileName(
             self, "Save Trimmed Video", str(src.parent / f"{src.stem}_trimmed{ext}"),
             "Video Files (*.mp4 *.mkv *.mov *.webm *.avi);;All Files (*)")
-        if not out_path:
+        if not out_path or not _confirm_overwrite(self, out_path):
             return
         start = self.range_slider.low()
         end = self.range_slider.high()
@@ -2833,7 +2845,7 @@ class ConvertPanel(QWidget):
         out_path, _ = QFileDialog.getSaveFileName(
             self, "Save Converted Video", str(src.parent / f"{src.stem}_converted{ext}"),
             "Video Files (*.mp4 *.mkv *.mov *.webm *.avi *.gif);;All Files (*)")
-        if not out_path:
+        if not out_path or not _confirm_overwrite(self, out_path):
             return
 
         cmd = self._build_cmd(out_path)
@@ -2940,8 +2952,11 @@ class FiltersPanel(QWidget):
         cap_layout = QVBoxLayout(caption_grp)
         cap_row = QHBoxLayout()
         self.cmb_whisper_model = QComboBox()
-        self.cmb_whisper_model.addItems(["tiny", "base", "small", "medium", "large"])
-        self.cmb_whisper_model.setCurrentText("base")
+        self.cmb_whisper_model.addItems([
+            "tiny (~75 MB)", "base (~150 MB)", "small (~500 MB)",
+            "medium (~1.5 GB)", "large (~3 GB)",
+        ])
+        self.cmb_whisper_model.setCurrentIndex(1)
         cap_row.addWidget(QLabel("Model:"))
         cap_row.addWidget(self.cmb_whisper_model)
         self.cmb_whisper_lang = QComboBox()
@@ -3236,7 +3251,7 @@ class FiltersPanel(QWidget):
             "Subtitle Files (*.srt);;All Files (*)")
         if not out_path:
             return
-        model = self.cmb_whisper_model.currentText()
+        model = self.cmb_whisper_model.currentText().split(" (")[0]
         lang = self.cmb_whisper_lang.currentText()
         out_dir = str(Path(out_path).parent)
         cmd = [self._whisper_path, self._filepath,
@@ -3333,7 +3348,7 @@ class FiltersPanel(QWidget):
         out_path, _ = QFileDialog.getSaveFileName(
             self, "Save Filtered Video", str(src.parent / f"{src.stem}_filtered{src.suffix}"),
             "Video Files (*.mp4 *.mkv *.mov);;All Files (*)")
-        if not out_path:
+        if not out_path or not _confirm_overwrite(self, out_path):
             return
 
         duration = self._info.get("duration", 0) if self._info else 0
