@@ -55,26 +55,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 async function initFFmpeg() {
     await window.coiReady;
 
-    if (typeof SharedArrayBuffer === 'undefined') {
-        document.getElementById('loadingText').textContent = 'Refresh required';
-        document.getElementById('loadingOverlay').innerHTML = `
-            <div style="text-align: center;">
-                <div style="font-size: 48px; margin-bottom: 16px;">⚠️</div>
-                <div style="font-size: 14px; margin-bottom: 16px; color: var(--text-1);">Please refresh to initialize</div>
-                <button class="btn primary" onclick="location.reload()">Refresh Page</button>
-            </div>
-        `;
-        return;
-    }
-
     try {
-        const { FFmpeg: FFmpegClass } = FFmpeg;
-        const { fetchFile } = FFmpegUtil;
+        const FFmpegClass = FFmpeg.FFmpeg;
+        const fetchFileFn = FFmpegUtil.fetchFile;
         ffmpeg = new FFmpegClass();
-        window.ffmpegFetchFile = fetchFile;
+        window.ffmpegFetchFile = fetchFileFn;
 
         ffmpeg.on("progress", ({ progress }) => {
-            const pct = Math.round(progress * 100);
+            const pct = Math.round((progress || 0) * 100);
             document.getElementById('loadingProgress').style.width = pct + '%';
         });
         ffmpeg.on("log", ({ message }) => {
@@ -82,26 +70,30 @@ async function initFFmpeg() {
         });
 
         document.getElementById('loadingText').textContent = 'Loading FFmpeg engine...';
-        const useMT = typeof SharedArrayBuffer !== 'undefined';
-        const coreBase = useMT
-            ? 'https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@0.12.6/dist/esm'
-            : 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/esm';
+
+        const coreBase = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd';
         await ffmpeg.load({
             coreURL: `${coreBase}/ffmpeg-core.js`,
             wasmURL: `${coreBase}/ffmpeg-core.wasm`,
-            ...(useMT ? { workerURL: `${coreBase}/ffmpeg-core.worker.js` } : {}),
         });
 
         ffmpegLoaded = true;
         document.getElementById('loadingOverlay').classList.add('hidden');
         document.getElementById('statusDot').classList.add('ready');
-        document.getElementById('statusText').textContent = useMT ? 'Ready (MT)' : 'Ready';
+        document.getElementById('statusText').textContent = 'Ready';
 
         toast('success', 'ClipForge ready!');
     } catch (e) {
         console.error('FFmpeg load error:', e);
         document.getElementById('loadingText').textContent = 'Failed to load FFmpeg';
-        toast('error', 'Failed to initialize FFmpeg');
+        document.getElementById('loadingOverlay').innerHTML = `
+            <div style="text-align: center;">
+                <div style="font-size: 48px; margin-bottom: 16px;">⚠️</div>
+                <div style="font-size: 14px; margin-bottom: 16px; color: var(--text-1);">Failed to load FFmpeg engine</div>
+                <div style="font-size: 12px; margin-bottom: 16px; color: var(--text-2);">${e.message || 'Unknown error'}</div>
+                <button class="btn primary" onclick="location.reload()">Retry</button>
+            </div>
+        `;
     }
 }
 
