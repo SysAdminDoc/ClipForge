@@ -55,9 +55,30 @@ document.addEventListener('DOMContentLoaded', async () => {
 async function initFFmpeg() {
     await window.coiReady;
 
+    // Detect which globals the UMD scripts registered
+    const FFmpegLib = window.FFmpegWASM || window.FFmpeg;
+    const UtilLib = window.FFmpegUtil;
+
+    if (!FFmpegLib || !UtilLib) {
+        const missing = [];
+        if (!FFmpegLib) missing.push('@ffmpeg/ffmpeg');
+        if (!UtilLib) missing.push('@ffmpeg/util');
+        document.getElementById('loadingOverlay').innerHTML = `
+            <div style="text-align: center;">
+                <div style="font-size: 48px; margin-bottom: 16px;">⚠️</div>
+                <div style="font-size: 14px; margin-bottom: 16px; color: var(--text-1);">Failed to load: ${missing.join(', ')}</div>
+                <div style="font-size: 12px; margin-bottom: 16px; color: var(--text-2);">CDN scripts may be blocked. Check browser console.</div>
+                <button class="btn primary" onclick="location.reload()">Retry</button>
+            </div>
+        `;
+        return;
+    }
+
     try {
-        const { FFmpeg: FFmpegClass } = FFmpegWASM;
-        const { fetchFile: fetchFileFn, toBlobURL } = FFmpegUtil;
+        const FFmpegClass = FFmpegLib.FFmpeg || FFmpegLib;
+        const toBlobURL = UtilLib.toBlobURL;
+        const fetchFileFn = UtilLib.fetchFile;
+
         ffmpeg = new FFmpegClass();
         window.ffmpegFetchFile = fetchFileFn;
 
@@ -69,7 +90,7 @@ async function initFFmpeg() {
             console.log('[ffmpeg]', message);
         });
 
-        document.getElementById('loadingText').textContent = 'Downloading FFmpeg core...';
+        document.getElementById('loadingText').textContent = 'Downloading FFmpeg core (~31 MB)...';
 
         const ffmpegBase = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd';
         const coreBase = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd';
@@ -88,12 +109,13 @@ async function initFFmpeg() {
 
         toast('success', 'ClipForge ready!');
     } catch (e) {
+        const errMsg = (e && (e.message || e.toString())) || 'Unknown error';
         console.error('FFmpeg load error:', e);
         document.getElementById('loadingOverlay').innerHTML = `
             <div style="text-align: center;">
                 <div style="font-size: 48px; margin-bottom: 16px;">⚠️</div>
                 <div style="font-size: 14px; margin-bottom: 16px; color: var(--text-1);">Failed to load FFmpeg engine</div>
-                <div style="font-size: 12px; margin-bottom: 16px; color: var(--text-2);">${e.message || 'Unknown error'}</div>
+                <div style="font-size: 12px; margin-bottom: 16px; color: var(--text-2); max-width: 400px; word-break: break-word;">${escapeHtml(errMsg)}</div>
                 <button class="btn primary" onclick="location.reload()">Retry</button>
             </div>
         `;
