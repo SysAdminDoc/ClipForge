@@ -56,8 +56,8 @@ async function initFFmpeg() {
     await window.coiReady;
 
     try {
-        const FFmpegClass = FFmpeg.FFmpeg;
-        const fetchFileFn = FFmpegUtil.fetchFile;
+        const { FFmpeg: FFmpegClass } = FFmpegWASM;
+        const { fetchFile: fetchFileFn, toBlobURL } = FFmpegUtil;
         ffmpeg = new FFmpegClass();
         window.ffmpegFetchFile = fetchFileFn;
 
@@ -69,13 +69,14 @@ async function initFFmpeg() {
             console.log('[ffmpeg]', message);
         });
 
-        document.getElementById('loadingText').textContent = 'Loading FFmpeg engine...';
+        document.getElementById('loadingText').textContent = 'Downloading FFmpeg core...';
 
         const coreBase = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd';
-        await ffmpeg.load({
-            coreURL: `${coreBase}/ffmpeg-core.js`,
-            wasmURL: `${coreBase}/ffmpeg-core.wasm`,
-        });
+        const coreURL = await toBlobURL(`${coreBase}/ffmpeg-core.js`, 'text/javascript');
+        const wasmURL = await toBlobURL(`${coreBase}/ffmpeg-core.wasm`, 'application/wasm');
+
+        document.getElementById('loadingText').textContent = 'Initializing FFmpeg...';
+        await ffmpeg.load({ coreURL, wasmURL });
 
         ffmpegLoaded = true;
         document.getElementById('loadingOverlay').classList.add('hidden');
@@ -85,7 +86,6 @@ async function initFFmpeg() {
         toast('success', 'ClipForge ready!');
     } catch (e) {
         console.error('FFmpeg load error:', e);
-        document.getElementById('loadingText').textContent = 'Failed to load FFmpeg';
         document.getElementById('loadingOverlay').innerHTML = `
             <div style="text-align: center;">
                 <div style="font-size: 48px; margin-bottom: 16px;">⚠️</div>
