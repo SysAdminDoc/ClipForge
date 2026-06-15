@@ -1,10 +1,7 @@
-#!/usr/bin/env python3
-"""ClipForge Desktop - All-in-One Video Editor (thin launcher)."""
-
+"""Entry point for `python -m clipforge`."""
 import sys
 import os
 import subprocess
-
 
 def _bootstrap():
     deps = {
@@ -29,7 +26,6 @@ def _bootstrap():
         subprocess.check_call(
             pip_args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
-
 
 _bootstrap()
 
