@@ -71,12 +71,15 @@ async function initFFmpeg() {
 
         document.getElementById('loadingText').textContent = 'Downloading FFmpeg core...';
 
+        const ffmpegBase = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/umd';
         const coreBase = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd';
+
+        const classWorkerURL = await toBlobURL(`${ffmpegBase}/814.ffmpeg.js`, 'text/javascript');
         const coreURL = await toBlobURL(`${coreBase}/ffmpeg-core.js`, 'text/javascript');
         const wasmURL = await toBlobURL(`${coreBase}/ffmpeg-core.wasm`, 'application/wasm');
 
         document.getElementById('loadingText').textContent = 'Initializing FFmpeg...';
-        await ffmpeg.load({ coreURL, wasmURL });
+        await ffmpeg.load({ classWorkerURL, coreURL, wasmURL });
 
         ffmpegLoaded = true;
         document.getElementById('loadingOverlay').classList.add('hidden');
