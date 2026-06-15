@@ -2690,6 +2690,39 @@ class FiltersPanel(QWidget):
         layout.addWidget(sub_grp)
         self._sub_path = None
 
+        caption_grp = QGroupBox("Auto-Caption (Whisper)")
+        cap_layout = QVBoxLayout(caption_grp)
+        cap_row = QHBoxLayout()
+        self.cmb_whisper_model = QComboBox()
+        self.cmb_whisper_model.addItems(["tiny", "base", "small", "medium", "large"])
+        self.cmb_whisper_model.setCurrentText("base")
+        cap_row.addWidget(QLabel("Model:"))
+        cap_row.addWidget(self.cmb_whisper_model)
+        self.cmb_whisper_lang = QComboBox()
+        self.cmb_whisper_lang.addItems(["auto", "en", "es", "fr", "de", "ja", "ko", "zh", "pt", "it", "ru"])
+        cap_row.addWidget(QLabel("Language:"))
+        cap_row.addWidget(self.cmb_whisper_lang)
+        cap_row.addStretch()
+        cap_layout.addLayout(cap_row)
+        cap_btn_row = QHBoxLayout()
+        self.btn_gen_srt = QPushButton("Generate .srt")
+        self.btn_gen_srt.setObjectName("primaryBtn")
+        self.btn_gen_srt.setEnabled(False)
+        self.btn_gen_srt.clicked.connect(self._do_gen_captions)
+        self.lbl_whisper_status = QLabel("")
+        self.lbl_whisper_status.setProperty("class", "dimLabel")
+        cap_btn_row.addWidget(self.lbl_whisper_status, 1)
+        cap_btn_row.addWidget(self.btn_gen_srt)
+        cap_layout.addLayout(cap_btn_row)
+        layout.addWidget(caption_grp)
+        self._whisper_path = shutil.which("whisper")
+        if self._whisper_path:
+            self.lbl_whisper_status.setText("Whisper: Found")
+            self.lbl_whisper_status.setStyleSheet(f"color: {C['green']};")
+        else:
+            self.lbl_whisper_status.setText("Whisper: Not found (pip install openai-whisper)")
+            self.lbl_whisper_status.setStyleSheet(f"color: {C['yellow']};")
+
         # LUT
         lut_grp = QGroupBox("LUT Color Grading")
         ll = QHBoxLayout(lut_grp)
@@ -2772,6 +2805,7 @@ class FiltersPanel(QWidget):
         self._info = info
         self.btn_apply.setEnabled(bool(FFMPEG))
         self.btn_preview.setEnabled(bool(FFMPEG))
+        self.btn_gen_srt.setEnabled(bool(self._whisper_path))
         pix = extract_frame(filepath, 0)
         if pix:
             scaled = pix.scaledToHeight(120, Qt.TransformationMode.SmoothTransformation)
@@ -2802,6 +2836,45 @@ class FiltersPanel(QWidget):
             os.unlink(tmp.name)
         except (OSError, subprocess.TimeoutExpired):
             self.lbl_preview_after.setText("Preview failed")
+
+    def _do_gen_captions(self):
+        if not self._filepath or not self._whisper_path:
+            self.requestToast.emit("Whisper not available", C["yellow"])
+            return
+        src = Path(self._filepath)
+        out_path, _ = QFileDialog.getSaveFileName(
+            self, "Save Subtitles", str(src.parent / f"{src.stem}.srt"),
+            "Subtitle Files (*.srt);;All Files (*)")
+        if not out_path:
+            return
+        model = self.cmb_whisper_model.currentText()
+        lang = self.cmb_whisper_lang.currentText()
+        out_dir = str(Path(out_path).parent)
+        cmd = [self._whisper_path, self._filepath,
+               "--model", model, "--output_format", "srt",
+               "--output_dir", out_dir]
+        if lang != "auto":
+            cmd += ["--language", lang]
+        self.console.append(f"[Auto-Caption] Generating subtitles with Whisper ({model})...\n")
+        self.btn_gen_srt.setEnabled(False)
+        self.progress.setValue(0)
+        self.progress.setRange(0, 0)
+        self._worker = FFmpegWorker(cmd, 0)
+        self._worker.log_output.connect(self.console.append)
+        self._worker.finished_signal.connect(
+            lambda ok, msg: self._on_caption_done(ok, msg, out_path))
+        self._worker.start()
+
+    def _on_caption_done(self, ok, msg, out_path):
+        self.progress.setRange(0, 100)
+        self.btn_gen_srt.setEnabled(True)
+        if ok:
+            self.progress.setValue(100)
+            self.requestToast.emit("Subtitles generated", C["green"])
+            self._sub_path = out_path
+            self.lbl_sub_file.setText(Path(out_path).name)
+        else:
+            self.requestToast.emit(f"Caption generation failed: {msg}", C["red"])
 
     def _build_filters(self):
         vf = []
