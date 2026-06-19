@@ -9,7 +9,7 @@ from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QGroupBox, QCheckBox, QComboBox, QProgressBar, QFileDialog,
+    QGroupBox, QCheckBox, QComboBox, QSpinBox, QProgressBar, QFileDialog,
 )
 from PyQt6.QtCore import pyqtSignal
 
@@ -89,6 +89,30 @@ class TrimPanel(QWidget):
         ol.addLayout(fmt_row)
         layout.addWidget(opts)
 
+        # Split / subclip extraction
+        split_grp = QGroupBox("Split / Subclip Extraction")
+        spl = QVBoxLayout(split_grp)
+        split_row = QHBoxLayout()
+        split_row.addWidget(QLabel("Split every:"))
+        self.spn_split_interval = QSpinBox()
+        self.spn_split_interval.setRange(1, 3600)
+        self.spn_split_interval.setValue(30)
+        split_row.addWidget(self.spn_split_interval)
+        self.cmb_split_unit = QComboBox()
+        self.cmb_split_unit.addItems(["seconds", "minutes"])
+        split_row.addWidget(self.cmb_split_unit)
+        split_row.addStretch()
+        self.btn_split = QPushButton("Split Video")
+        self.btn_split.setObjectName("primaryBtn")
+        self.btn_split.setEnabled(False)
+        self.btn_split.clicked.connect(self._do_split)
+        split_row.addWidget(self.btn_split)
+        spl.addLayout(split_row)
+        self.lbl_split_info = QLabel("")
+        self.lbl_split_info.setProperty("class", "dimLabel")
+        spl.addWidget(self.lbl_split_info)
+        layout.addWidget(split_grp)
+
         self.progress = QProgressBar()
         layout.addWidget(self.progress)
         self.lbl_progress_detail = QLabel("")
@@ -111,7 +135,9 @@ class TrimPanel(QWidget):
     def load_file(self, filepath, info):
         self._filepath = filepath
         self._info = info
-        self.btn_trim.setEnabled(bool(FFMPEG))
+        has_ffmpeg = bool(FFMPEG)
+        self.btn_trim.setEnabled(has_ffmpeg)
+        self.btn_split.setEnabled(has_ffmpeg)
         duration = info.get("duration", 0) if info else 0
         self.range_slider._max = duration
         self.range_slider.set_range(0, duration)
@@ -291,3 +317,70 @@ class TrimPanel(QWidget):
         else:
             self.console.append(f"\n[ERROR] {msg}\n")
             self.requestToast.emit(f"Trim failed: {msg}", C["red"])
+
+    # ------------------------------------------------------------------
+    # Split / Subclip extraction
+    # ------------------------------------------------------------------
+
+    def _do_split(self):
+        """Split video into segments of equal duration."""
+        if not self._filepath or not FFMPEG or not self._info:
+            return
+        duration = self._info.get("duration", 0)
+        if duration <= 0:
+            self.requestToast.emit("Cannot split: unknown duration", C["red"])
+            return
+        interval = self.spn_split_interval.value()
+        if self.cmb_split_unit.currentText() == "minutes":
+            interval *= 60
+        if interval >= duration:
+            self.requestToast.emit("Interval is longer than the video", C["yellow"])
+            return
+        # Ask for output directory
+        out_dir = QFileDialog.getExistingDirectory(
+            self, "Select Output Directory for Segments",
+            str(Path(self._filepath).parent))
+        if not out_dir:
+            return
+        src = Path(self._filepath)
+        num_segments = int(duration / interval) + (1 if duration % interval > 0 else 0)
+        self.lbl_split_info.setText(f"Splitting into ~{num_segments} segments...")
+        self.btn_split.setEnabled(False)
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self._split_segments = []
+        for i in range(num_segments):
+            start = i * interval
+            seg_path = os.path.join(out_dir, f"{src.stem}_part{i+1:03d}{src.suffix}")
+            self._split_segments.append((start, interval, seg_path))
+        self._split_idx = 0
+        self._split_out_dir = out_dir
+        self._process_next_split()
+
+    def _process_next_split(self):
+        if self._split_idx >= len(self._split_segments):
+            self.btn_split.setEnabled(True)
+            self.progress.setValue(100)
+            total = len(self._split_segments)
+            self.lbl_split_info.setText(f"Split complete: {total} segments")
+            self.requestToast.emit(f"Split complete: {total} segments", C["green"])
+            return
+        start, seg_dur, out_path = self._split_segments[self._split_idx]
+        self.lbl_split_info.setText(
+            f"Segment {self._split_idx + 1}/{len(self._split_segments)}")
+        cmd = [FFMPEG, "-y", "-ss", str(start), "-i", self._filepath,
+               "-t", str(seg_dur), "-c", "copy",
+               "-avoid_negative_ts", "make_zero", out_path]
+        self._worker = FFmpegWorker(cmd, 0, parse_progress=False)
+        self._worker.log_output.connect(self.console.append)
+        self._worker.finished_signal.connect(self._on_split_segment_done)
+        self._worker.start()
+
+    def _on_split_segment_done(self, ok, msg):
+        total = len(self._split_segments)
+        self._split_idx += 1
+        pct = int(self._split_idx / total * 100)
+        self.progress.setValue(pct)
+        if not ok:
+            self.console.append(f"[WARN] Segment {self._split_idx} failed: {msg}\n")
+        self._process_next_split()
