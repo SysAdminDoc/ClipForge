@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QStackedWidget, QTextEdit, QSplitter,
     QListWidget, QListWidgetItem, QScrollArea, QStatusBar,
+    QComboBox,
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QPalette, QDragEnterEvent, QDropEvent
@@ -148,12 +149,55 @@ class MainWindow(QMainWindow):
         self.player = VideoPlayer()
         top_splitter.addWidget(self.player)
 
-        # Panel stack
+        # Panel stack — Console with log filtering
+        console_container = QWidget()
+        console_vl = QVBoxLayout(console_container)
+        console_vl.setContentsMargins(0, 0, 0, 0)
+        console_vl.setSpacing(2)
+
+        console_toolbar = QHBoxLayout()
+        console_toolbar.setContentsMargins(4, 2, 4, 0)
+        console_toolbar.setSpacing(6)
+        lbl_log = QLabel("Console")
+        lbl_log.setProperty("class", "dimLabel")
+        console_toolbar.addWidget(lbl_log)
+        self.cmb_log_filter = QComboBox()
+        self.cmb_log_filter.addItems(["All", "Info", "Warning", "Error"])
+        self.cmb_log_filter.setFixedWidth(90)
+        self.cmb_log_filter.setToolTip("Filter log messages by level")
+        self.cmb_log_filter.currentTextChanged.connect(self._filter_console)
+        console_toolbar.addWidget(self.cmb_log_filter)
+        console_toolbar.addStretch()
+        btn_copy_log_md = QPushButton("Copy as Markdown")
+        btn_copy_log_md.setToolTip("Copy console output formatted as Markdown (for bug reports)")
+        btn_copy_log_md.clicked.connect(self._copy_log_as_markdown)
+        btn_copy_log_md.setFixedHeight(24)
+        console_toolbar.addWidget(btn_copy_log_md)
+        btn_clear_log = QPushButton("Clear")
+        btn_clear_log.setToolTip("Clear console output")
+        btn_clear_log.clicked.connect(lambda: (self.console.clear(), self._console_lines.clear()))
+        btn_clear_log.setFixedHeight(24)
+        console_toolbar.addWidget(btn_clear_log)
+        console_vl.addLayout(console_toolbar)
+
         self.console = QTextEdit()
         self.console.setObjectName("console")
         self.console.setReadOnly(True)
         self.console.setMaximumHeight(150)
         self.console.setPlaceholderText("FFmpeg output will appear here")
+        console_vl.addWidget(self.console)
+
+        # Store raw lines for filtering
+        self._console_lines = []
+        self._original_console_append = self.console.append
+
+        def _tracked_append(text):
+            self._console_lines.append(text)
+            level_filter = self.cmb_log_filter.currentText()
+            if level_filter == "All" or self._line_matches_filter(text, level_filter):
+                self._original_console_append(text)
+
+        self.console.append = _tracked_append
 
         self.stack = QStackedWidget()
         self.trim_panel = TrimPanel(self.console, self.player)
@@ -179,7 +223,7 @@ class MainWindow(QMainWindow):
         top_splitter.setStretchFactor(1, 3)
 
         main_splitter.addWidget(top_splitter)
-        main_splitter.addWidget(self.console)
+        main_splitter.addWidget(console_container)
         main_splitter.setStretchFactor(0, 4)
         main_splitter.setStretchFactor(1, 1)
 
@@ -202,6 +246,36 @@ class MainWindow(QMainWindow):
 
         # Default to Trim panel
         self._switch_panel(0)
+
+    @staticmethod
+    def _line_matches_filter(text, level_filter):
+        """Check if a log line matches the selected filter level."""
+        text_lower = text.lower()
+        if level_filter == "Error":
+            return "[error]" in text_lower or "error" in text_lower or "failed" in text_lower
+        elif level_filter == "Warning":
+            return ("[warn" in text_lower or "warning" in text_lower
+                    or "[error]" in text_lower or "error" in text_lower or "failed" in text_lower)
+        elif level_filter == "Info":
+            return True  # info shows everything except pure ffmpeg progress noise
+        return True
+
+    def _filter_console(self, level):
+        """Re-render console with only lines matching the selected level."""
+        self.console.blockSignals(True)
+        self._original_console_append("")  # dummy to avoid issues
+        self.console.clear()
+        for line in self._console_lines:
+            if level == "All" or self._line_matches_filter(line, level):
+                self._original_console_append(line)
+        self.console.blockSignals(False)
+
+    def _copy_log_as_markdown(self):
+        """Copy console output formatted as Markdown code block."""
+        text = "\n".join(self._console_lines) if self._console_lines else self.console.toPlainText()
+        md = f"```\n{text}\n```"
+        QApplication.clipboard().setText(md)
+        self.toast.show_message("Log copied as Markdown")
 
     def _switch_panel(self, idx):
         self.stack.setCurrentIndex(idx)

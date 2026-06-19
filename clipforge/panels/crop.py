@@ -70,11 +70,15 @@ class CropPanel(QWidget):
         self.lbl_progress_detail.setObjectName("progressDetail")
         layout.addWidget(self.lbl_progress_detail)
         btn_row = QHBoxLayout()
+        self.btn_reset_defaults = QPushButton("Reset to Defaults")
+        self.btn_reset_defaults.setToolTip("Reset crop region and rotation to defaults")
+        self.btn_reset_defaults.clicked.connect(self._reset_to_defaults)
+        btn_row.addWidget(self.btn_reset_defaults)
+        btn_row.addStretch()
         self.btn_crop = QPushButton("Crop / Transform Video")
         self.btn_crop.setObjectName("primaryBtn")
         self.btn_crop.setEnabled(False)
         self.btn_crop.clicked.connect(self._do_crop)
-        btn_row.addStretch()
         btn_row.addWidget(self.btn_crop)
         layout.addLayout(btn_row)
         layout.addStretch()
@@ -94,6 +98,21 @@ class CropPanel(QWidget):
         pix = extract_frame(filepath, 0)
         if pix:
             self.crop_view.set_image(pix)
+
+    def _reset_to_defaults(self):
+        """Reset crop and rotation to defaults."""
+        if self._info:
+            w = self._info.get("width", 0)
+            h = self._info.get("height", 0)
+            self.spn_x.setValue(0)
+            self.spn_y.setValue(0)
+            self.spn_w.setValue(w)
+            self.spn_h.setValue(h)
+        self.cmb_rotate.setCurrentText("No Rotation")
+        self.cmb_aspect.setCurrentText("Free")
+        self.chk_hflip.setChecked(False)
+        self.chk_vflip.setChecked(False)
+        self.requestToast.emit("Crop settings reset to defaults", C["blue"])
 
     def _on_spin_changed(self):
         self.crop_view.set_crop_rect(self.spn_x.value(), self.spn_y.value(),

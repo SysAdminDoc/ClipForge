@@ -14,7 +14,7 @@ from PyQt6.QtCore import pyqtSignal
 from clipforge_utils import format_size, estimate_output_size
 
 from ..constants import C, BUILTIN_PRESETS
-from ..settings import load_user_presets, save_user_preset, delete_user_preset
+from ..settings import load_user_presets, save_user_preset, delete_user_preset, export_presets, import_presets
 from ..tools import FFMPEG, HW_ENCODERS, _confirm_overwrite
 from ..workers import FFmpegWorker
 
@@ -49,6 +49,14 @@ class ConvertPanel(QWidget):
         self.btn_del_preset = QPushButton("Delete")
         self.btn_del_preset.clicked.connect(self._delete_preset)
         pl.addWidget(self.btn_del_preset)
+        self.btn_export_preset = QPushButton("Export...")
+        self.btn_export_preset.setToolTip("Export presets to a JSON file for sharing")
+        self.btn_export_preset.clicked.connect(self._export_presets)
+        pl.addWidget(self.btn_export_preset)
+        self.btn_import_preset = QPushButton("Import...")
+        self.btn_import_preset.setToolTip("Import presets from a JSON file")
+        self.btn_import_preset.clicked.connect(self._import_presets)
+        pl.addWidget(self.btn_import_preset)
         layout.addWidget(preset_grp)
 
         fmt_grp = QGroupBox("Output Format")
@@ -158,11 +166,15 @@ class ConvertPanel(QWidget):
         self.lbl_progress_detail.setObjectName("progressDetail")
         layout.addWidget(self.lbl_progress_detail)
         btn_row = QHBoxLayout()
+        self.btn_reset_defaults = QPushButton("Reset to Defaults")
+        self.btn_reset_defaults.setToolTip("Reset all conversion settings to their defaults")
+        self.btn_reset_defaults.clicked.connect(self._reset_to_defaults)
+        btn_row.addWidget(self.btn_reset_defaults)
+        btn_row.addStretch()
         self.btn_convert = QPushButton("Convert Video")
         self.btn_convert.setObjectName("primaryBtn")
         self.btn_convert.setEnabled(False)
         self.btn_convert.clicked.connect(self._do_convert)
-        btn_row.addStretch()
         btn_row.addWidget(self.btn_convert)
         layout.addLayout(btn_row)
         layout.addStretch()
@@ -229,6 +241,36 @@ class ConvertPanel(QWidget):
         else:
             self.requestToast.emit("Failed to save preset", C["red"])
 
+    def _export_presets(self):
+        """Export all user presets (or selected) to a JSON file."""
+        user = load_user_presets()
+        if not user:
+            self.requestToast.emit("No custom presets to export", C["yellow"])
+            return
+        out_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Presets", str(Path.home() / "clipforge_presets.json"),
+            "JSON Files (*.json);;All Files (*)")
+        if not out_path:
+            return
+        if export_presets(list(user.keys()), out_path):
+            self.requestToast.emit(f"Exported {len(user)} preset(s)", C["green"])
+        else:
+            self.requestToast.emit("Export failed", C["red"])
+
+    def _import_presets(self):
+        """Import presets from a JSON file."""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Presets", str(Path.home()),
+            "JSON Files (*.json);;All Files (*)")
+        if not path:
+            return
+        imported = import_presets(path)
+        if imported:
+            self._refresh_presets()
+            self.requestToast.emit(f"Imported {len(imported)} preset(s)", C["green"])
+        else:
+            self.requestToast.emit("No valid presets found in file", C["yellow"])
+
     def _delete_preset(self):
         text = self.cmb_preset_select.currentText()
         if text.startswith("[Custom] "):
@@ -236,6 +278,20 @@ class ConvertPanel(QWidget):
             delete_user_preset(name)
             self._refresh_presets()
             self.requestToast.emit(f"Preset '{name}' deleted", C["yellow"])
+
+    def _reset_to_defaults(self):
+        """Reset all conversion settings to defaults."""
+        self.cmb_container.setCurrentText("MP4")
+        self.cmb_vcodec.setCurrentText("H.264 (libx264)")
+        self.cmb_acodec.setCurrentText("AAC")
+        self.spn_crf.setValue(18)
+        self.cmb_enc_preset.setCurrentText("medium")
+        self.cmb_resolution.setCurrentText("Original")
+        self.cmb_fps.setCurrentText("Original")
+        self.spn_speed.setValue(1.0)
+        self.chk_two_pass.setChecked(False)
+        self.cmb_preset_select.setCurrentIndex(0)
+        self.requestToast.emit("Settings reset to defaults", C["blue"])
 
     def _on_container_changed(self, container):
         if container == "WebM":

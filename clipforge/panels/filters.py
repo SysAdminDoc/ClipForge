@@ -225,14 +225,40 @@ class FiltersPanel(QWidget):
         layout.addWidget(self.lbl_progress_detail)
 
         btn_row = QHBoxLayout()
+        self.btn_reset_defaults = QPushButton("Reset to Defaults")
+        self.btn_reset_defaults.setToolTip("Reset all filter settings to defaults")
+        self.btn_reset_defaults.clicked.connect(self._reset_to_defaults)
+        btn_row.addWidget(self.btn_reset_defaults)
+        btn_row.addStretch()
         self.btn_apply = QPushButton("Apply Filters")
         self.btn_apply.setObjectName("primaryBtn")
         self.btn_apply.setEnabled(False)
         self.btn_apply.clicked.connect(self._do_apply)
-        btn_row.addStretch()
         btn_row.addWidget(self.btn_apply)
         layout.addLayout(btn_row)
         layout.addStretch()
+
+    def _reset_to_defaults(self):
+        """Reset all filter settings to defaults."""
+        self._reset_sliders()
+        self.chk_stabilize.setChecked(False)
+        self.chk_denoise.setChecked(False)
+        self.chk_sharpen.setChecked(False)
+        self.chk_deinterlace.setChecked(False)
+        self.chk_normalize.setChecked(False)
+        self._sub_path = None
+        self.lbl_sub_file.setText("No subtitle selected")
+        self._lut_path = None
+        self.lbl_lut_file.setText("No LUT selected")
+        self.spn_silence_db.setValue(-30)
+        self.spn_silence_dur.setValue(0.5)
+        self._silence_segments = []
+        self.btn_remove_silence.setEnabled(False)
+        self.lbl_silence_result.setText("No scan yet")
+        self.cmb_loudness_target.setCurrentIndex(0)
+        self.lbl_preview_after.setText("Filtered")
+        self.lbl_preview_after.setPixmap(QPixmap())
+        self.requestToast.emit("Filter settings reset to defaults", C["blue"])
 
     def _reset_sliders(self):
         defaults = {"brightness": 0, "contrast": 0, "saturation": 100, "hue": 0, "gamma": 100}

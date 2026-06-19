@@ -86,6 +86,14 @@ class AudioPanel(QWidget):
         rm_l.addWidget(self.btn_remove)
         layout.addWidget(rem_grp)
 
+        btn_row = QHBoxLayout()
+        self.btn_reset_defaults = QPushButton("Reset to Defaults")
+        self.btn_reset_defaults.setToolTip("Reset audio panel to defaults")
+        self.btn_reset_defaults.clicked.connect(self._reset_to_defaults)
+        btn_row.addWidget(self.btn_reset_defaults)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
         self.progress = QProgressBar()
         layout.addWidget(self.progress)
         layout.addStretch()
@@ -110,6 +118,15 @@ class AudioPanel(QWidget):
                 self.lbl_audio_info.setText("No audio stream detected")
         else:
             self.lbl_audio_info.setText("Could not read metadata")
+
+    def _reset_to_defaults(self):
+        """Reset audio panel to defaults."""
+        self.cmb_extract_fmt.setCurrentIndex(0)
+        self._replace_audio_path = None
+        self.lbl_replace_file.setText("No replacement audio selected")
+        self.btn_replace.setEnabled(False)
+        self.chk_keep_original.setChecked(False)
+        self.requestToast.emit("Audio settings reset to defaults", C["blue"])
 
     def _browse_audio(self):
         path, _ = QFileDialog.getOpenFileName(

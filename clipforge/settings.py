@@ -66,6 +66,46 @@ def delete_user_preset(name):
         pass
 
 
+def export_presets(names, filepath):
+    """Export selected presets to a single JSON file."""
+    try:
+        user = load_user_presets()
+        from .constants import BUILTIN_PRESETS
+        bundle = {}
+        for name in names:
+            if name in user:
+                bundle[name] = user[name]
+            elif name in BUILTIN_PRESETS:
+                bundle[name] = BUILTIN_PRESETS[name]
+        if not bundle:
+            return False
+        import json as _json
+        from pathlib import Path as _Path
+        _Path(filepath).write_text(_json.dumps(bundle, indent=2))
+        return True
+    except OSError:
+        return False
+
+
+def import_presets(filepath):
+    """Import presets from a JSON file. Returns list of imported names."""
+    try:
+        import json as _json
+        from pathlib import Path as _Path
+        data = _json.loads(_Path(filepath).read_text())
+        if not isinstance(data, dict):
+            return []
+        imported = []
+        for name, preset_data in data.items():
+            if isinstance(preset_data, dict):
+                saved = save_user_preset(name, preset_data)
+                if saved:
+                    imported.append(saved)
+        return imported
+    except (OSError, json.JSONDecodeError, ValueError):
+        return []
+
+
 # ---------------------------------------------------------------------------
 # Recent files
 # ---------------------------------------------------------------------------

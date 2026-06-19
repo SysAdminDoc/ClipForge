@@ -95,11 +95,15 @@ class TrimPanel(QWidget):
         self.lbl_progress_detail.setObjectName("progressDetail")
         layout.addWidget(self.lbl_progress_detail)
         btn_row = QHBoxLayout()
+        self.btn_reset_defaults = QPushButton("Reset to Defaults")
+        self.btn_reset_defaults.setToolTip("Reset trim range and mode to defaults")
+        self.btn_reset_defaults.clicked.connect(self._reset_to_defaults)
+        btn_row.addWidget(self.btn_reset_defaults)
+        btn_row.addStretch()
         self.btn_trim = QPushButton("Trim Video")
         self.btn_trim.setObjectName("primaryBtn")
         self.btn_trim.setEnabled(False)
         self.btn_trim.clicked.connect(self._do_trim)
-        btn_row.addStretch()
         btn_row.addWidget(self.btn_trim)
         layout.addLayout(btn_row)
         layout.addStretch()
@@ -124,6 +128,15 @@ class TrimPanel(QWidget):
     def _set_out_from_player(self):
         pos = self.player.get_position_sec()
         self.range_slider.set_range(self.range_slider.low(), pos)
+
+    def _reset_to_defaults(self):
+        """Reset trim settings to defaults."""
+        if self._info:
+            duration = self._info.get("duration", 0)
+            self.range_slider.set_range(0, duration)
+        self.chk_lossless.setChecked(True)
+        self.cmb_format.setCurrentText("Same as source")
+        self.requestToast.emit("Trim settings reset to defaults", C["blue"])
 
     def _on_mode_changed(self, checked):
         sender = self.sender()
