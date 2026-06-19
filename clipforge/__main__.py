@@ -2,6 +2,8 @@
 import sys
 import os
 import subprocess
+from multiprocessing import freeze_support
+
 
 def _bootstrap():
     deps = {
@@ -26,6 +28,10 @@ def _bootstrap():
         subprocess.check_call(
             pip_args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
+
+
+if __name__ == "__main__":
+    freeze_support()
 
 _bootstrap()
 

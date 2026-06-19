@@ -302,7 +302,8 @@ class ConvertPanel(QWidget):
 
     def _on_vcodec_changed(self, vcodec_text):
         is_av1 = "AV1" in vcodec_text or "svtav1" in vcodec_text.lower()
-        max_crf = 63 if is_av1 else 51
+        is_vp9 = "VP9" in vcodec_text
+        max_crf = 63 if (is_av1 or is_vp9) else 51
         if self.spn_crf.maximum() != max_crf:
             self.spn_crf.setRange(0, max_crf)
         self._update_estimate()
@@ -332,11 +333,17 @@ class ConvertPanel(QWidget):
         est = estimate_output_size(dur, crf, w, h)
         vcodec_text = self.cmb_vcodec.currentText()
         is_av1 = "AV1" in vcodec_text or "svtav1" in vcodec_text.lower()
+        is_vp9 = "VP9" in vcodec_text
         if is_av1:
             quality_labels = {range(0, 10): "Lossless / near-lossless",
                               range(10, 20): "Very high quality", range(20, 28): "High quality",
                               range(28, 35): "Good quality (recommended)", range(35, 45): "Medium quality",
                               range(45, 56): "Low quality", range(56, 64): "Very low quality"}
+        elif is_vp9:
+            quality_labels = {range(0, 5): "Lossless", range(5, 15): "High quality",
+                              range(15, 25): "Visually lossless", range(25, 35): "Good quality",
+                              range(35, 45): "Medium quality", range(45, 56): "Low quality",
+                              range(56, 64): "Very low quality"}
         else:
             quality_labels = {range(0, 5): "Lossless", range(5, 15): "High quality",
                               range(15, 21): "Visually lossless", range(21, 28): "Good quality",
@@ -347,6 +354,13 @@ class ConvertPanel(QWidget):
             if crf in r:
                 hint = label
                 break
+        # Show CRF/CQ equivalence across codecs
+        if is_av1:
+            equiv_h264 = max(0, int(crf * 51 / 63))
+            hint += f"  (~ H.264 CRF {equiv_h264})"
+        elif is_vp9:
+            equiv_h264 = max(0, int(crf * 51 / 63))
+            hint += f"  (~ H.264 CRF {equiv_h264})"
         self.lbl_quality_hint.setText(hint)
         self.lbl_estimate.setText(f"Estimated output: ~{format_size(est)}")
 
@@ -355,7 +369,6 @@ class ConvertPanel(QWidget):
         if not self._filepath or not FFMPEG:
             return []
         target = out_path or "<output>"
-        cmd = [FFMPEG, "-y", "-i", self._filepath]
         vcodec_map = {
             "H.264 (libx264)": "libx264", "H.265 (libx265)": "libx265",
             "VP9": "libvpx-vp9", "AV1 (libaom)": "libaom-av1",
@@ -368,6 +381,17 @@ class ConvertPanel(QWidget):
         vcodec_text = self.cmb_vcodec.currentText()
         vcodec = vcodec_map.get(vcodec_text, "libx264")
         container = self.cmb_container.currentText()
+
+        # Build command with optional hardware decode
+        cmd = [FFMPEG, "-y"]
+        # Add hardware decode acceleration when a matching HW encoder is selected
+        if "nvenc" in vcodec:
+            cmd += ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
+        elif "qsv" in vcodec:
+            cmd += ["-hwaccel", "qsv"]
+        elif "amf" in vcodec:
+            cmd += ["-hwaccel", "d3d11va"]
+        cmd += ["-i", self._filepath]
 
         if container == "GIF":
             filters = "fps=15,scale=480:-1:flags=lanczos"
@@ -506,17 +530,95 @@ class ConvertPanel(QWidget):
         if not out_path or not _confirm_overwrite(self, out_path):
             return
 
-        cmd = self._build_cmd(out_path)
-
         duration = self._info.get("duration", 0) if self._info else 0
         self.progress.setValue(0)
         self.btn_convert.setEnabled(False)
-        self._worker = FFmpegWorker(cmd, duration)
-        self._worker.progress.connect(lambda v: self.progress.setValue(int(v)))
+
+        if self.chk_two_pass.isChecked() and container != "GIF":
+            self._do_two_pass(out_path, duration)
+        else:
+            cmd = self._build_cmd(out_path)
+            self._worker = FFmpegWorker(cmd, duration)
+            self._worker.progress.connect(lambda v: self.progress.setValue(int(v)))
+            self._worker.speed_info.connect(self.lbl_progress_detail.setText)
+            self._worker.log_output.connect(self.console.append)
+            self._worker.finished_signal.connect(lambda ok, msg: self._on_done(ok, msg, out_path))
+            self._worker.start()
+
+    def _do_two_pass(self, out_path, duration):
+        """Execute two-pass encoding for higher quality."""
+        import tempfile
+        passlog = os.path.join(tempfile.gettempdir(), "clipforge_2pass")
+        self._two_pass_log = passlog
+
+        # Build the base command but split into pass1 and pass2
+        cmd_base = self._build_cmd(out_path)
+        if not cmd_base:
+            self.btn_convert.setEnabled(True)
+            return
+
+        # Find the output and codec parts to construct pass commands
+        vcodec_text = self.cmb_vcodec.currentText()
+        vcodec_map = {
+            "H.264 (libx264)": "libx264", "H.265 (libx265)": "libx265",
+            "VP9": "libvpx-vp9", "AV1 (libaom)": "libaom-av1",
+            "SVT-AV1 (libsvtav1)": "libsvtav1", "Copy (no re-encode)": "copy",
+        }
+        for label, enc_name in HW_ENCODERS.items():
+            vcodec_map[label] = enc_name
+        vcodec = vcodec_map.get(vcodec_text, "libx264")
+
+        # Pass 1: analyze
+        cmd1 = cmd_base[:-1]  # remove output path
+        cmd1 += ["-pass", "1", "-passlogfile", passlog, "-an", "-f", "null"]
+        if sys.platform == "win32":
+            cmd1.append("NUL")
+        else:
+            cmd1.append("/dev/null")
+
+        self.console.append("[Two-Pass] Pass 1: Analyzing...\n")
+        self._two_pass_out = out_path
+        self._two_pass_duration = duration
+        self._two_pass_cmd_base = cmd_base
+        self._worker = FFmpegWorker(cmd1, duration)
+        self._worker.progress.connect(lambda v: self.progress.setValue(int(v * 0.5)))
         self._worker.speed_info.connect(self.lbl_progress_detail.setText)
         self._worker.log_output.connect(self.console.append)
-        self._worker.finished_signal.connect(lambda ok, msg: self._on_done(ok, msg, out_path))
+        self._worker.finished_signal.connect(self._on_two_pass_1_done)
         self._worker.start()
+
+    def _on_two_pass_1_done(self, ok, msg):
+        if not ok:
+            self._on_done(False, f"Two-pass analysis failed: {msg}", self._two_pass_out)
+            self._cleanup_passlog()
+            return
+        # Pass 2: encode
+        cmd2 = self._two_pass_cmd_base[:-1]  # remove output
+        cmd2 += ["-pass", "2", "-passlogfile", self._two_pass_log]
+        cmd2.append(self._two_pass_out)
+
+        self.console.append("[Two-Pass] Pass 2: Encoding...\n")
+        self._worker = FFmpegWorker(cmd2, self._two_pass_duration)
+        self._worker.progress.connect(lambda v: self.progress.setValue(50 + int(v * 0.5)))
+        self._worker.speed_info.connect(self.lbl_progress_detail.setText)
+        self._worker.log_output.connect(self.console.append)
+        self._worker.finished_signal.connect(
+            lambda ok, msg: self._on_two_pass_2_done(ok, msg))
+        self._worker.start()
+
+    def _on_two_pass_2_done(self, ok, msg):
+        self._cleanup_passlog()
+        self._on_done(ok, msg, self._two_pass_out)
+
+    def _cleanup_passlog(self):
+        """Remove two-pass log files."""
+        if hasattr(self, '_two_pass_log'):
+            import glob
+            for f in glob.glob(f"{self._two_pass_log}*"):
+                try:
+                    os.unlink(f)
+                except OSError:
+                    pass
 
     def _on_done(self, ok, msg, out_path):
         self.btn_convert.setEnabled(True)
