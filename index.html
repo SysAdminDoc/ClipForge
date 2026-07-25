@@ -226,6 +226,7 @@
         }
         .media-item:hover { background: var(--bg-2); }
         .media-item.selected { background: var(--accent-dim); border: 1px solid var(--accent); }
+        .media-item.missing { border: 1px solid var(--warning); cursor: default; }
         .media-thumb {
             width: 48px;
             height: 36px;
@@ -263,6 +264,18 @@
         }
         .drop-zone-icon { font-size: 24px; margin-bottom: 8px; opacity: 0.6; }
         .drop-zone-text { font-size: 11px; color: var(--text-2); line-height: 1.5; }
+        .recovery-bar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 10px;
+            border-bottom: 1px solid var(--border);
+            background: var(--bg-2);
+            color: var(--text-2);
+            font-size: 11px;
+        }
+        .recovery-bar[hidden] { display: none; }
+        .recovery-bar span { flex: 1; line-height: 1.4; }
         
         /* Center Area - Preview + Timeline */
         .center-area {
@@ -895,6 +908,7 @@
             width: 0%;
             transition: width 0.3s;
         }
+        .loading-cancel { margin-top: 18px; }
         
         /* Export Modal */
         .modal {
@@ -1002,6 +1016,19 @@
             outline: none;
             border-color: var(--accent);
         }
+        .export-preflight {
+            margin-bottom: 16px;
+            padding: 10px 12px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            background: var(--bg-2);
+            color: var(--text-2);
+            font-size: 11px;
+            line-height: 1.5;
+        }
+        .export-preflight.ready { border-color: var(--success); }
+        .export-preflight.blocked { border-color: var(--error); }
+        .export-preflight ul { margin: 5px 0 0 18px; padding: 0; }
         
         /* Hidden inputs */
         input[type="file"] { display: none; }
@@ -1017,7 +1044,7 @@
     <div class="app">
         <!-- Menu Bar -->
         <div class="menu-bar" aria-label="Application menu">
-            <button class="menu-item" onclick="document.getElementById('fileInput').click()">File</button>
+            <button class="menu-item" onclick="document.getElementById('projectFileInput').click()">Open project</button>
             <button class="menu-item" onclick="showEditMenu(event)">Edit</button>
             <div class="menu-spacer"></div>
             <div class="menu-item" style="color: var(--text-3); cursor: default;">v0.5.1</div>
@@ -1035,6 +1062,7 @@
                     <div class="status-dot" id="statusDot"></div>
                     <span id="statusText">Loading...</span>
                 </div>
+                <button class="btn" onclick="document.getElementById('projectFileInput').click()" aria-label="Open project">📂 Open</button>
                 <button class="btn" onclick="saveProject()" aria-label="Save project">💾 Save</button>
                 <button class="btn primary" id="exportButton" onclick="showExportModal()" aria-label="Export video">⬇️ Export</button>
             </div>
@@ -1054,6 +1082,16 @@
                         <div class="drop-zone-text">Drop files here or click to browse<br><span style="font-size: 10px; color: var(--text-3);">Video, audio, and image files</span></div>
                     </div>
                     <input type="file" id="fileInput" multiple accept="video/*,audio/*,image/*">
+                    <input type="file" id="projectFileInput" accept=".clipforge,application/json">
+                    <input type="file" id="relinkFileInput" multiple accept="video/*,audio/*,image/*">
+                </div>
+                <div class="recovery-bar" id="recoveryBar" hidden>
+                    <span id="recoveryText">A recoverable browser project is available.</span>
+                    <button class="btn btn-sm" onclick="recoverLastProject()">Recover</button>
+                </div>
+                <div class="recovery-bar" id="relinkBar">
+                    <span>Project files store media references, not media bytes. Relink moved or reopened local sources here.</span>
+                    <button class="btn btn-sm" id="relinkButton" hidden onclick="document.getElementById('relinkFileInput').click()">Relink</button>
                 </div>
                 <div class="panel-tabs" role="tablist" aria-label="Project browser">
                     <button class="panel-tab active" id="mediaTab" role="tab" aria-selected="true" aria-controls="mediaTabPanel" tabindex="0">Media</button>
@@ -1291,6 +1329,7 @@
                 <button class="modal-close" onclick="hideExportModal()" aria-label="Close export dialog">✕</button>
             </div>
             <div class="modal-body">
+                <div class="export-preflight" id="exportPreflight" role="status" aria-live="polite"></div>
                 <div class="export-option">
                     <div class="export-label">Format</div>
                     <select class="export-select" id="exportFormat">
@@ -1324,7 +1363,7 @@
             </div>
             <div class="modal-footer">
                 <button class="btn" onclick="hideExportModal()">Cancel</button>
-                <button class="btn primary" onclick="exportVideo()">Export</button>
+                <button class="btn primary" id="confirmExportButton" onclick="exportVideo()">Export</button>
             </div>
         </div>
     </div>
@@ -1336,6 +1375,7 @@
         <div class="loading-progress" id="loadingProgressTrack" role="progressbar" aria-label="FFmpeg operation progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
             <div class="loading-progress-bar" id="loadingProgress"></div>
         </div>
+        <button class="btn loading-cancel" id="cancelExportButton" hidden onclick="cancelExport()">Cancel export</button>
     </div>
     
     <!-- Toast Container -->

@@ -120,7 +120,7 @@ All-in-one video editor — Trim, Crop, Upscale, Interpolate, Convert, Filter, A
 - **Process tree cleanup** — cancelling kills child processes
 - **Owned temp directory cleanup** on exit without touching another running instance
 - **Atomic output safety** — validates staged media before replacing the chosen destination
-- 81-test suite covering utilities, process safety, generated media, probing, diagnostics, and accessibility contracts
+- 82-test suite covering utilities, process safety, generated media, probing, diagnostics, and accessibility contracts
 
 ### Web Editor
 
@@ -134,9 +134,9 @@ Try it in the browser: **[sysadmindoc.github.io/ClipForge](https://sysadmindoc.g
 - Audio waveform visualization
 - **ffmpeg.wasm 0.12** with multi-threaded core
 - **Full undo/redo** (Ctrl+Z / Ctrl+Shift+Z, 50-deep history)
-- **Multi-clip export** — all timeline clips concatenated via FFmpeg concat demuxer
-- Export to MP4, WebM, GIF with quality/resolution options
-- Project save/load (.clipforge format)
+- **Truthful multi-clip export** — contiguous video clips and embedded source audio are rendered; preflight blocks unsupported gaps, overlaps, transitions, unlinked audio/music, or unrendered effects instead of silently dropping them
+- Cancellable MP4, WebM, and GIF export with sanitized filenames, cleanup, and quality/resolution options
+- Versioned `.clipforge` project save/load with legacy migration, IndexedDB crash recovery, and explicit local-media relinking
 - Keyboard shortcuts: V (select), C (razor), S (split), Space (play/pause), J/K/L (transport)
 
 ## Requirements

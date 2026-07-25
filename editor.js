@@ -7,6 +7,17 @@ let selectedClips = []; // Currently selected clips
 let clipboard = null; // Copied clip data
 let currentTool = 'select';
 let currentTransitionType = 'dissolve';
+const PROJECT_SCHEMA = 'clipforge.project';
+const PROJECT_SCHEMA_VERSION = 1;
+const PROJECT_DB_NAME = 'clipforge-recovery';
+const PROJECT_STORE_NAME = 'projects';
+const PROJECT_RECOVERY_KEY = 'current';
+let recoveryDbPromise = null;
+let recoverySaveTimer = null;
+let recoverySnapshot = null;
+let projectLoading = false;
+let exportInProgress = false;
+let exportCancelRequested = false;
 const trackStates = {
     video: { visible: true, locked: false },
     audio: { muted: false, solo: false },
@@ -54,6 +65,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     
     setupEventListeners();
     renderRuler();
+    initProjectRecovery();
     await initFFmpeg();
 });
 
@@ -150,6 +162,10 @@ async function initFFmpeg() {
 function setupEventListeners() {
     // File input
     document.getElementById('fileInput').addEventListener('change', handleFileInput);
+    document.getElementById('projectFileInput').addEventListener('change', handleProjectFileInput);
+    document.getElementById('relinkFileInput').addEventListener('change', handleRelinkFileInput);
+    document.getElementById('exportFormat').addEventListener('change', renderExportPreflight);
+    document.getElementById('exportResolution').addEventListener('change', renderExportPreflight);
     
     // Drop zone
     const dropZone = document.getElementById('dropZone');
@@ -214,6 +230,7 @@ function setupEventListeners() {
     
     // Media list drag
     document.getElementById('mediaList').addEventListener('dragstart', onMediaDragStart);
+    window.addEventListener('beforeunload', releaseMediaUrls);
 }
 
 function activatePanelTab(tab) {
@@ -389,32 +406,39 @@ function renderMediaList() {
                 <div style="font-size: 11px; line-height: 1.5; color: var(--text-2);">No media yet<br><span style="color: var(--text-3);">Import files to start editing</span></div>
             </div>
         `;
+        document.getElementById('relinkButton').hidden = true;
+        scheduleProjectRecovery();
         return;
     }
     
     list.innerHTML = mediaItems.map(media => `
-        <div class="media-item" data-id="${media.id}" draggable="true" ondblclick="addToTimeline('${media.id}')">
+        <div class="media-item${media.missing ? ' missing' : ''}" data-id="${media.id}" draggable="${media.missing ? 'false' : 'true'}" ondblclick="${media.missing ? '' : `addToTimeline('${media.id}')`}">
             <div class="media-thumb">
                 ${media.thumbnail ? 
                     (media.type === 'video' ? `<img src="${media.thumbnail}">` : `<img src="${media.thumbnail}">`) :
-                    `<span class="media-thumb-icon">${media.type === 'audio' ? '🎵' : '📷'}</span>`
+                    `<span class="media-thumb-icon">${media.missing ? '⚠' : (media.type === 'audio' ? '🎵' : '📷')}</span>`
                 }
             </div>
             <div class="media-info">
                 <div class="media-name">${escapeHtml(media.name)}</div>
                 <div class="media-meta">
-                    <span>${escapeHtml(media.type)}</span>
+                    <span>${media.missing ? 'Missing — relink required' : escapeHtml(media.type)}</span>
                     <span class="media-duration">${formatTimecode(media.duration)}</span>
                 </div>
             </div>
         </div>
     `).join('');
+    document.getElementById('relinkButton').hidden = !mediaItems.some(media => media.missing);
+    scheduleProjectRecovery();
 }
 
 // ==================== TIMELINE CLIPS ====================
 function addToTimeline(mediaId) {
     const media = mediaItems.find(m => m.id == mediaId);
-    if (!media) return;
+    if (!media || media.missing || !media.file) {
+        toast('error', 'Relink this source before adding it to the timeline');
+        return;
+    }
     pushUndo();
     
     // Find the end of existing clips
@@ -606,6 +630,7 @@ function renderTimeline() {
     // Update playhead
     updatePlayhead();
     renderRuler();
+    scheduleProjectRecovery();
 }
 
 function drawWaveform(canvas, waveformData, track) {
@@ -1337,57 +1362,211 @@ function showExportModal() {
     const modal = document.getElementById('exportModal');
     modal.classList.remove('hidden');
     modal.setAttribute('aria-hidden', 'false');
+    renderExportPreflight();
     document.getElementById('exportFormat').focus();
 }
 
 function hideExportModal() {
+    if (exportInProgress) return;
     const modal = document.getElementById('exportModal');
     modal.classList.add('hidden');
     modal.setAttribute('aria-hidden', 'true');
     document.getElementById('exportButton').focus();
 }
 
+function sanitizeDownloadName(value) {
+    const cleaned = String(value || '')
+        .normalize('NFKC')
+        .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-')
+        .replace(/^[.-]+/, '')
+        .replace(/[.\s]+$/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 80);
+    if (!cleaned || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(cleaned)) {
+        return 'clipforge-export';
+    }
+    return cleaned;
+}
+
+function buildExportPreflight() {
+    const format = document.getElementById('exportFormat')?.value || 'mp4';
+    const resolution = document.getElementById('exportResolution')?.value || 'original';
+    const reasons = [];
+    const notes = [];
+    const videoClips = clips
+        .filter(clip => clip.track === 'video')
+        .sort((a, b) => a.startTime - b.startTime);
+
+    if (!ffmpegLoaded) reasons.push('The FFmpeg engine is not ready.');
+    if (videoClips.length === 0) reasons.push('At least one video clip is required.');
+    if (videoClips.some(clip => clip.type !== 'video')) {
+        reasons.push('Image timeline clips are not supported by browser export.');
+    }
+    if (transitions.length > 0) {
+        reasons.push('Transitions are visible in the editor but are not yet rendered by browser export.');
+    }
+    const independentAudio = clips.filter(
+        clip => (clip.track === 'audio' || clip.track === 'music') && !clip.linkedTo,
+    );
+    if (independentAudio.length > 0) {
+        reasons.push('Unlinked audio and music tracks are not yet mixed by browser export.');
+    }
+    if (
+        trackStates.video.visible === false
+        || trackStates.audio.muted
+        || trackStates.audio.solo
+        || trackStates.music.muted
+        || trackStates.music.solo
+    ) {
+        reasons.push('Track visibility, mute, and solo states are preview-only and must be reset before export.');
+    }
+
+    videoClips.forEach((clip, index) => {
+        const media = mediaItems.find(item => item.id == clip.mediaId);
+        if (!media || media.missing || !media.file) {
+            reasons.push(`Clip ${index + 1} (${clip.name || 'unnamed'}) needs its source relinked.`);
+        }
+        if (!(Number(clip.duration) > 0) || Number(clip.inPoint) < 0) {
+            reasons.push(`Clip ${index + 1} has invalid trim timing.`);
+        }
+        if (Number(clip.opacity ?? 100) !== 100 || Number(clip.scale ?? 100) !== 100) {
+            reasons.push(`Clip ${index + 1} uses opacity or scale, which browser export does not render yet.`);
+        }
+        const linkedAudio = clips.find(
+            candidate => candidate.id === clip.linkedTo && candidate.track === 'audio',
+        );
+        if (!linkedAudio) {
+            reasons.push(`Clip ${index + 1} has changed audio linkage, which browser export cannot represent safely.`);
+        } else if (
+            Number(linkedAudio.volume ?? 100) !== 100
+            || Math.abs(finiteNumber(linkedAudio.startTime) - finiteNumber(clip.startTime)) > 0.01
+            || Math.abs(finiteNumber(linkedAudio.duration) - finiteNumber(clip.duration)) > 0.01
+            || Math.abs(finiteNumber(linkedAudio.inPoint) - finiteNumber(clip.inPoint)) > 0.01
+        ) {
+            reasons.push(`Clip ${index + 1} has edited linked-audio timing or volume, which browser export does not render yet.`);
+        }
+        if (index === 0 && finiteNumber(clip.startTime) > 0.05) {
+            reasons.push(`There is an unrendered ${finiteNumber(clip.startTime).toFixed(2)} second gap before the first clip.`);
+        } else if (index > 0) {
+            const previous = videoClips[index - 1];
+            const gap = Number(clip.startTime) - (Number(previous.startTime) + Number(previous.duration));
+            if (Math.abs(gap) > 0.05) {
+                reasons.push(
+                    gap > 0
+                        ? `There is an unrendered ${gap.toFixed(2)} second gap before clip ${index + 1}.`
+                        : `Clip ${index + 1} overlaps the preceding clip without a supported transition.`,
+                );
+            }
+        }
+    });
+
+    if (resolution === 'original' && videoClips.length > 1) {
+        const dimensions = new Set(
+            videoClips.map(clip => {
+                const media = mediaItems.find(item => item.id == clip.mediaId);
+                return media?.width && media?.height ? `${media.width}x${media.height}` : 'unknown';
+            }),
+        );
+        if (dimensions.size > 1 || dimensions.has('unknown')) {
+            reasons.push('Multi-clip original-resolution export requires matching, known source dimensions; choose a fixed resolution.');
+        }
+    }
+
+    notes.push('Video trim, rotation, brightness, contrast, and saturation are rendered.');
+    notes.push(
+        format === 'gif'
+            ? 'GIF has no audio by format; embedded source audio will be omitted.'
+            : 'Embedded source audio is preserved when present.',
+    );
+    return { supported: reasons.length === 0, reasons: [...new Set(reasons)], notes, videoClips };
+}
+
+function renderExportPreflight() {
+    const result = buildExportPreflight();
+    const panel = document.getElementById('exportPreflight');
+    const confirm = document.getElementById('confirmExportButton');
+    if (!panel || !confirm) return result;
+    panel.className = `export-preflight ${result.supported ? 'ready' : 'blocked'}`;
+    panel.innerHTML = result.supported
+        ? `<strong>Ready to export ${result.videoClips.length} video clip(s).</strong><ul>${result.notes.map(note => `<li>${escapeHtml(note)}</li>`).join('')}</ul>`
+        : `<strong>Export blocked until these timeline states are resolved:</strong><ul>${result.reasons.map(reason => `<li>${escapeHtml(reason)}</li>`).join('')}</ul>`;
+    confirm.disabled = !result.supported;
+    return result;
+}
+
+async function runFfmpeg(args, label) {
+    if (exportCancelRequested) throw new Error('Export cancelled');
+    const exitCode = await ffmpeg.exec(args);
+    if (exportCancelRequested) throw new Error('Export cancelled');
+    if (exitCode !== 0) throw new Error(`${label} failed with FFmpeg exit code ${exitCode}`);
+}
+
+function cancelExport() {
+    if (!exportInProgress || exportCancelRequested) return;
+    exportCancelRequested = true;
+    document.getElementById('loadingText').textContent = 'Cancelling export...';
+    document.getElementById('cancelExportButton').disabled = true;
+    try {
+        ffmpeg?.terminate();
+    } catch (error) {
+        console.warn('FFmpeg termination failed:', error);
+    }
+}
+
 async function exportVideo() {
-    if (!ffmpegLoaded || clips.length === 0) return;
+    const preflight = renderExportPreflight();
+    if (!preflight.supported || exportInProgress) return;
 
     hideExportModal();
 
     const overlay = document.getElementById('loadingOverlay');
+    const cancelButton = document.getElementById('cancelExportButton');
     overlay.classList.remove('hidden');
     document.getElementById('loadingText').textContent = 'Exporting video...';
     document.getElementById('loadingProgress').style.width = '0%';
     document.getElementById('loadingProgressTrack').setAttribute('aria-valuenow', '0');
+    cancelButton.hidden = false;
+    cancelButton.disabled = false;
+    exportInProgress = true;
+    exportCancelRequested = false;
+    const cleanupFiles = new Set();
+    const runId = `cf_${Date.now().toString(36)}`;
 
     try {
         const format = document.getElementById('exportFormat').value;
         const resolution = document.getElementById('exportResolution').value;
         const quality = document.getElementById('exportQuality').value;
-        const filename = document.getElementById('exportFilename').value || 'export';
-
-        const videoClips = clips
-            .filter(c => c.type === 'video')
-            .sort((a, b) => a.startTime - b.startTime);
-
-        if (videoClips.length === 0) throw new Error('No video clips to export');
+        const filename = (
+            sanitizeDownloadName(document.getElementById('exportFilename').value)
+                .replace(/\.(mp4|webm|gif)$/i, '')
+            || 'clipforge-export'
+        );
+        document.getElementById('exportFilename').value = filename;
+        const videoClips = preflight.videoClips;
 
         const segmentFiles = [];
 
         for (let i = 0; i < videoClips.length; i++) {
             const clip = videoClips[i];
             const media = mediaItems.find(m => m.id === clip.mediaId);
-            if (!media) continue;
+            if (!media?.file) throw new Error(`Source is missing for ${clip.name}`);
 
             document.getElementById('loadingText').textContent =
                 `Processing clip ${i + 1}/${videoClips.length}...`;
 
-            const inputName = `input_${i}${media.file.name.substring(media.file.name.lastIndexOf('.'))}`;
-            const segName = `seg_${i}.mp4`;
+            const extensionMatch = media.file.name.match(/\.[A-Za-z0-9]{1,8}$/);
+            const inputName = `${runId}_input_${i}${extensionMatch ? extensionMatch[0].toLowerCase() : '.bin'}`;
+            const segName = `${runId}_seg_${i}.mp4`;
             await ffmpeg.writeFile(inputName, await window.ffmpegFetchFile(media.file));
+            cleanupFiles.add(inputName);
+            cleanupFiles.add(segName);
 
             const args = [];
             if (clip.inPoint > 0) args.push('-ss', String(clip.inPoint));
             args.push('-i', inputName);
             args.push('-t', String(clip.duration));
+            args.push('-map', '0:v:0', '-map', '0:a?');
 
             const vf = [];
             if (resolution && resolution !== 'original') {
@@ -1405,21 +1584,24 @@ async function exportVideo() {
             }
             if (vf.length > 0) args.push('-vf', vf.join(','));
 
-            args.push('-c:v', 'libx264', '-crf', quality, '-preset', 'fast');
+            args.push('-c:v', 'libx264', '-crf', quality, '-preset', 'fast', '-pix_fmt', 'yuv420p');
             args.push('-c:a', 'aac', '-b:a', '192k');
             args.push('-y', segName);
 
-            await ffmpeg.exec(args);
+            await runFfmpeg(args, `Clip ${i + 1}`);
             await ffmpeg.deleteFile(inputName);
+            cleanupFiles.delete(inputName);
             segmentFiles.push(segName);
         }
 
         let finalOutput;
-        const outputName = `output.${format}`;
+        const outputName = `${runId}_output.${format}`;
+        cleanupFiles.add(outputName);
 
         if (segmentFiles.length === 1) {
             if (format === 'mp4') {
                 finalOutput = segmentFiles[0];
+                cleanupFiles.delete(outputName);
             } else {
                 const args = ['-i', segmentFiles[0]];
                 if (format === 'webm') {
@@ -1428,17 +1610,20 @@ async function exportVideo() {
                     args.push('-vf', 'fps=15,scale=480:-1:flags=lanczos', '-loop', '0');
                 }
                 args.push('-y', outputName);
-                await ffmpeg.exec(args);
+                await runFfmpeg(args, 'Final format conversion');
                 await ffmpeg.deleteFile(segmentFiles[0]);
+                cleanupFiles.delete(segmentFiles[0]);
                 finalOutput = outputName;
             }
         } else {
             const concatList = segmentFiles.map(f => `file '${f}'`).join('\n');
             const encoder = new TextEncoder();
-            await ffmpeg.writeFile('concat.txt', encoder.encode(concatList));
+            const concatName = `${runId}_concat.txt`;
+            await ffmpeg.writeFile(concatName, encoder.encode(concatList));
+            cleanupFiles.add(concatName);
 
             document.getElementById('loadingText').textContent = 'Joining clips...';
-            const joinArgs = ['-f', 'concat', '-safe', '0', '-i', 'concat.txt'];
+            const joinArgs = ['-f', 'concat', '-safe', '0', '-i', concatName];
             if (format === 'mp4') {
                 joinArgs.push('-c', 'copy', '-movflags', '+faststart');
             } else if (format === 'webm') {
@@ -1449,12 +1634,14 @@ async function exportVideo() {
                 joinArgs.push('-c', 'copy');
             }
             joinArgs.push('-y', outputName);
-            await ffmpeg.exec(joinArgs);
+            await runFfmpeg(joinArgs, 'Timeline join');
 
             for (const f of segmentFiles) {
                 try { await ffmpeg.deleteFile(f); } catch (_) {}
+                cleanupFiles.delete(f);
             }
-            try { await ffmpeg.deleteFile('concat.txt'); } catch (_) {}
+            try { await ffmpeg.deleteFile(concatName); } catch (_) {}
+            cleanupFiles.delete(concatName);
             finalOutput = outputName;
         }
 
@@ -1470,34 +1657,370 @@ async function exportVideo() {
         setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
 
         try { await ffmpeg.deleteFile(finalOutput); } catch (_) {}
+        cleanupFiles.delete(finalOutput);
 
-        overlay.classList.add('hidden');
         toast('success', `Exported ${videoClips.length} clip(s) successfully!`);
     } catch (e) {
         console.error('Export error:', e);
-        overlay.classList.add('hidden');
-        toast('error', 'Export failed: ' + e.message);
+        toast(
+            exportCancelRequested ? 'info' : 'error',
+            exportCancelRequested ? 'Export cancelled; the engine is restarting' : `Export failed: ${e.message}`,
+        );
+    } finally {
+        if (ffmpegLoaded && !exportCancelRequested) {
+            for (const path of cleanupFiles) {
+                try { await ffmpeg.deleteFile(path); } catch (_) {}
+            }
+        }
+        cancelButton.hidden = true;
+        cancelButton.disabled = false;
+        exportInProgress = false;
+        if (exportCancelRequested) {
+            ffmpegLoaded = false;
+            ffmpeg = null;
+            document.getElementById('statusDot').classList.remove('ready');
+            document.getElementById('statusText').textContent = 'Restarting engine';
+            document.getElementById('loadingText').textContent = 'Restarting FFmpeg...';
+            exportCancelRequested = false;
+            setTimeout(() => initFFmpeg(), 0);
+        } else {
+            overlay.classList.add('hidden');
+        }
     }
 }
 
 // ==================== PROJECT MANAGEMENT ====================
-function saveProject() {
-    const project = {
-        mediaItems: mediaItems.map(m => ({ ...m, file: null, url: null, thumbnail: m.type === 'image' ? m.thumbnail : null })),
-        clips,
-        transitions,
-        duration
+function finiteNumber(value, fallback = 0) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : fallback;
+}
+
+function projectMediaReference(media) {
+    const file = media.file;
+    return {
+        name: String(file?.name || media.name || 'media').slice(0, 255),
+        size: finiteNumber(file?.size ?? media.reference?.size, 0),
+        lastModified: finiteNumber(file?.lastModified ?? media.reference?.lastModified, 0),
+        mime: String(file?.type || media.reference?.mime || '').slice(0, 127),
+        relativePath: String(file?.webkitRelativePath || media.reference?.relativePath || '').slice(0, 1024),
     };
-    
+}
+
+function serializeProject() {
+    const project = {
+        schema: PROJECT_SCHEMA,
+        version: PROJECT_SCHEMA_VERSION,
+        savedAt: new Date().toISOString(),
+        name: document.querySelector('.project-name')?.textContent?.trim() || 'Untitled Project',
+        media: mediaItems.map(media => ({
+            id: media.id,
+            name: String(media.name || '').slice(0, 255),
+            type: ['video', 'audio', 'image'].includes(media.type) ? media.type : 'video',
+            duration: finiteNumber(media.duration),
+            width: finiteNumber(media.width),
+            height: finiteNumber(media.height),
+            reference: projectMediaReference(media),
+        })),
+        clips: clips.map(clip => ({
+            id: clip.id,
+            mediaId: clip.mediaId,
+            track: ['video', 'audio', 'music'].includes(clip.track) ? clip.track : 'video',
+            startTime: finiteNumber(clip.startTime),
+            duration: finiteNumber(clip.duration),
+            inPoint: finiteNumber(clip.inPoint),
+            outPoint: finiteNumber(clip.outPoint, finiteNumber(clip.duration)),
+            name: String(clip.name || '').slice(0, 255),
+            type: ['video', 'audio', 'image'].includes(clip.type) ? clip.type : 'video',
+            linkedTo: clip.linkedTo ?? null,
+            opacity: finiteNumber(clip.opacity, 100),
+            scale: finiteNumber(clip.scale, 100),
+            rotation: finiteNumber(clip.rotation),
+            brightness: finiteNumber(clip.brightness),
+            contrast: finiteNumber(clip.contrast),
+            saturation: finiteNumber(clip.saturation),
+            volume: finiteNumber(clip.volume, 100),
+        })),
+        transitions: transitions.map(transition => ({
+            id: transition.id,
+            time: finiteNumber(transition.time),
+            duration: finiteNumber(transition.duration, 1),
+            type: ['dissolve', 'fade', 'wipe', 'zoom'].includes(transition.type)
+                ? transition.type
+                : 'dissolve',
+        })),
+        timeline: {
+            pixelsPerSecond: finiteNumber(pixelsPerSecond, 50),
+            trackStates: JSON.parse(JSON.stringify(trackStates)),
+        },
+    };
+    return project;
+}
+
+function normalizeProject(raw) {
+    if (!raw || typeof raw !== 'object') throw new Error('Project file must contain a JSON object');
+    let source = raw;
+    if (raw.schema !== PROJECT_SCHEMA) {
+        if (!Array.isArray(raw.mediaItems) || !Array.isArray(raw.clips)) {
+            throw new Error('This is not a ClipForge project file');
+        }
+        source = {
+            schema: PROJECT_SCHEMA,
+            version: PROJECT_SCHEMA_VERSION,
+            name: 'Imported legacy project',
+            media: raw.mediaItems.map(media => ({
+                ...media,
+                reference: {
+                    name: media.name,
+                    size: media.size || 0,
+                    lastModified: media.lastModified || 0,
+                    mime: media.type || '',
+                },
+            })),
+            clips: raw.clips,
+            transitions: raw.transitions || [],
+            timeline: { pixelsPerSecond: 50, trackStates: {} },
+        };
+    }
+    if (finiteNumber(source.version) > PROJECT_SCHEMA_VERSION) {
+        throw new Error(`Project schema v${source.version} is newer than this editor supports`);
+    }
+    if (!Array.isArray(source.media) || !Array.isArray(source.clips) || !Array.isArray(source.transitions || [])) {
+        throw new Error('Project media, clips, and transitions must be arrays');
+    }
+    if (source.media.length > 5000 || source.clips.length > 10000 || source.transitions.length > 5000) {
+        throw new Error('Project exceeds the browser editor safety limits');
+    }
+
+    const media = source.media.map((item, index) => ({
+        id: item.id ?? `media-${index}`,
+        name: String(item.name || item.reference?.name || `Media ${index + 1}`).slice(0, 255),
+        type: ['video', 'audio', 'image'].includes(item.type) ? item.type : 'video',
+        duration: Math.max(0, finiteNumber(item.duration)),
+        width: Math.max(0, finiteNumber(item.width)),
+        height: Math.max(0, finiteNumber(item.height)),
+        reference: {
+            name: String(item.reference?.name || item.name || '').slice(0, 255),
+            size: Math.max(0, finiteNumber(item.reference?.size)),
+            lastModified: Math.max(0, finiteNumber(item.reference?.lastModified)),
+            mime: String(item.reference?.mime || '').slice(0, 127),
+            relativePath: String(item.reference?.relativePath || '').slice(0, 1024),
+        },
+        file: null,
+        url: null,
+        thumbnail: null,
+        waveform: null,
+        missing: true,
+    }));
+    const mediaIds = new Set(media.map(item => String(item.id)));
+    const normalizedClips = source.clips.map((clip, index) => {
+        if (!mediaIds.has(String(clip.mediaId))) {
+            throw new Error(`Clip ${index + 1} references media that is not in the project`);
+        }
+        return {
+            id: clip.id ?? `clip-${index}`,
+            mediaId: clip.mediaId,
+            track: ['video', 'audio', 'music'].includes(clip.track) ? clip.track : 'video',
+            startTime: Math.max(0, finiteNumber(clip.startTime)),
+            duration: Math.max(0, finiteNumber(clip.duration)),
+            inPoint: Math.max(0, finiteNumber(clip.inPoint)),
+            outPoint: Math.max(0, finiteNumber(clip.outPoint, finiteNumber(clip.duration))),
+            name: String(clip.name || `Clip ${index + 1}`).slice(0, 255),
+            type: ['video', 'audio', 'image'].includes(clip.type) ? clip.type : 'video',
+            linkedTo: clip.linkedTo ?? null,
+            opacity: finiteNumber(clip.opacity, 100),
+            scale: finiteNumber(clip.scale, 100),
+            rotation: finiteNumber(clip.rotation),
+            brightness: finiteNumber(clip.brightness),
+            contrast: finiteNumber(clip.contrast),
+            saturation: finiteNumber(clip.saturation),
+            volume: finiteNumber(clip.volume, 100),
+            thumbnail: null,
+            waveform: null,
+            url: null,
+        };
+    });
+    return {
+        schema: PROJECT_SCHEMA,
+        version: PROJECT_SCHEMA_VERSION,
+        name: String(source.name || 'Untitled Project').slice(0, 100),
+        media,
+        clips: normalizedClips,
+        transitions: (source.transitions || []).map((transition, index) => ({
+            id: transition.id ?? `transition-${index}`,
+            time: Math.max(0, finiteNumber(transition.time)),
+            duration: Math.max(0.01, finiteNumber(transition.duration, 1)),
+            type: ['dissolve', 'fade', 'wipe', 'zoom'].includes(transition.type)
+                ? transition.type
+                : 'dissolve',
+        })),
+        timeline: {
+            pixelsPerSecond: Math.min(200, Math.max(10, finiteNumber(source.timeline?.pixelsPerSecond, 50))),
+            trackStates: source.timeline?.trackStates || {},
+        },
+    };
+}
+
+function releaseMediaUrls() {
+    mediaItems.forEach(media => {
+        if (media.url?.startsWith('blob:')) URL.revokeObjectURL(media.url);
+    });
+}
+
+function applyProjectSnapshot(raw, sourceLabel = 'project') {
+    const project = normalizeProject(raw);
+    projectLoading = true;
+    releaseMediaUrls();
+    mediaItems = project.media;
+    clips = project.clips;
+    transitions = project.transitions;
+    selectedClips = [];
+    pixelsPerSecond = project.timeline.pixelsPerSecond;
+    Object.keys(trackStates).forEach(track => {
+        const incoming = project.timeline.trackStates?.[track] || {};
+        Object.keys(trackStates[track]).forEach(key => {
+            const defaultValue = track === 'video' && key === 'visible';
+            trackStates[track][key] = key in incoming ? Boolean(incoming[key]) : defaultValue;
+        });
+    });
+    document.querySelector('.project-name').textContent = project.name;
+    updateDuration();
+    renderMediaList();
+    renderTimeline();
+    clearClipPropertiesPanel();
+    projectLoading = false;
+    scheduleProjectRecovery();
+    toast('success', `Loaded ${sourceLabel}; relink ${mediaItems.length} local source file(s)`);
+    return project;
+}
+
+async function handleProjectFileInput(event) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    try {
+        if (file.size > 5 * 1024 * 1024) throw new Error('Project file exceeds the 5 MB safety limit');
+        const raw = JSON.parse(await file.text());
+        applyProjectSnapshot(raw, file.name);
+    } catch (error) {
+        toast('error', `Could not open project: ${error.message}`);
+    }
+}
+
+async function handleRelinkFileInput(event) {
+    const files = [...(event.target.files || [])];
+    event.target.value = '';
+    if (files.length === 0) return;
+    let relinked = 0;
+    for (const media of mediaItems.filter(item => item.missing)) {
+        const reference = media.reference || {};
+        const file = files.find(candidate => {
+            if (candidate.name !== reference.name) return false;
+            const sizeMatches = !reference.size || candidate.size === reference.size;
+            const modifiedMatches = !reference.lastModified || candidate.lastModified === reference.lastModified;
+            return sizeMatches && modifiedMatches;
+        });
+        if (!file) continue;
+        media.file = file;
+        media.url = URL.createObjectURL(file);
+        media.missing = false;
+        media.name = file.name;
+        if (media.type === 'image') {
+            media.thumbnail = media.url;
+        }
+        clips.filter(clip => clip.mediaId == media.id).forEach(clip => {
+            clip.url = media.url;
+            clip.name = media.name;
+            if (media.thumbnail) clip.thumbnail = media.thumbnail;
+        });
+        relinked += 1;
+    }
+    renderMediaList();
+    renderTimeline();
+    toast(
+        relinked ? 'success' : 'error',
+        relinked
+            ? `Relinked ${relinked} source file(s); ${mediaItems.filter(item => item.missing).length} still missing`
+            : 'No selected files matched the saved name, size, and modified time',
+    );
+}
+
+function openRecoveryDb() {
+    if (!('indexedDB' in window)) return Promise.reject(new Error('IndexedDB is unavailable'));
+    if (!recoveryDbPromise) {
+        recoveryDbPromise = new Promise((resolve, reject) => {
+            const request = indexedDB.open(PROJECT_DB_NAME, 1);
+            request.onupgradeneeded = () => {
+                if (!request.result.objectStoreNames.contains(PROJECT_STORE_NAME)) {
+                    request.result.createObjectStore(PROJECT_STORE_NAME);
+                }
+            };
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error || new Error('Could not open recovery storage'));
+        });
+    }
+    return recoveryDbPromise;
+}
+
+async function recoveryStore(mode, value) {
+    const db = await openRecoveryDb();
+    return new Promise((resolve, reject) => {
+        const transaction = db.transaction(PROJECT_STORE_NAME, mode === 'get' ? 'readonly' : 'readwrite');
+        const store = transaction.objectStore(PROJECT_STORE_NAME);
+        const request = mode === 'get'
+            ? store.get(PROJECT_RECOVERY_KEY)
+            : store.put(value, PROJECT_RECOVERY_KEY);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error || new Error('Recovery storage operation failed'));
+    });
+}
+
+function scheduleProjectRecovery() {
+    if (projectLoading || (mediaItems.length === 0 && clips.length === 0)) return;
+    clearTimeout(recoverySaveTimer);
+    recoverySaveTimer = setTimeout(async () => {
+        try {
+            const snapshot = serializeProject();
+            await recoveryStore('put', snapshot);
+            recoverySnapshot = snapshot;
+        } catch (error) {
+            console.warn('Project recovery save failed:', error);
+        }
+    }, 400);
+}
+
+async function initProjectRecovery() {
+    try {
+        recoverySnapshot = await recoveryStore('get');
+        if (recoverySnapshot) {
+            document.getElementById('recoveryBar').hidden = false;
+            document.getElementById('recoveryText').textContent =
+                `Recover "${recoverySnapshot.name || 'Untitled Project'}" from ${recoverySnapshot.savedAt || 'browser storage'}.`;
+        }
+    } catch (error) {
+        console.warn('Project recovery is unavailable:', error);
+    }
+}
+
+function recoverLastProject() {
+    if (!recoverySnapshot) {
+        toast('error', 'No recoverable project is available');
+        return;
+    }
+    applyProjectSnapshot(recoverySnapshot, 'browser recovery');
+    document.getElementById('recoveryBar').hidden = true;
+}
+
+function saveProject() {
+    const project = serializeProject();
     const json = JSON.stringify(project, null, 2);
     const blob = new Blob([json], { type: 'application/json' });
     const a = document.createElement('a');
     const blobUrl = URL.createObjectURL(blob);
     a.href = blobUrl;
-    a.download = 'project.clipforge';
+    a.download = `${sanitizeDownloadName(project.name)}.clipforge`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
-    
+    scheduleProjectRecovery();
     toast('success', 'Project saved');
 }
 
@@ -1593,5 +2116,6 @@ Object.assign(window, {
     setTool, setZoom, splitClip, deleteSelected, copyClip, cutClip, pasteClip,
     selectAllClips, addTransition, selectTransitionType, unlinkAudio,
     setVolume, toggleMute, showExportModal, hideExportModal, exportVideo,
-    saveProject, showEditMenu, updateClipProperty, applyQuickEffect,
+    cancelExport, saveProject, recoverLastProject, showEditMenu,
+    updateClipProperty, applyQuickEffect,
 });

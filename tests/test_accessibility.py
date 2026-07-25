@@ -98,3 +98,28 @@ def test_browser_tabs_labels_live_regions_and_900px_contract():
     assert "withTimeout(" in script
     assert "FFmpeg module download" in script
     assert "setAttribute('aria-valuenow'" in script
+
+
+def test_browser_project_and_export_contract_is_explicit():
+    root = Path(__file__).resolve().parents[1]
+    html = (root / "index.html").read_text(encoding="utf-8")
+    script = (root / "editor.js").read_text(encoding="utf-8")
+    parser = _ElementParser()
+    parser.feed(html)
+    by_id = {
+        attrs["id"]: (tag, attrs)
+        for tag, attrs in parser.elements
+        if attrs.get("id")
+    }
+
+    assert by_id["projectFileInput"][1]["accept"].startswith(".clipforge")
+    assert by_id["relinkFileInput"][1]["multiple"] is None
+    assert by_id["exportPreflight"][1]["aria-live"] == "polite"
+    assert by_id["cancelExportButton"][0] == "button"
+    assert "const PROJECT_SCHEMA_VERSION = 1" in script
+    assert "Project schema v${source.version} is newer" in script
+    assert "indexedDB.open(PROJECT_DB_NAME, 1)" in script
+    assert "Transitions are visible in the editor but are not yet rendered" in script
+    assert "Unlinked audio and music tracks are not yet mixed" in script
+    assert "sanitizeDownloadName" in script
+    assert "ffmpeg?.terminate()" in script
