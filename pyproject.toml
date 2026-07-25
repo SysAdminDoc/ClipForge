@@ -14,6 +14,11 @@ dependencies = [
     "PyQt6>=6.7,<7",
 ]
 
+[project.optional-dependencies]
+mpv = [
+    "mpv==1.0.8",
+]
+
 [project.gui-scripts]
 clipforge = "clipforge.__main__:main"
 

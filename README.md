@@ -98,6 +98,7 @@ All-in-one video editor — Trim, Crop, Upscale, Interpolate, Convert, Filter, A
 
 ### Video Player
 - Built-in video playback with play/pause, seek, volume
+- Optional experimental libmpv backend with exact seek/frame-step and broader codec coverage; Qt Multimedia remains the dependency-free default
 - Frame-accurate stepping using **actual video fps** (not hardcoded 30fps)
 - Playback speed control (0.25x - 2x)
 - A-B loop for segment preview
@@ -123,7 +124,7 @@ All-in-one video editor — Trim, Crop, Upscale, Interpolate, Convert, Filter, A
 - **Process tree cleanup** — cancelling kills child processes
 - **Owned temp directory cleanup** on exit without touching another running instance
 - **Atomic output safety** — validates staged media before replacing the chosen destination
-- 91-test suite covering utilities, process safety, generated media, probing, proxy/AI caching, supply-chain validation, diagnostics, and accessibility contracts
+- 93-test suite covering utilities, process safety, generated media, probing, proxy/AI caching, supply-chain validation, diagnostics, and accessibility contracts
 
 ### Web Editor
 
@@ -163,6 +164,10 @@ Try it in the browser: **[sysadmindoc.github.io/ClipForge](https://sysadmindoc.g
   - Place in ClipForge directory or add to PATH
 - **Whisper** (optional, for auto-captions)
   - `pip install openai-whisper`
+- **libmpv** (optional, experimental preview backend)
+  - Install the wrapper with `python -m pip install ".[mpv]"`, then install libmpv separately
+  - On Windows, place `mpv-2.dll`/`libmpv-2.dll` beside ClipForge or set `CLIPFORGE_LIBMPV_DIR`
+  - This adds a separate LGPL/GPL runtime and distribution footprint; Qt Multimedia remains the default
 
 ## Install & Run
 

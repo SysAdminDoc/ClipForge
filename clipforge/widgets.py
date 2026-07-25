@@ -6,6 +6,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QSlider,
     QComboBox, QFileDialog, QGraphicsView, QGraphicsScene, QProgressBar,
+    QStackedWidget,
 )
 from PyQt6.QtCore import (
     Qt, QUrl, QTimer, QPointF, QPropertyAnimation, QEasingCurve, QRect,
@@ -26,6 +27,7 @@ from .tools import FFMPEG, probe_media, probe_video, extract_frame
 from .settings import add_recent
 from .workers import FFmpegWorker, ThumbnailWorker
 from .proxy import ProxyCache
+from .mpv_backend import MpvWidget, probe_mpv
 
 
 # ---------------------------------------------------------------------------
@@ -361,6 +363,9 @@ class VideoPlayer(QWidget):
         self._proxy_path = None
         self._proxy_worker = None
         self._proxy_cache = proxy_cache or ProxyCache()
+        self._backend_name = "qt"
+        self._mpv_widget = None
+        self._mpv_capability = probe_mpv()
         self._thumb_worker = None
         self._fps = 30.0
         self._last_player_error = None
@@ -370,10 +375,33 @@ class VideoPlayer(QWidget):
         layout.setSpacing(4)
 
         # Video display
+        self.video_stack = QStackedWidget()
         self.video_widget = QVideoWidget()
         self.video_widget.setMinimumHeight(200)
         self.video_widget.setStyleSheet(f"background: {C['crust']}; border-radius: 8px;")
-        layout.addWidget(self.video_widget)
+        self.video_stack.addWidget(self.video_widget)
+        if self._mpv_capability.available:
+            try:
+                self._mpv_widget = MpvWidget()
+                self._mpv_widget.positionChanged.connect(
+                    lambda seconds: self._on_position(int(seconds * 1000))
+                )
+                self._mpv_widget.durationChanged.connect(
+                    lambda seconds: self._on_duration(int(seconds * 1000))
+                )
+                self._mpv_widget.pausedChanged.connect(
+                    lambda paused: self.btn_play.setText("Play" if paused else "Pause")
+                )
+                self._mpv_widget.playbackError.connect(self._on_mpv_error)
+                self.video_stack.addWidget(self._mpv_widget)
+            except (OSError, RuntimeError) as error:
+                self._mpv_capability = self._mpv_capability.__class__(
+                    available=False,
+                    wrapper_version=self._mpv_capability.wrapper_version,
+                    reason=str(error),
+                    library_path=self._mpv_capability.library_path,
+                )
+        layout.addWidget(self.video_stack)
 
         self.lbl_player_status = QLabel()
         self.lbl_player_status.setWordWrap(True)
@@ -393,8 +421,16 @@ class VideoPlayer(QWidget):
         self.audio.setVolume(0.7)
         self.player.setAudioOutput(self.audio)
         self.player.setVideoOutput(self.video_widget)
-        self.player.positionChanged.connect(self._on_position)
-        self.player.durationChanged.connect(self._on_duration)
+        self.player.positionChanged.connect(
+            lambda position: self._on_position(position)
+            if self._backend_name == "qt"
+            else None
+        )
+        self.player.durationChanged.connect(
+            lambda duration: self._on_duration(duration)
+            if self._backend_name == "qt"
+            else None
+        )
         self.player.errorOccurred.connect(self._on_player_error)
         self.player.mediaStatusChanged.connect(self._on_media_status)
 
@@ -466,7 +502,7 @@ class VideoPlayer(QWidget):
         self.vol_slider.setRange(0, 100)
         self.vol_slider.setValue(70)
         self.vol_slider.setFixedWidth(80)
-        self.vol_slider.valueChanged.connect(lambda v: self.audio.setVolume(v / 100))
+        self.vol_slider.valueChanged.connect(self._on_volume_change)
         cl.addWidget(self.vol_slider)
 
         layout.addWidget(controls)
@@ -475,6 +511,23 @@ class VideoPlayer(QWidget):
         proxy_layout = QHBoxLayout(proxy_controls)
         proxy_layout.setContentsMargins(8, 0, 8, 0)
         proxy_layout.setSpacing(6)
+        proxy_layout.addWidget(QLabel("Player:"))
+        self.cmb_player_backend = QComboBox()
+        self.cmb_player_backend.addItem("Qt Multimedia", "qt")
+        if self._mpv_widget:
+            self.cmb_player_backend.addItem(
+                f"mpv {self._mpv_capability.wrapper_version} (experimental)",
+                "mpv",
+            )
+        else:
+            self.cmb_player_backend.setToolTip(
+                "Optional mpv backend unavailable: "
+                + (self._mpv_capability.reason or "install ClipForge[mpv] and libmpv")
+            )
+        self.cmb_player_backend.setAccessibleName("Preview player backend")
+        self.cmb_player_backend.setMaximumWidth(220)
+        self.cmb_player_backend.currentIndexChanged.connect(self._change_player_backend)
+        proxy_layout.addWidget(self.cmb_player_backend)
         self.lbl_proxy_status = QLabel("Preview: original source")
         self.lbl_proxy_status.setProperty("class", "dimLabel")
         self.lbl_proxy_status.setAccessibleName("Proxy preview status")
@@ -520,6 +573,58 @@ class VideoPlayer(QWidget):
         self.btn_toggle_proxy.setEnabled(bool(self._proxy_path))
         self._set_playback_source(self._proxy_path or filepath)
 
+    def _change_player_backend(self, _index=None):
+        selected = self.cmb_player_backend.currentData() or "qt"
+        if selected == self._backend_name:
+            return
+        position = self.get_position_sec()
+        if selected == "mpv" and self._mpv_widget:
+            self.player.stop()
+            self.player.setSource(QUrl())
+            self.player.setVideoOutput(None)
+            self._backend_name = "mpv"
+            self.video_stack.setCurrentWidget(self._mpv_widget)
+            if self._playback_path:
+                playback_path = self._playback_path
+                QTimer.singleShot(
+                    600,
+                    lambda: self._finish_mpv_backend_switch(
+                        playback_path,
+                        position,
+                    ),
+                )
+            self.lbl_proxy_status.setToolTip(
+                "Experimental libmpv backend: broader codec support and exact frame-step; "
+                "adds python-mpv plus a separately supplied libmpv runtime."
+            )
+        else:
+            if self._mpv_widget:
+                self._mpv_widget.stop()
+            self._backend_name = "qt"
+            self.player.setVideoOutput(self.video_widget)
+            self.video_stack.setCurrentWidget(self.video_widget)
+            if self._playback_path:
+                self.player.setSource(QUrl.fromLocalFile(self._playback_path))
+                self.player.setPosition(int(position * 1000))
+            self.lbl_proxy_status.setToolTip(
+                "Qt Multimedia is bundled and has the smallest distribution footprint."
+            )
+        self.btn_play.setText("Play")
+
+    def _finish_mpv_backend_switch(self, playback_path, position):
+        """Load mpv after Qt Multimedia has released its native video surface."""
+        if (
+            self._backend_name != "mpv"
+            or not self._mpv_widget
+            or playback_path != self._playback_path
+        ):
+            return
+        self._mpv_widget.load(playback_path, start=position)
+        self._mpv_widget.set_volume(self.vol_slider.value())
+        self._mpv_widget.set_speed(
+            float(self.cmb_speed.currentText().replace("x", ""))
+        )
+
     def _cancel_background_reads(self):
         if self._thumb_worker and self._thumb_worker.isRunning():
             self._thumb_worker.cancel()
@@ -539,7 +644,12 @@ class VideoPlayer(QWidget):
             and Path(self._playback_path).resolve() == Path(self._proxy_path).resolve()
         )
         self._show_player_status("Loading preview…", C["subtext0"])
-        self.player.setSource(QUrl.fromLocalFile(self._playback_path))
+        if self._backend_name == "mpv" and self._mpv_widget:
+            self._mpv_widget.load(self._playback_path)
+            self.video_stack.setCurrentWidget(self._mpv_widget)
+        else:
+            self.player.setSource(QUrl.fromLocalFile(self._playback_path))
+            self.video_stack.setCurrentWidget(self.video_widget)
         self.btn_play.setText("Play")
         self.lbl_proxy_status.setText(
             f"Preview: proxy ({format_size(Path(self._playback_path).stat().st_size)})"
@@ -645,6 +755,8 @@ class VideoPlayer(QWidget):
         self.lbl_player_status.show()
 
     def _on_player_error(self, error, message=""):
+        if self._backend_name != "qt":
+            return
         if error == QMediaPlayer.Error.NoError:
             return
         error_key = (error, message or self.player.errorString())
@@ -666,7 +778,15 @@ class VideoPlayer(QWidget):
         self.btn_play.setText("Play")
         self.playbackError.emit(actionable)
 
+    def _on_mpv_error(self, message):
+        actionable = f"mpv preview error: {message}. FFmpeg editing remains available."
+        self._show_player_status(actionable, C["red"])
+        self.btn_play.setText("Play")
+        self.playbackError.emit(actionable)
+
     def _on_media_status(self, status):
+        if self._backend_name != "qt":
+            return
         if status in (
             QMediaPlayer.MediaStatus.LoadedMedia,
             QMediaPlayer.MediaStatus.BufferedMedia,
@@ -685,6 +805,14 @@ class VideoPlayer(QWidget):
             )
 
     def _toggle_play(self):
+        if self._backend_name == "mpv" and self._mpv_widget:
+            if self._mpv_widget.is_paused():
+                self._mpv_widget.play()
+                self.btn_play.setText("Pause")
+            else:
+                self._mpv_widget.pause()
+                self.btn_play.setText("Play")
+            return
         if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             self.player.pause()
             self.btn_play.setText("Play")
@@ -693,12 +821,18 @@ class VideoPlayer(QWidget):
             self.btn_play.setText("Pause")
 
     def _frame_back(self):
+        if self._backend_name == "mpv" and self._mpv_widget:
+            self._mpv_widget.frame_step(-1)
+            return
         if self._duration > 0:
             step = int(1000 / self._fps)
             pos = max(0, self.player.position() - step)
             self.player.setPosition(pos)
 
     def _frame_forward(self):
+        if self._backend_name == "mpv" and self._mpv_widget:
+            self._mpv_widget.frame_step(1)
+            return
         if self._duration > 0:
             step = int(1000 / self._fps)
             pos = min(self._duration, self.player.position() + step)
@@ -706,16 +840,25 @@ class VideoPlayer(QWidget):
 
     def _on_speed_change(self, text):
         speed = float(text.replace("x", ""))
-        self.player.setPlaybackRate(speed)
+        if self._backend_name == "mpv" and self._mpv_widget:
+            self._mpv_widget.set_speed(speed)
+        else:
+            self.player.setPlaybackRate(speed)
+
+    def _on_volume_change(self, value):
+        if self._backend_name == "mpv" and self._mpv_widget:
+            self._mpv_widget.set_volume(value)
+        else:
+            self.audio.setVolume(value / 100)
 
     def _toggle_ab_loop(self, checked):
         if checked:
             if self._loop_a < 0:
-                self._loop_a = self.player.position()
+                self._loop_a = int(self.get_position_sec() * 1000)
                 self.btn_ab_loop.setText("B?")
                 self.btn_ab_loop.setToolTip("Click to set B point")
             elif self._loop_b < 0:
-                self._loop_b = self.player.position()
+                self._loop_b = int(self.get_position_sec() * 1000)
                 self._loop_active = True
                 self.btn_ab_loop.setText("A-B")
                 self.btn_ab_loop.setToolTip("A-B loop active (click to clear)")
@@ -741,30 +884,48 @@ class VideoPlayer(QWidget):
         self.positionChanged.emit(pos_ms / 1000)
         # A-B loop
         if self._loop_active and self._loop_b > 0 and pos_ms >= self._loop_b:
-            self.player.setPosition(self._loop_a)
+            if self._backend_name == "mpv" and self._mpv_widget:
+                self._mpv_widget.seek(self._loop_a / 1000)
+            else:
+                self.player.setPosition(self._loop_a)
 
     def _on_duration(self, dur_ms):
         self._duration = dur_ms
 
     def _seek(self, value):
         if self._duration > 0:
-            self.player.setPosition(int(value / 10000 * self._duration))
+            position_ms = int(value / 10000 * self._duration)
+            if self._backend_name == "mpv" and self._mpv_widget:
+                self._mpv_widget.seek(position_ms / 1000)
+            else:
+                self.player.setPosition(position_ms)
 
     def _on_thumb_click(self, ratio):
         if self._duration > 0:
-            self.player.setPosition(int(ratio * self._duration))
+            position_ms = int(ratio * self._duration)
+            if self._backend_name == "mpv" and self._mpv_widget:
+                self._mpv_widget.seek(position_ms / 1000)
+            else:
+                self.player.setPosition(position_ms)
 
     def stop(self):
-        self.player.stop()
+        if self._backend_name == "mpv" and self._mpv_widget:
+            self._mpv_widget.stop()
+        else:
+            self.player.stop()
         self.btn_play.setText("Play")
 
     def release(self):
         """Release media handles and finish the current thumbnail read."""
         self.stop()
         self.player.setSource(QUrl())
+        if self._mpv_widget:
+            self._mpv_widget.shutdown()
         self._cancel_background_reads()
 
     def get_position_sec(self):
+        if self._backend_name == "mpv" and self._mpv_widget:
+            return self._mpv_widget.position()
         return self.player.position() / 1000
 
     def get_fps(self):
