@@ -2,13 +2,14 @@
 
 import sys
 import os
+from collections import deque
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QStackedWidget, QTextEdit, QSplitter,
     QListWidget, QListWidgetItem, QScrollArea, QStatusBar,
-    QComboBox,
+    QComboBox, QFileDialog,
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QPalette, QDragEnterEvent, QDropEvent
@@ -17,7 +18,8 @@ from . import APP_NAME, APP_VERSION
 from .constants import C, WINDOW_TITLE, VIDEO_EXTS
 from .theme import STYLESHEET
 from .settings import load_settings, save_settings, load_recent
-from .tools import FFMPEG, HW_ENCODERS
+from .tools import FFMPEG, HW_ENCODERS, _confirm_overwrite
+from .diagnostics import DIAGNOSTICS, classify_severity
 from .widgets import Toast, FileInfoBar, VideoPlayer
 from .panels.trim import TrimPanel
 from .panels.crop import CropPanel
@@ -170,6 +172,13 @@ class MainWindow(QMainWindow):
         self.cmb_log_filter.currentTextChanged.connect(self._filter_console)
         console_toolbar.addWidget(self.cmb_log_filter)
         console_toolbar.addStretch()
+        btn_export_diagnostics = QPushButton("Export Diagnostics")
+        btn_export_diagnostics.setToolTip(
+            "Save bounded job diagnostics with file paths redacted; media is never included"
+        )
+        btn_export_diagnostics.clicked.connect(self._export_diagnostics)
+        btn_export_diagnostics.setFixedHeight(24)
+        console_toolbar.addWidget(btn_export_diagnostics)
         btn_copy_log_md = QPushButton("Copy as Markdown")
         btn_copy_log_md.setToolTip("Copy console output formatted as Markdown (for bug reports)")
         btn_copy_log_md.clicked.connect(self._copy_log_as_markdown)
@@ -187,16 +196,20 @@ class MainWindow(QMainWindow):
         self.console.setReadOnly(True)
         self.console.setMaximumHeight(150)
         self.console.setPlaceholderText("FFmpeg output will appear here")
+        self.console.document().setMaximumBlockCount(2000)
         console_vl.addWidget(self.console)
 
         # Store raw lines for filtering
-        self._console_lines = []
+        self._console_lines = deque(maxlen=2000)
         self._original_console_append = self.console.append
 
         def _tracked_append(text):
-            self._console_lines.append(text)
+            text = str(text)
+            severity = classify_severity(text)
+            self._console_lines.append((severity, text))
+            DIAGNOSTICS.event(severity, text)
             level_filter = self.cmb_log_filter.currentText()
-            if level_filter == "All" or self._line_matches_filter(text, level_filter):
+            if self._line_matches_filter(text, level_filter):
                 self._original_console_append(text)
 
         self.console.append = _tracked_append
@@ -257,33 +270,60 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _line_matches_filter(text, level_filter):
-        """Check if a log line matches the selected filter level."""
-        text_lower = text.lower()
-        if level_filter == "Error":
-            return "[error]" in text_lower or "error" in text_lower or "failed" in text_lower
-        elif level_filter == "Warning":
-            return ("[warn" in text_lower or "warning" in text_lower
-                    or "[error]" in text_lower or "error" in text_lower or "failed" in text_lower)
-        elif level_filter == "Info":
-            return True  # info shows everything except pure ffmpeg progress noise
-        return True
+        """Match exactly one structured severity, or all severities."""
+        return level_filter == "All" or classify_severity(text) == level_filter.lower()
 
     def _filter_console(self, level):
         """Re-render console with only lines matching the selected level."""
         self.console.blockSignals(True)
-        self._original_console_append("")  # dummy to avoid issues
         self.console.clear()
-        for line in self._console_lines:
-            if level == "All" or self._line_matches_filter(line, level):
+        for severity, line in self._console_lines:
+            if level == "All" or severity == level.lower():
                 self._original_console_append(line)
         self.console.blockSignals(False)
 
     def _copy_log_as_markdown(self):
         """Copy console output formatted as Markdown code block."""
-        text = "\n".join(self._console_lines) if self._console_lines else self.console.toPlainText()
+        text = (
+            "\n".join(line for _severity, line in self._console_lines)
+            if self._console_lines
+            else self.console.toPlainText()
+        )
         md = f"```\n{text}\n```"
         QApplication.clipboard().setText(md)
         self.toast.show_message("Log copied as Markdown")
+
+    def _export_diagnostics(self):
+        default_path = (
+            Path.home()
+            / "Documents"
+            / f"ClipForge-{APP_VERSION}-diagnostics.json"
+        )
+        output_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Redacted Diagnostics",
+            str(default_path),
+            "JSON Diagnostics (*.json);;All Files (*)",
+        )
+        if not output_path:
+            return
+        if not output_path.lower().endswith(".json"):
+            output_path += ".json"
+        if not _confirm_overwrite(self, output_path):
+            return
+        try:
+            DIAGNOSTICS.event(
+                "info",
+                "Exported privacy-safe support diagnostics.",
+                context={"paths_redacted": True, "media_contents_included": False},
+            )
+            DIAGNOSTICS.export(output_path, redact=True)
+        except (OSError, TypeError, ValueError) as exc:
+            self.toast.show_message(f"Diagnostics export failed: {exc}", C["red"], 5000)
+            return
+        self.toast.show_message(
+            f"Redacted diagnostics saved: {Path(output_path).name}", C["green"], 5000
+        )
 
     def _switch_panel(self, idx):
         self.stack.setCurrentIndex(idx)

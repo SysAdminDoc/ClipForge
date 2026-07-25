@@ -32,6 +32,7 @@ from .processes import (
     terminate_process_tree,
     validate_output,
 )
+from .diagnostics import DIAGNOSTICS
 
 # ---------------------------------------------------------------------------
 # Process helpers
@@ -40,6 +41,41 @@ from .processes import (
 
 def _kill_process_tree(proc):
     terminate_process_tree(proc)
+
+
+def _start_worker_diagnostics(worker, kind, command, *, context=None):
+    runner = command[0] if command else None
+    tools = {
+        "ffmpeg": DIAGNOSTICS.tool_version("ffmpeg", FFMPEG),
+        "ffprobe": DIAGNOSTICS.tool_version("ffprobe", FFPROBE),
+    }
+    if runner and (Path(str(runner)).is_file() or shutil.which(str(runner))):
+        tools[Path(str(runner)).name] = DIAGNOSTICS.tool_version("runner", runner)
+    job_id = DIAGNOSTICS.start_job(
+        kind,
+        command,
+        tools=tools,
+        context=context,
+    )
+    if hasattr(worker, "log_output"):
+        worker.log_output.connect(
+            lambda message: DIAGNOSTICS.log(job_id, message),
+            Qt.ConnectionType.DirectConnection,
+        )
+
+    def finish_diagnostics(ok, message, *_args):
+        DIAGNOSTICS.finish(job_id, ok, message)
+        if hasattr(worker, "log_output"):
+            severity = "INFO" if ok else "ERROR"
+            worker.log_output.emit(f"[{severity}] Job {job_id}: {message}\n")
+
+    worker.finished_signal.connect(
+        finish_diagnostics,
+        Qt.ConnectionType.DirectConnection,
+    )
+    if hasattr(worker, "log_output"):
+        worker.log_output.emit(f"[INFO] Job {job_id} started ({kind})\n")
+    return job_id
 
 
 _FFMPEG_ERROR_PATTERNS = [
@@ -140,6 +176,16 @@ class FFmpegWorker(QThread):
 
     def run(self):
         staged_path = None
+        diagnostic_id = _start_worker_diagnostics(
+            self,
+            "media-process",
+            self.cmd,
+            context={
+                "output_path": self.output_path,
+                "timeout_seconds": self.timeout,
+                "output_validation": bool(self.output_path),
+            },
+        )
         try:
             self._start_time = _time.time()
             command = list(self.cmd)
@@ -162,6 +208,12 @@ class FFmpegWorker(QThread):
                 stdout_callback=self._progress_line if self.parse_progress else self.log_output.emit,
                 stderr_callback=self._stderr_line,
             )
+            DIAGNOSTICS.update(
+                diagnostic_id,
+                exit_code=outcome.returncode,
+                cancelled=outcome.cancelled,
+                timed_out=outcome.timed_out,
+            )
             elapsed = _time.time() - self._start_time
             if outcome.cancelled:
                 self.finished_signal.emit(False, "Cancelled")
@@ -170,6 +222,11 @@ class FFmpegWorker(QThread):
             elif outcome.returncode == 0:
                 if final_path:
                     valid, reason = validate_output(staged_path, ffprobe_path=FFPROBE)
+                    DIAGNOSTICS.update(
+                        diagnostic_id,
+                        output_valid=valid,
+                        output_validation_message=reason,
+                    )
                     if not valid:
                         self.finished_signal.emit(False, reason)
                         return
@@ -190,6 +247,7 @@ class FFmpegWorker(QThread):
                         hint or f"Process exited with code {outcome.returncode}",
                     )
         except Exception as e:
+            DIAGNOSTICS.update(diagnostic_id, exception=type(e).__name__)
             self.finished_signal.emit(False, str(e))
         finally:
             if staged_path:
@@ -358,6 +416,15 @@ class QualityMetricsWorker(QThread):
         return first_line[0] if first_line else "unavailable"
 
     def run(self):
+        diagnostic_id = _start_worker_diagnostics(
+            self,
+            "quality-comparison",
+            ["quality-comparison", self.reference_path, self.encoded_path],
+            context={
+                "sync_offset_seconds": self.sync_offset,
+                "metric_timeout_seconds": self.metric_timeout,
+            },
+        )
         if not FFMPEG:
             self.finished_signal.emit(False, "FFmpeg not found", {})
             return
@@ -404,22 +471,32 @@ class QualityMetricsWorker(QThread):
             succeeded = statuses.count("succeeded")
             if self._cancel_event.is_set() or "cancelled" in statuses:
                 results["status"] = "cancelled"
-                self.finished_signal.emit(False, "Quality comparison cancelled", results)
+                ok = False
+                message = "Quality comparison cancelled"
             elif succeeded == len(statuses):
                 results["status"] = "complete"
-                self.finished_signal.emit(True, "Quality comparison complete", results)
+                ok = True
+                message = "Quality comparison complete"
             elif succeeded:
                 results["status"] = "partial"
-                self.finished_signal.emit(
-                    True, "Quality comparison completed with partial results", results
-                )
+                ok = True
+                message = "Quality comparison completed with partial results"
             else:
                 results["status"] = "failed"
-                self.finished_signal.emit(
-                    False, "No quality metrics could be computed", results
-                )
+                ok = False
+                message = "No quality metrics could be computed"
+            DIAGNOSTICS.update(
+                diagnostic_id,
+                comparison_status=results["status"],
+                metric_statuses={
+                    key: results["metrics"].get(key, {}).get("status")
+                    for key in ("vmaf", "psnr", "ssim")
+                },
+            )
+            self.finished_signal.emit(ok, message, results)
         except Exception as exc:
             results["status"] = "failed"
+            DIAGNOSTICS.update(diagnostic_id, exception=type(exc).__name__)
             self.finished_signal.emit(False, str(exc), results)
 
 
@@ -491,6 +568,18 @@ class UpscaleWorker(QThread):
         self._cancel_event.set()
 
     def run(self):
+        diagnostic_id = _start_worker_diagnostics(
+            self,
+            "ai-upscale",
+            [
+                self.engine,
+                self.input_path,
+                self.output_path,
+                self.model,
+                str(self.scale),
+            ],
+            context={"output_validation": True},
+        )
         if self.engine == "span":
             upscaler = find_span()
             upscaler_name = "SPAN"
@@ -606,6 +695,11 @@ class UpscaleWorker(QThread):
                 self.finished_signal.emit(False, "Video reassembly failed")
                 return
             valid, reason = validate_output(staged_output, ffprobe_path=FFPROBE)
+            DIAGNOSTICS.update(
+                diagnostic_id,
+                output_valid=valid,
+                output_validation_message=reason,
+            )
             if not valid:
                 self.finished_signal.emit(False, reason)
                 return
@@ -614,6 +708,7 @@ class UpscaleWorker(QThread):
             self.progress.emit(100)
             self.finished_signal.emit(True, "Upscale complete")
         except Exception as e:
+            DIAGNOSTICS.update(diagnostic_id, exception=type(e).__name__)
             self.finished_signal.emit(False, str(e))
         finally:
             if 'tmpdir' in locals():
@@ -659,6 +754,18 @@ class InterpolateWorker(QThread):
         self._cancel_event.set()
 
     def run(self):
+        diagnostic_id = _start_worker_diagnostics(
+            self,
+            "frame-interpolation",
+            [
+                "rife",
+                self.input_path,
+                self.output_path,
+                self.model,
+                str(self.multiplier),
+            ],
+            context={"output_validation": True},
+        )
         rife = find_rife()
         if not rife:
             self.log_output.emit(
@@ -773,6 +880,11 @@ class InterpolateWorker(QThread):
                 self.finished_signal.emit(False, "Video reassembly failed")
                 return
             valid, reason = validate_output(staged_output, ffprobe_path=FFPROBE)
+            DIAGNOSTICS.update(
+                diagnostic_id,
+                output_valid=valid,
+                output_validation_message=reason,
+            )
             if not valid:
                 self.finished_signal.emit(False, reason)
                 return
@@ -784,6 +896,7 @@ class InterpolateWorker(QThread):
                 f"Interpolation complete ({fps} -> {new_fps} fps)",
             )
         except Exception as e:
+            DIAGNOSTICS.update(diagnostic_id, exception=type(e).__name__)
             self.finished_signal.emit(False, str(e))
         finally:
             if 'tmpdir' in locals():
