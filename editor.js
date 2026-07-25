@@ -7,6 +7,11 @@ let selectedClips = []; // Currently selected clips
 let clipboard = null; // Copied clip data
 let currentTool = 'select';
 let currentTransitionType = 'dissolve';
+const trackStates = {
+    video: { visible: true, locked: false },
+    audio: { muted: false, solo: false },
+    music: { muted: false, solo: false },
+};
 
 // Playback state
 let isPlaying = false;
@@ -52,14 +57,31 @@ document.addEventListener('DOMContentLoaded', async () => {
     await initFFmpeg();
 });
 
+function withTimeout(promise, timeoutMs, label) {
+    let timeoutId;
+    const timeout = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(`${label} timed out after ${Math.round(timeoutMs / 1000)} seconds`)), timeoutMs);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timeoutId));
+}
+
 async function initFFmpeg() {
     await window.coiReady;
 
+    let classWorkerURL = null;
     try {
         document.getElementById('loadingText').textContent = 'Loading FFmpeg modules...';
 
-        const { FFmpeg } = await import('https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/+esm');
-        const { toBlobURL, fetchFile } = await import('https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/+esm');
+        const { FFmpeg } = await withTimeout(
+            import('https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/+esm'),
+            15000,
+            'FFmpeg module download',
+        );
+        const { toBlobURL, fetchFile } = await withTimeout(
+            import('https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/+esm'),
+            15000,
+            'FFmpeg utility download',
+        );
 
         ffmpeg = new FFmpeg();
         window.ffmpegFetchFile = fetchFile;
@@ -67,6 +89,7 @@ async function initFFmpeg() {
         ffmpeg.on("progress", ({ progress }) => {
             const pct = Math.round((progress || 0) * 100);
             document.getElementById('loadingProgress').style.width = pct + '%';
+            document.getElementById('loadingProgressTrack').setAttribute('aria-valuenow', String(pct));
         });
         ffmpeg.on("log", ({ message }) => {
             console.log('[ffmpeg]', message);
@@ -78,14 +101,26 @@ async function initFFmpeg() {
         const coreBase = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/esm';
         // ffmpeg.wasm starts a wrapper worker before loading the core; wrap it in a
         // same-origin blob so GitHub Pages can construct the worker from CDN code.
-        const classWorkerURL = URL.createObjectURL(new Blob([
+        classWorkerURL = URL.createObjectURL(new Blob([
             `import "${ffmpegBase}/worker.js";`
         ], { type: 'text/javascript' }));
-        const coreURL = await toBlobURL(`${coreBase}/ffmpeg-core.js`, 'text/javascript');
-        const wasmURL = await toBlobURL(`${coreBase}/ffmpeg-core.wasm`, 'application/wasm');
+        const coreURL = await withTimeout(
+            toBlobURL(`${coreBase}/ffmpeg-core.js`, 'text/javascript'),
+            60000,
+            'FFmpeg core download',
+        );
+        const wasmURL = await withTimeout(
+            toBlobURL(`${coreBase}/ffmpeg-core.wasm`, 'application/wasm'),
+            60000,
+            'FFmpeg WebAssembly download',
+        );
 
         document.getElementById('loadingText').textContent = 'Initializing FFmpeg...';
-        await ffmpeg.load({ classWorkerURL, coreURL, wasmURL });
+        await withTimeout(
+            ffmpeg.load({ classWorkerURL, coreURL, wasmURL }),
+            30000,
+            'FFmpeg initialization',
+        );
 
         ffmpegLoaded = true;
         document.getElementById('loadingOverlay').classList.add('hidden');
@@ -96,6 +131,8 @@ async function initFFmpeg() {
     } catch (e) {
         const errMsg = (e && (e.message || e.toString())) || 'Unknown error';
         console.error('FFmpeg load error:', e);
+        document.getElementById('statusText').textContent = 'Engine unavailable';
+        document.getElementById('loadingOverlay').setAttribute('role', 'alert');
         document.getElementById('loadingOverlay').innerHTML = `
             <div style="text-align: center;">
                 <div style="font-size: 48px; margin-bottom: 16px;">⚠️</div>
@@ -104,6 +141,8 @@ async function initFFmpeg() {
                 <button class="btn primary" onclick="location.reload()">Retry</button>
             </div>
         `;
+    } finally {
+        if (classWorkerURL) URL.revokeObjectURL(classWorkerURL);
     }
 }
 
@@ -117,6 +156,12 @@ function setupEventListeners() {
     dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
     dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
     dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('drag-over'); handleFileDrop(e.dataTransfer.files); });
+    dropZone.addEventListener('keydown', e => {
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            document.getElementById('fileInput').click();
+        }
+    });
     
     // Timeline interactions
     const tracksContainer = document.getElementById('tracksContainer');
@@ -140,17 +185,49 @@ function setupEventListeners() {
     previewVideo.addEventListener('timeupdate', onVideoTimeUpdate);
     previewVideo.addEventListener('loadedmetadata', onVideoLoaded);
     previewVideo.addEventListener('ended', onVideoEnded);
+    previewVideo.addEventListener('error', () => {
+        document.getElementById('previewPlaceholder').style.display = 'flex';
+        document.querySelector('.preview-placeholder-text').textContent =
+            'Preview could not decode this media. Try another browser or export with the desktop app.';
+        toast('error', 'Preview could not decode the selected media');
+    });
     
     // Panel tabs
     document.querySelectorAll('.panel-tab').forEach(tab => {
-        tab.addEventListener('click', () => {
-            tab.parentElement.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('active'));
-            tab.classList.add('active');
+        tab.addEventListener('click', () => activatePanelTab(tab));
+        tab.addEventListener('keydown', event => {
+            if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+            event.preventDefault();
+            const tabs = [...tab.parentElement.querySelectorAll('[role="tab"]')];
+            let index = tabs.indexOf(tab);
+            if (event.key === 'Home') index = 0;
+            else if (event.key === 'End') index = tabs.length - 1;
+            else index = (index + (event.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+            tabs[index].focus();
+            activatePanelTab(tabs[index]);
         });
+    });
+
+    document.querySelectorAll('[data-track-control]').forEach(button => {
+        button.addEventListener('click', () => toggleTrackControl(button));
     });
     
     // Media list drag
     document.getElementById('mediaList').addEventListener('dragstart', onMediaDragStart);
+}
+
+function activatePanelTab(tab) {
+    const tabList = tab.parentElement;
+    const panelOwner = tab.closest('.media-panel, .properties-panel');
+    tabList.querySelectorAll('[role="tab"]').forEach(item => {
+        const active = item === tab;
+        item.classList.toggle('active', active);
+        item.setAttribute('aria-selected', String(active));
+        item.tabIndex = active ? 0 : -1;
+    });
+    panelOwner.querySelectorAll('.tab-panel').forEach(panel => {
+        panel.hidden = panel.id !== tab.getAttribute('aria-controls');
+    });
 }
 
 function handleKeyboard(e) {
@@ -450,6 +527,15 @@ function renderTimeline() {
     Object.values(tracks).forEach(track => {
         track.innerHTML = '';
     });
+    Object.entries(tracks).forEach(([name, track]) => {
+        const state = trackStates[name];
+        track.classList.toggle('hidden-track', state?.visible === false);
+        track.classList.toggle('locked', Boolean(state?.locked));
+        const anotherSoloed = ['audio', 'music'].some(
+            key => key !== name && trackStates[key]?.solo
+        );
+        track.classList.toggle('muted', Boolean(state?.muted || anotherSoloed));
+    });
     
     // Set timeline width based on duration
     const totalWidth = Math.max(duration * pixelsPerSecond + 500, document.getElementById('tracksContainer').offsetWidth);
@@ -586,6 +672,14 @@ function onTimelineMouseDown(e) {
     const rect = document.getElementById('tracksContainer').getBoundingClientRect();
     const x = e.clientX - rect.left + document.getElementById('tracksContainer').scrollLeft;
     const y = e.clientY - rect.top;
+    const targetClip = e.target.closest('.clip');
+    if (targetClip) {
+        const target = clips.find(c => c.id == targetClip.dataset.id);
+        if (target && trackStates[target.track]?.locked) {
+            toast('warning', `${target.track} track is locked`);
+            return;
+        }
+    }
     
     // Check for playhead
     const playheadX = currentTime * pixelsPerSecond;
@@ -823,8 +917,22 @@ function onMediaDragStart(e) {
 function setTool(tool) {
     currentTool = tool;
     document.querySelectorAll('.tool-btn').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.tool === tool);
+        const active = btn.dataset.tool === tool;
+        btn.classList.toggle('active', active);
+        btn.setAttribute('aria-pressed', String(active));
     });
+}
+
+function toggleTrackControl(button) {
+    const track = button.dataset.track;
+    const control = button.dataset.trackControl;
+    const state = trackStates[track];
+    if (!state || !(control in state)) return;
+    state[control] = !state[control];
+    button.classList.toggle('active', state[control]);
+    button.setAttribute('aria-pressed', String(state[control]));
+    renderTimeline();
+    toast('info', `${track} ${control} ${state[control] ? 'enabled' : 'disabled'}`);
 }
 
 function setZoom(value) {
@@ -999,7 +1107,9 @@ function addTransition() {
 function selectTransitionType(type) {
     currentTransitionType = type;
     document.querySelectorAll('.transition-item').forEach(item => {
-        item.classList.toggle('selected', item.dataset.transition === type);
+        const selected = item.dataset.transition === type;
+        item.classList.toggle('selected', selected);
+        item.setAttribute('aria-pressed', String(selected));
     });
 }
 
@@ -1147,7 +1257,10 @@ function setVolume(value) {
 
 function toggleMute() {
     previewVideo.muted = !previewVideo.muted;
-    document.querySelector('.volume-btn').textContent = previewVideo.muted ? '🔇' : '🔊';
+    const button = document.querySelector('.volume-btn');
+    button.textContent = previewVideo.muted ? '🔇' : '🔊';
+    button.setAttribute('aria-pressed', String(previewVideo.muted));
+    button.setAttribute('aria-label', previewVideo.muted ? 'Unmute preview audio' : 'Mute preview audio');
 }
 
 // ==================== CLIP PROPERTIES ====================
@@ -1174,6 +1287,8 @@ function updateClipPropertiesPanel(clip) {
     document.getElementById('contrastValue').textContent = clip.contrast;
     document.getElementById('saturationSlider').value = clip.saturation;
     document.getElementById('saturationValue').textContent = clip.saturation;
+    document.getElementById('volumeValueSlider').value = clip.volume ?? 100;
+    document.getElementById('volumeValue').textContent = (clip.volume ?? 100) + '%';
 }
 
 function clearClipPropertiesPanel() {
@@ -1190,6 +1305,27 @@ function updateClipProperty(property, value) {
     selectedClips.forEach(clip => {
         clip[property] = parseInt(value);
     });
+    if (selectedClips.length > 0) renderTimeline();
+}
+
+function applyQuickEffect(effect) {
+    if (selectedClips.length === 0) {
+        toast('warning', 'Select a clip before applying an effect');
+        return;
+    }
+    const presets = {
+        cinematic: { brightness: -5, contrast: 20, saturation: -10 },
+        bright: { brightness: 18, contrast: 5, saturation: 8 },
+        mono: { brightness: 0, contrast: 12, saturation: -100 },
+        reset: { brightness: 0, contrast: 0, saturation: 0 },
+    };
+    const preset = presets[effect];
+    if (!preset) return;
+    pushUndo();
+    selectedClips.forEach(clip => Object.assign(clip, preset));
+    updateClipPropertiesPanel(selectedClips[0]);
+    renderTimeline();
+    toast('success', 'Effect applied to selected clip');
 }
 
 // ==================== EXPORT ====================
@@ -1198,11 +1334,17 @@ function showExportModal() {
         toast('error', 'No clips to export');
         return;
     }
-    document.getElementById('exportModal').classList.remove('hidden');
+    const modal = document.getElementById('exportModal');
+    modal.classList.remove('hidden');
+    modal.setAttribute('aria-hidden', 'false');
+    document.getElementById('exportFormat').focus();
 }
 
 function hideExportModal() {
-    document.getElementById('exportModal').classList.add('hidden');
+    const modal = document.getElementById('exportModal');
+    modal.classList.add('hidden');
+    modal.setAttribute('aria-hidden', 'true');
+    document.getElementById('exportButton').focus();
 }
 
 async function exportVideo() {
@@ -1214,6 +1356,7 @@ async function exportVideo() {
     overlay.classList.remove('hidden');
     document.getElementById('loadingText').textContent = 'Exporting video...';
     document.getElementById('loadingProgress').style.width = '0%';
+    document.getElementById('loadingProgressTrack').setAttribute('aria-valuenow', '0');
 
     try {
         const format = document.getElementById('exportFormat').value;
@@ -1425,6 +1568,7 @@ function toast(type, message) {
     const container = document.getElementById('toastContainer');
     const el = document.createElement('div');
     el.className = `toast ${type}`;
+    el.setAttribute('role', type === 'error' ? 'alert' : 'status');
     const icons = { success: '✓', error: '✕', info: 'ℹ', warning: '⚠' };
     el.innerHTML = `
         <span class="toast-icon">${icons[type] || 'ℹ'}</span>
@@ -1449,5 +1593,5 @@ Object.assign(window, {
     setTool, setZoom, splitClip, deleteSelected, copyClip, cutClip, pasteClip,
     selectAllClips, addTransition, selectTransitionType, unlinkAudio,
     setVolume, toggleMute, showExportModal, hideExportModal, exportVideo,
-    saveProject, showEditMenu, updateClipProperty,
+    saveProject, showEditMenu, updateClipProperty, applyQuickEffect,
 });

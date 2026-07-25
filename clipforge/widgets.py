@@ -103,15 +103,32 @@ class RangeSlider(QWidget):
         self._low = 0.0
         self._high = 1.0
         self._pressed = None
+        self._active_handle = "low"
         self.setMinimumHeight(36)
         self.setMinimumWidth(200)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setAccessibleName("Trim range")
+        self._update_accessible_description()
+
+    def set_limits(self, minimum, maximum):
+        self._min = float(minimum)
+        self._max = max(float(maximum), self._min)
+        self.set_range(self._min, self._max)
 
     def set_range(self, low, high):
         self._low = max(self._min, min(low, self._high))
         self._high = min(self._max, max(high, self._low))
+        self._update_accessible_description()
         self.update()
         self.rangeChanged.emit(self._low, self._high)
+
+    def _update_accessible_description(self):
+        self.setAccessibleDescription(
+            f"Start {self._low:.3f} seconds, end {self._high:.3f} seconds. "
+            "Use Up or Down to choose the end or start handle, then Left or "
+            "Right to adjust it."
+        )
 
     def low(self):
         return self._low
@@ -140,10 +157,11 @@ class RangeSlider(QWidget):
         x_high = self._val_to_x(self._high)
         p.setBrush(QColor(C["blue"]))
         p.drawRoundedRect(int(x_low), track_y, int(x_high - x_low), track_h, 3, 3)
-        for val in [self._low, self._high]:
+        for handle, val in (("low", self._low), ("high", self._high)):
             x = self._val_to_x(val)
             p.setBrush(QColor(C["lavender"]))
-            p.setPen(QPen(QColor(C["surface0"]), 2))
+            outline = C["yellow"] if self.hasFocus() and handle == self._active_handle else C["surface0"]
+            p.setPen(QPen(QColor(outline), 2))
             p.drawEllipse(QPointF(x, h / 2), 8, 8)
         p.end()
 
@@ -153,6 +171,8 @@ class RangeSlider(QWidget):
             self._pressed = "low"
         else:
             self._pressed = "high"
+        self._active_handle = self._pressed
+        self.setFocus()
         self._update_from_mouse(x)
 
     def mouseMoveEvent(self, event):
@@ -169,7 +189,36 @@ class RangeSlider(QWidget):
         elif self._pressed == "high":
             self._high = max(val, self._low + 0.001)
         self.update()
+        self._update_accessible_description()
         self.rangeChanged.emit(self._low, self._high)
+
+    def keyPressEvent(self, event):
+        key = event.key()
+        if key == Qt.Key.Key_Up:
+            self._active_handle = "high"
+            self.update()
+            event.accept()
+            return
+        if key == Qt.Key.Key_Down:
+            self._active_handle = "low"
+            self.update()
+            event.accept()
+            return
+        direction = {
+            Qt.Key.Key_Left: -1,
+            Qt.Key.Key_Right: 1,
+            Qt.Key.Key_PageDown: -10,
+            Qt.Key.Key_PageUp: 10,
+        }.get(key)
+        if direction is not None:
+            step = max((self._max - self._min) / 1000, 0.001)
+            if self._active_handle == "low":
+                self.set_range(self._low + direction * step, self._high)
+            else:
+                self.set_range(self._low, self._high + direction * step)
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
 
 # ---------------------------------------------------------------------------

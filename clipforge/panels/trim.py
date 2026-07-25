@@ -8,7 +8,8 @@ from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QGroupBox, QCheckBox, QComboBox, QSpinBox, QProgressBar, QFileDialog,
+    QGroupBox, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox, QProgressBar,
+    QFileDialog,
 )
 from PyQt6.QtCore import pyqtSignal
 
@@ -48,6 +49,24 @@ class TrimPanel(QWidget):
         self.range_slider = RangeSlider()
         self.range_slider.rangeChanged.connect(self._on_range_changed)
         gl.addWidget(self.range_slider)
+
+        numeric_row = QHBoxLayout()
+        numeric_row.addWidget(QLabel("Start (seconds):"))
+        self.spn_trim_start = QDoubleSpinBox()
+        self.spn_trim_start.setDecimals(3)
+        self.spn_trim_start.setSingleStep(0.100)
+        self.spn_trim_start.setAccessibleName("Trim start time in seconds")
+        self.spn_trim_start.valueChanged.connect(self._on_start_value_changed)
+        numeric_row.addWidget(self.spn_trim_start)
+        numeric_row.addWidget(QLabel("End (seconds):"))
+        self.spn_trim_end = QDoubleSpinBox()
+        self.spn_trim_end.setDecimals(3)
+        self.spn_trim_end.setSingleStep(0.100)
+        self.spn_trim_end.setAccessibleName("Trim end time in seconds")
+        self.spn_trim_end.valueChanged.connect(self._on_end_value_changed)
+        numeric_row.addWidget(self.spn_trim_end)
+        numeric_row.addStretch()
+        gl.addLayout(numeric_row)
 
         times_row = QHBoxLayout()
         self.lbl_start = QLabel("Start: 00:00:00.000")
@@ -145,13 +164,26 @@ class TrimPanel(QWidget):
         self.btn_trim.setEnabled(has_ffmpeg)
         self.btn_split.setEnabled(has_ffmpeg)
         duration = info.get("duration", 0) if info else 0
-        self.range_slider._max = duration
-        self.range_slider.set_range(0, duration)
+        self.spn_trim_start.setRange(0, duration)
+        self.spn_trim_end.setRange(0, duration)
+        self.range_slider.set_limits(0, duration)
 
     def _on_range_changed(self, low, high):
+        self.spn_trim_start.blockSignals(True)
+        self.spn_trim_end.blockSignals(True)
+        self.spn_trim_start.setValue(low)
+        self.spn_trim_end.setValue(high)
+        self.spn_trim_start.blockSignals(False)
+        self.spn_trim_end.blockSignals(False)
         self.lbl_start.setText(f"Start: {format_duration(low)}")
         self.lbl_end.setText(f"End: {format_duration(high)}")
         self.lbl_duration.setText(f"Duration: {format_duration(high - low)}")
+
+    def _on_start_value_changed(self, value):
+        self.range_slider.set_range(value, self.range_slider.high())
+
+    def _on_end_value_changed(self, value):
+        self.range_slider.set_range(self.range_slider.low(), value)
 
     def _set_in_from_player(self):
         pos = self.player.get_position_sec()

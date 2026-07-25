@@ -8,7 +8,7 @@
     <title>ClipForge - Professional Video Editor</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script>
-        window.coiReady=(async()=>{if(window.crossOriginIsolated)return true;if(navigator.serviceWorker?.controller){await new Promise(r=>setTimeout(r,100));if(!window.crossOriginIsolated){window.location.reload();return new Promise(()=>{});}return true;}if(!navigator.serviceWorker)return false;try{const n=document.createElement('div');n.style.cssText='position:fixed;inset:0;background:#0d0d0f;display:flex;align-items:center;justify-content:center;z-index:9999;flex-direction:column;gap:16px;';n.innerHTML='<div style="width:48px;height:48px;border:3px solid #222;border-top-color:#6366f1;border-radius:50%;animation:spin 1s linear infinite;"></div><div style="color:white;font-family:system-ui;font-size:14px;">Initializing ClipForge...</div><style>@keyframes spin{to{transform:rotate(360deg)}}</style>';document.documentElement.appendChild(n);await navigator.serviceWorker.register('coi-serviceworker.js');await navigator.serviceWorker.ready;await new Promise(r=>setTimeout(r,100));window.location.reload();return new Promise(()=>{});}catch(e){return false;}})();
+        window.coiReady=(async()=>{const k='clipforge-coi-reloaded';if(window.crossOriginIsolated){sessionStorage.removeItem(k);return true;}if(navigator.serviceWorker?.controller){await new Promise(r=>setTimeout(r,100));return window.crossOriginIsolated;}if(!navigator.serviceWorker)return false;try{const n=document.createElement('div');n.style.cssText='position:fixed;inset:0;background:#0d0d0f;display:flex;align-items:center;justify-content:center;z-index:9999;flex-direction:column;gap:16px;';n.innerHTML='<div style="width:48px;height:48px;border:3px solid #222;border-top-color:#6366f1;border-radius:50%;animation:spin 1s linear infinite;"></div><div style="color:white;font-family:system-ui;font-size:14px;">Initializing ClipForge...</div><style>@keyframes spin{to{transform:rotate(360deg)}}</style>';document.documentElement.appendChild(n);await navigator.serviceWorker.register('coi-serviceworker.js');await navigator.serviceWorker.ready;sessionStorage.setItem(k,'1');window.location.reload();return new Promise(()=>{});}catch(e){return false;}})();
     </script>
     <!-- ffmpeg.wasm loaded dynamically via ESM import in editor.js -->
     <style>
@@ -62,6 +62,9 @@
             color: var(--text-1);
             cursor: pointer;
             border-radius: 4px;
+            border: 0;
+            background: transparent;
+            font: inherit;
         }
         .menu-item:hover { background: var(--bg-3); color: var(--text-0); }
         .menu-spacer { flex: 1; }
@@ -199,6 +202,13 @@
         }
         .panel-tab:hover { background: var(--bg-2); color: var(--text-1); }
         .panel-tab.active { background: var(--bg-3); color: var(--text-0); }
+        .panel-tab:focus-visible, .track-btn:focus-visible,
+        .transition-item:focus-visible, .drop-zone:focus-visible {
+            outline: 2px solid var(--accent);
+            outline-offset: 2px;
+        }
+        .tab-panel[hidden] { display: none !important; }
+        .tab-panel { min-height: 0; overflow-y: auto; }
         
         .media-list {
             flex: 1;
@@ -379,6 +389,7 @@
             display: flex;
             flex-direction: column;
             flex-shrink: 0;
+            overflow-y: auto;
         }
         .properties-section {
             padding: 14px;
@@ -449,6 +460,10 @@
             background: var(--bg-2);
             border-radius: var(--radius);
             cursor: pointer;
+            border: 0;
+            color: inherit;
+            font-family: inherit;
+            text-align: left;
         }
         .effect-item:hover { background: var(--bg-3); }
         .effect-icon { font-size: 14px; }
@@ -467,6 +482,8 @@
             border-radius: var(--radius);
             text-align: center;
             cursor: pointer;
+            color: inherit;
+            font-family: inherit;
         }
         .transition-item:hover { border-color: var(--border); background: var(--bg-3); }
         .transition-item.selected { border-color: var(--accent); background: var(--accent-dim); }
@@ -641,6 +658,8 @@
         }
         .track-btn:hover { background: var(--bg-4); color: var(--text-1); }
         .track-btn.active { background: var(--accent); color: white; }
+        .track.hidden-track .clip, .track.muted .clip { opacity: 0.25; }
+        .track.locked .clip { cursor: not-allowed; }
         
         .tracks-container {
             flex: 1;
@@ -898,6 +917,35 @@
             box-shadow: 0 24px 48px rgba(0,0,0,0.5);
             animation: modalIn 0.2s cubic-bezier(0.16, 1, 0.3, 1);
         }
+
+        @media (max-width: 1100px) {
+            .media-panel { width: 220px; }
+            .properties-panel { width: 230px; }
+            .preview-controls {
+                flex-wrap: wrap;
+                gap: 6px;
+                padding: 8px 10px;
+            }
+            .volume-control { margin-left: 0; }
+            .timeline-toolbar { flex-wrap: wrap; }
+            .timeline-zoom { margin-left: 0; }
+            .track-headers { width: 112px; }
+            .ruler-markers { left: 112px; }
+            .track-header { padding: 0 6px; gap: 4px; }
+            .track-type { display: none; }
+        }
+
+        @media (max-width: 900px) {
+            .media-panel { width: 190px; }
+            .properties-panel { width: 210px; }
+            .panel-header { padding: 9px 10px; }
+            .header { padding: 6px 10px; gap: 8px; }
+            .status-badge { padding: 5px 8px; }
+            .preview-controls .timecode { min-width: 92px; padding: 6px 8px; }
+            .volume-slider { width: 64px; }
+            .timeline-section { height: 250px; }
+            .property-label { width: 64px; }
+        }
         @keyframes modalIn { from { transform: scale(0.96) translateY(8px); opacity: 0; } }
         .modal-header {
             display: flex;
@@ -968,13 +1016,9 @@
 <body>
     <div class="app">
         <!-- Menu Bar -->
-        <div class="menu-bar">
-            <div class="menu-item" onclick="document.getElementById('fileInput').click()">File</div>
-            <div class="menu-item" onclick="showEditMenu(event)">Edit</div>
-            <div class="menu-item">View</div>
-            <div class="menu-item">Clip</div>
-            <div class="menu-item">Sequence</div>
-            <div class="menu-item">Help</div>
+        <div class="menu-bar" aria-label="Application menu">
+            <button class="menu-item" onclick="document.getElementById('fileInput').click()">File</button>
+            <button class="menu-item" onclick="showEditMenu(event)">Edit</button>
             <div class="menu-spacer"></div>
             <div class="menu-item" style="color: var(--text-3); cursor: default;">v0.5.1</div>
         </div>
@@ -982,17 +1026,17 @@
         <!-- Header -->
         <div class="header">
             <div class="logo">
-                <div class="logo-icon">🎬</div>
+                <div class="logo-icon" aria-hidden="true">🎬</div>
                 ClipForge
             </div>
             <div class="project-name">Untitled Project</div>
             <div class="header-actions">
-                <div class="status-badge">
+                <div class="status-badge" role="status" aria-live="polite">
                     <div class="status-dot" id="statusDot"></div>
                     <span id="statusText">Loading...</span>
                 </div>
-                <button class="btn" onclick="saveProject()">💾 Save</button>
-                <button class="btn primary" onclick="showExportModal()">⬇️ Export</button>
+                <button class="btn" onclick="saveProject()" aria-label="Save project">💾 Save</button>
+                <button class="btn primary" id="exportButton" onclick="showExportModal()" aria-label="Export video">⬇️ Export</button>
             </div>
         </div>
         
@@ -1002,23 +1046,33 @@
             <div class="media-panel">
                 <div class="panel-header">
                     <span class="panel-title">Project</span>
-                    <button class="btn btn-sm" onclick="document.getElementById('fileInput').click()">+ Import</button>
+                    <button class="btn btn-sm" onclick="document.getElementById('fileInput').click()" aria-label="Import media files">+ Import</button>
                 </div>
                 <div class="import-area">
-                    <div class="drop-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
-                        <div class="drop-zone-icon">+</div>
+                    <div class="drop-zone" id="dropZone" role="button" tabindex="0" aria-label="Import video, audio, or image files" onclick="document.getElementById('fileInput').click()">
+                        <div class="drop-zone-icon" aria-hidden="true">+</div>
                         <div class="drop-zone-text">Drop files here or click to browse<br><span style="font-size: 10px; color: var(--text-3);">Video, audio, and image files</span></div>
                     </div>
                     <input type="file" id="fileInput" multiple accept="video/*,audio/*,image/*">
                 </div>
-                <div class="panel-tabs">
-                    <button class="panel-tab active" data-tab="media">Media</button>
-                    <button class="panel-tab" data-tab="effects">Effects</button>
+                <div class="panel-tabs" role="tablist" aria-label="Project browser">
+                    <button class="panel-tab active" id="mediaTab" role="tab" aria-selected="true" aria-controls="mediaTabPanel" tabindex="0">Media</button>
+                    <button class="panel-tab" id="effectsTab" role="tab" aria-selected="false" aria-controls="effectsTabPanel" tabindex="-1">Effects</button>
                 </div>
-                <div class="media-list" id="mediaList">
-                    <div style="text-align: center; padding: 40px 20px; color: var(--text-3);">
-                        <div style="font-size: 32px; margin-bottom: 12px;">📂</div>
-                        <div style="font-size: 12px;">No media imported</div>
+                <div class="tab-panel media-list" id="mediaTabPanel" role="tabpanel" aria-labelledby="mediaTab">
+                    <div id="mediaList">
+                        <div style="text-align: center; padding: 40px 20px; color: var(--text-3);">
+                            <div style="font-size: 32px; margin-bottom: 12px;" aria-hidden="true">📂</div>
+                            <div style="font-size: 12px;">No media imported</div>
+                        </div>
+                    </div>
+                </div>
+                <div class="tab-panel media-list" id="effectsTabPanel" role="tabpanel" aria-labelledby="effectsTab" hidden>
+                    <div class="effects-list">
+                        <button class="effect-item" onclick="applyQuickEffect('cinematic')"><span class="effect-icon" aria-hidden="true">🎞</span><span class="effect-name">Cinematic contrast</span></button>
+                        <button class="effect-item" onclick="applyQuickEffect('bright')"><span class="effect-icon" aria-hidden="true">☀</span><span class="effect-name">Brighten</span></button>
+                        <button class="effect-item" onclick="applyQuickEffect('mono')"><span class="effect-icon" aria-hidden="true">◐</span><span class="effect-name">Monochrome</span></button>
+                        <button class="effect-item" onclick="applyQuickEffect('reset')"><span class="effect-icon" aria-hidden="true">↺</span><span class="effect-name">Reset color</span></button>
                     </div>
                 </div>
             </div>
@@ -1039,11 +1093,11 @@
                 
                 <!-- Preview Controls -->
                 <div class="preview-controls">
-                    <button class="transport-btn" onclick="goToStart()" title="Go to start">⏮</button>
-                    <button class="transport-btn" onclick="stepBackward()" title="Step back">⏪</button>
-                    <button class="transport-btn play" id="playBtn" onclick="togglePlay()">▶</button>
-                    <button class="transport-btn" onclick="stepForward()" title="Step forward">⏩</button>
-                    <button class="transport-btn" onclick="goToEnd()" title="Go to end">⏭</button>
+                    <button class="transport-btn" onclick="goToStart()" title="Go to start" aria-label="Go to start">⏮</button>
+                    <button class="transport-btn" onclick="stepBackward()" title="Step back" aria-label="Step backward">⏪</button>
+                    <button class="transport-btn play" id="playBtn" onclick="togglePlay()" aria-label="Play preview">▶</button>
+                    <button class="transport-btn" onclick="stepForward()" title="Step forward" aria-label="Step forward">⏩</button>
+                    <button class="transport-btn" onclick="goToEnd()" title="Go to end" aria-label="Go to end">⏭</button>
                     
                     <div class="timecode">
                         <span id="currentTime">00:00:00:00</span>
@@ -1052,8 +1106,8 @@
                     <span class="timecode-total" id="totalTime">00:00:00:00</span>
                     
                     <div class="volume-control">
-                        <button class="volume-btn" onclick="toggleMute()">🔊</button>
-                        <input type="range" class="volume-slider" id="volumeSlider" min="0" max="100" value="100" oninput="setVolume(this.value)">
+                        <button class="volume-btn" onclick="toggleMute()" aria-label="Mute preview audio" aria-pressed="false">🔊</button>
+                        <input type="range" class="volume-slider" id="volumeSlider" min="0" max="100" value="100" aria-label="Preview volume" oninput="setVolume(this.value)">
                     </div>
                 </div>
                 
@@ -1061,10 +1115,10 @@
                 <div class="timeline-section">
                     <div class="timeline-toolbar">
                         <div class="timeline-tools">
-                            <button class="tool-btn active" data-tool="select" onclick="setTool('select')" title="Selection (V)">🖱️</button>
-                            <button class="tool-btn" data-tool="razor" onclick="setTool('razor')" title="Razor (C)">✂️</button>
-                            <button class="tool-btn" data-tool="slip" onclick="setTool('slip')" title="Slip (Y)">↔️</button>
-                            <button class="tool-btn" data-tool="hand" onclick="setTool('hand')" title="Hand (H)">✋</button>
+                            <button class="tool-btn active" data-tool="select" onclick="setTool('select')" title="Selection (V)" aria-label="Selection tool" aria-pressed="true">🖱️</button>
+                            <button class="tool-btn" data-tool="razor" onclick="setTool('razor')" title="Razor (C)" aria-label="Razor tool" aria-pressed="false">✂️</button>
+                            <button class="tool-btn" data-tool="slip" onclick="setTool('slip')" title="Slip (Y)" aria-label="Slip tool" aria-pressed="false">↔️</button>
+                            <button class="tool-btn" data-tool="hand" onclick="setTool('hand')" title="Hand (H)" aria-label="Hand tool" aria-pressed="false">✋</button>
                         </div>
                         
                         <button class="btn btn-sm" onclick="splitClip()" title="Split at playhead (S)">✂️ Split</button>
@@ -1073,7 +1127,7 @@
                         
                         <div class="timeline-zoom">
                             <span style="font-size: 12px;">🔍</span>
-                            <input type="range" class="zoom-slider" id="zoomSlider" min="10" max="200" value="50" oninput="setZoom(this.value)">
+                            <input type="range" class="zoom-slider" id="zoomSlider" min="10" max="200" value="50" aria-label="Timeline zoom" oninput="setZoom(this.value)">
                             <span class="zoom-value" id="zoomValue">50%</span>
                         </div>
                     </div>
@@ -1091,8 +1145,8 @@
                                     <div class="track-type">Primary</div>
                                 </div>
                                 <div class="track-controls">
-                                    <button class="track-btn active" title="Toggle visibility">👁</button>
-                                    <button class="track-btn" title="Lock track">🔒</button>
+                                    <button class="track-btn active" data-track-control="visible" data-track="video" title="Toggle visibility" aria-label="Toggle Video 1 visibility" aria-pressed="true">👁</button>
+                                    <button class="track-btn" data-track-control="locked" data-track="video" title="Lock track" aria-label="Lock Video 1 track" aria-pressed="false">🔒</button>
                                 </div>
                             </div>
                             <div class="track-header audio">
@@ -1102,8 +1156,8 @@
                                     <div class="track-type">Linked</div>
                                 </div>
                                 <div class="track-controls">
-                                    <button class="track-btn" title="Mute">🔇</button>
-                                    <button class="track-btn" title="Solo">S</button>
+                                    <button class="track-btn" data-track-control="muted" data-track="audio" title="Mute" aria-label="Mute Audio 1 track" aria-pressed="false">🔇</button>
+                                    <button class="track-btn" data-track-control="solo" data-track="audio" title="Solo" aria-label="Solo Audio 1 track" aria-pressed="false">S</button>
                                 </div>
                             </div>
                             <div class="track-header audio">
@@ -1113,8 +1167,8 @@
                                     <div class="track-type">Background</div>
                                 </div>
                                 <div class="track-controls">
-                                    <button class="track-btn" title="Mute">🔇</button>
-                                    <button class="track-btn" title="Solo">S</button>
+                                    <button class="track-btn" data-track-control="muted" data-track="music" title="Mute" aria-label="Mute Music track" aria-pressed="false">🔇</button>
+                                    <button class="track-btn" data-track-control="solo" data-track="music" title="Solo" aria-label="Solo Music track" aria-pressed="false">S</button>
                                 </div>
                             </div>
                         </div>
@@ -1136,76 +1190,80 @@
                 <div class="panel-header">
                     <span class="panel-title">Properties</span>
                 </div>
-                <div class="panel-tabs">
-                    <button class="panel-tab active" data-tab="clip">Clip</button>
-                    <button class="panel-tab" data-tab="transitions">Transitions</button>
-                    <button class="panel-tab" data-tab="audio">Audio</button>
+                <div class="panel-tabs" role="tablist" aria-label="Properties">
+                    <button class="panel-tab active" id="clipTab" role="tab" aria-selected="true" aria-controls="clipTabPanel" tabindex="0">Clip</button>
+                    <button class="panel-tab" id="transitionsTab" role="tab" aria-selected="false" aria-controls="transitionsTabPanel" tabindex="-1">Transitions</button>
+                    <button class="panel-tab" id="audioTab" role="tab" aria-selected="false" aria-controls="audioTabPanel" tabindex="-1">Audio</button>
                 </div>
-                
-                <div class="properties-section" id="clipProperties">
-                    <div class="properties-section-title">No Clip Selected</div>
-                    <div id="clipPropertiesContent" style="color: var(--text-3); font-size: 12px;">
-                        Select a clip on the timeline to view its properties
+
+                <div class="tab-panel" id="clipTabPanel" role="tabpanel" aria-labelledby="clipTab">
+                    <div class="properties-section" id="clipProperties">
+                        <div class="properties-section-title">No Clip Selected</div>
+                        <div id="clipPropertiesContent" style="color: var(--text-3); font-size: 12px;">
+                            Select a clip on the timeline to view its properties
+                        </div>
+                    </div>
+
+                    <div class="properties-section">
+                        <div class="properties-section-title">Video Effects</div>
+                        <div class="property-row">
+                            <span class="property-label">Opacity</span>
+                            <input type="range" class="property-slider" id="opacitySlider" min="0" max="100" value="100" aria-label="Clip opacity" oninput="updateClipProperty('opacity', this.value)">
+                            <span class="property-value" id="opacityValue">100%</span>
+                        </div>
+                        <div class="property-row">
+                            <span class="property-label">Scale</span>
+                            <input type="range" class="property-slider" id="scaleSlider" min="10" max="200" value="100" aria-label="Clip scale" oninput="updateClipProperty('scale', this.value)">
+                            <span class="property-value" id="scaleValue">100%</span>
+                        </div>
+                        <div class="property-row">
+                            <span class="property-label">Rotation</span>
+                            <input type="range" class="property-slider" id="rotationSlider" min="-180" max="180" value="0" aria-label="Clip rotation" oninput="updateClipProperty('rotation', this.value)">
+                            <span class="property-value" id="rotationValue">0°</span>
+                        </div>
+                    </div>
+
+                    <div class="properties-section">
+                        <div class="properties-section-title">Color Correction</div>
+                        <div class="property-row">
+                            <span class="property-label">Brightness</span>
+                            <input type="range" class="property-slider" id="brightnessSlider" min="-100" max="100" value="0" aria-label="Clip brightness" oninput="updateClipProperty('brightness', this.value)">
+                            <span class="property-value" id="brightnessValue">0</span>
+                        </div>
+                        <div class="property-row">
+                            <span class="property-label">Contrast</span>
+                            <input type="range" class="property-slider" id="contrastSlider" min="-100" max="100" value="0" aria-label="Clip contrast" oninput="updateClipProperty('contrast', this.value)">
+                            <span class="property-value" id="contrastValue">0</span>
+                        </div>
+                        <div class="property-row">
+                            <span class="property-label">Saturation</span>
+                            <input type="range" class="property-slider" id="saturationSlider" min="-100" max="100" value="0" aria-label="Clip saturation" oninput="updateClipProperty('saturation', this.value)">
+                            <span class="property-value" id="saturationValue">0</span>
+                        </div>
                     </div>
                 </div>
-                
-                <div class="properties-section">
-                    <div class="properties-section-title">Video Effects</div>
-                    <div class="property-row">
-                        <span class="property-label">Opacity</span>
-                        <input type="range" class="property-slider" id="opacitySlider" min="0" max="100" value="100" oninput="updateClipProperty('opacity', this.value)">
-                        <span class="property-value" id="opacityValue">100%</span>
-                    </div>
-                    <div class="property-row">
-                        <span class="property-label">Scale</span>
-                        <input type="range" class="property-slider" id="scaleSlider" min="10" max="200" value="100" oninput="updateClipProperty('scale', this.value)">
-                        <span class="property-value" id="scaleValue">100%</span>
-                    </div>
-                    <div class="property-row">
-                        <span class="property-label">Rotation</span>
-                        <input type="range" class="property-slider" id="rotationSlider" min="-180" max="180" value="0" oninput="updateClipProperty('rotation', this.value)">
-                        <span class="property-value" id="rotationValue">0°</span>
+
+                <div class="tab-panel" id="transitionsTabPanel" role="tabpanel" aria-labelledby="transitionsTab" hidden>
+                    <div class="properties-section">
+                        <div class="properties-section-title">Quick Transitions</div>
+                        <div class="transitions-grid">
+                            <button class="transition-item" data-transition="dissolve" onclick="selectTransitionType('dissolve')" aria-label="Cross dissolve transition" aria-pressed="false"><span class="transition-icon" aria-hidden="true">🔀</span><span class="transition-name">Cross Dissolve</span></button>
+                            <button class="transition-item" data-transition="fade" onclick="selectTransitionType('fade')" aria-label="Fade to black transition" aria-pressed="false"><span class="transition-icon" aria-hidden="true">🌑</span><span class="transition-name">Fade to Black</span></button>
+                            <button class="transition-item" data-transition="wipe" onclick="selectTransitionType('wipe')" aria-label="Wipe transition" aria-pressed="false"><span class="transition-icon" aria-hidden="true">➡️</span><span class="transition-name">Wipe</span></button>
+                            <button class="transition-item" data-transition="zoom" onclick="selectTransitionType('zoom')" aria-label="Zoom transition" aria-pressed="false"><span class="transition-icon" aria-hidden="true">🔍</span><span class="transition-name">Zoom</span></button>
+                        </div>
                     </div>
                 </div>
-                
-                <div class="properties-section">
-                    <div class="properties-section-title">Color Correction</div>
-                    <div class="property-row">
-                        <span class="property-label">Brightness</span>
-                        <input type="range" class="property-slider" id="brightnessSlider" min="-100" max="100" value="0" oninput="updateClipProperty('brightness', this.value)">
-                        <span class="property-value" id="brightnessValue">0</span>
-                    </div>
-                    <div class="property-row">
-                        <span class="property-label">Contrast</span>
-                        <input type="range" class="property-slider" id="contrastSlider" min="-100" max="100" value="0" oninput="updateClipProperty('contrast', this.value)">
-                        <span class="property-value" id="contrastValue">0</span>
-                    </div>
-                    <div class="property-row">
-                        <span class="property-label">Saturation</span>
-                        <input type="range" class="property-slider" id="saturationSlider" min="-100" max="100" value="0" oninput="updateClipProperty('saturation', this.value)">
-                        <span class="property-value" id="saturationValue">0</span>
-                    </div>
-                </div>
-                
-                <div class="properties-section">
-                    <div class="properties-section-title">Quick Transitions</div>
-                    <div class="transitions-grid">
-                        <div class="transition-item" data-transition="dissolve" onclick="selectTransitionType('dissolve')">
-                            <div class="transition-icon">🔀</div>
-                            <div class="transition-name">Cross Dissolve</div>
+
+                <div class="tab-panel" id="audioTabPanel" role="tabpanel" aria-labelledby="audioTab" hidden>
+                    <div class="properties-section">
+                        <div class="properties-section-title">Clip Audio</div>
+                        <div class="property-row">
+                            <span class="property-label">Volume</span>
+                            <input type="range" class="property-slider" id="volumeValueSlider" min="0" max="200" value="100" aria-label="Selected clip volume" oninput="updateClipProperty('volume', this.value)">
+                            <span class="property-value" id="volumeValue">100%</span>
                         </div>
-                        <div class="transition-item" data-transition="fade" onclick="selectTransitionType('fade')">
-                            <div class="transition-icon">🌑</div>
-                            <div class="transition-name">Fade to Black</div>
-                        </div>
-                        <div class="transition-item" data-transition="wipe" onclick="selectTransitionType('wipe')">
-                            <div class="transition-icon">➡️</div>
-                            <div class="transition-name">Wipe</div>
-                        </div>
-                        <div class="transition-item" data-transition="zoom" onclick="selectTransitionType('zoom')">
-                            <div class="transition-icon">🔍</div>
-                            <div class="transition-name">Zoom</div>
-                        </div>
+                        <div style="color: var(--text-3); font-size: 11px; line-height: 1.5;">Select an audio or linked video clip, then adjust its timeline volume.</div>
                     </div>
                 </div>
             </div>
@@ -1226,11 +1284,11 @@
     </div>
     
     <!-- Export Modal -->
-    <div class="modal hidden" id="exportModal">
+    <div class="modal hidden" id="exportModal" role="dialog" aria-modal="true" aria-labelledby="exportModalTitle" aria-hidden="true">
         <div class="modal-content">
             <div class="modal-header">
-                <span class="modal-title">Export Video</span>
-                <button class="modal-close" onclick="hideExportModal()">✕</button>
+                <span class="modal-title" id="exportModalTitle">Export Video</span>
+                <button class="modal-close" onclick="hideExportModal()" aria-label="Close export dialog">✕</button>
             </div>
             <div class="modal-body">
                 <div class="export-option">
@@ -1272,17 +1330,17 @@
     </div>
     
     <!-- Loading Overlay -->
-    <div class="loading-overlay" id="loadingOverlay">
-        <div class="spinner"></div>
+    <div class="loading-overlay" id="loadingOverlay" role="status" aria-live="polite" aria-atomic="true">
+        <div class="spinner" aria-hidden="true"></div>
         <div class="loading-text" id="loadingText">Loading FFmpeg...</div>
-        <div class="loading-progress">
+        <div class="loading-progress" id="loadingProgressTrack" role="progressbar" aria-label="FFmpeg operation progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
             <div class="loading-progress-bar" id="loadingProgress"></div>
         </div>
     </div>
     
     <!-- Toast Container -->
-    <div class="toast-container" id="toastContainer"></div>
+    <div class="toast-container" id="toastContainer" aria-live="polite" aria-relevant="additions"></div>
     
-    <script src="editor.js" type="module"></script>
+    <script src="editor.js?v=0.5.1" defer></script>
 </body>
 </html>

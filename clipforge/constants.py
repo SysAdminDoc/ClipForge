@@ -58,10 +58,10 @@ def _load_theme():
         if settings_path.exists():
             s = json.loads(settings_path.read_text())
             if s.get("high_contrast"):
-                return C_HIGH_CONTRAST
+                return dict(C_HIGH_CONTRAST)
     except (OSError, json.JSONDecodeError, ValueError):
         pass
-    return C_MOCHA
+    return dict(C_MOCHA)
 
 
 C = _load_theme()

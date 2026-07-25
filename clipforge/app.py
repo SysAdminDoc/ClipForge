@@ -15,8 +15,14 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QPalette, QDragEnterEvent, QDropEvent
 
 from . import APP_NAME, APP_VERSION
-from .constants import C, WINDOW_TITLE, VIDEO_EXTS
-from .theme import STYLESHEET
+from .constants import (
+    C,
+    C_HIGH_CONTRAST,
+    C_MOCHA,
+    WINDOW_TITLE,
+    VIDEO_EXTS,
+)
+from .theme import stylesheet_for
 from .settings import load_settings, save_settings, load_recent
 from .tools import FFMPEG, HW_ENCODERS, _confirm_overwrite
 from .diagnostics import DIAGNOSTICS, classify_severity
@@ -29,6 +35,24 @@ from .panels.filters import FiltersPanel
 from .panels.audio import AudioPanel
 from .panels.streams import StreamsPanel
 from .panels.batch import BatchPanel
+
+
+def apply_application_theme(app, high_contrast=False):
+    colors = C_HIGH_CONTRAST if high_contrast else C_MOCHA
+    C.clear()
+    C.update(colors)
+    app.setStyleSheet(stylesheet_for(C))
+    palette = QPalette()
+    palette.setColor(QPalette.ColorRole.Window, QColor(C["base"]))
+    palette.setColor(QPalette.ColorRole.WindowText, QColor(C["text"]))
+    palette.setColor(QPalette.ColorRole.Base, QColor(C["mantle"]))
+    palette.setColor(QPalette.ColorRole.AlternateBase, QColor(C["surface0"]))
+    palette.setColor(QPalette.ColorRole.Text, QColor(C["text"]))
+    palette.setColor(QPalette.ColorRole.Button, QColor(C["surface0"]))
+    palette.setColor(QPalette.ColorRole.ButtonText, QColor(C["text"]))
+    palette.setColor(QPalette.ColorRole.Highlight, QColor(C["blue"]))
+    palette.setColor(QPalette.ColorRole.HighlightedText, QColor(C["crust"]))
+    app.setPalette(palette)
 
 
 class MainWindow(QMainWindow):
@@ -107,6 +131,18 @@ class MainWindow(QMainWindow):
         sb_layout.addWidget(self.recent_list)
 
         sb_layout.addStretch()
+
+        self.btn_high_contrast = QPushButton("High contrast")
+        self.btn_high_contrast.setCheckable(True)
+        self.btn_high_contrast.setChecked(
+            bool(self._settings.get("high_contrast", False))
+        )
+        self.btn_high_contrast.setAccessibleName("Toggle high contrast theme")
+        self.btn_high_contrast.setToolTip(
+            "Switch between the standard and high-contrast color themes"
+        )
+        self.btn_high_contrast.toggled.connect(self._toggle_high_contrast)
+        sb_layout.addWidget(self.btn_high_contrast)
 
         # Dep status
         self.lbl_ffmpeg_status = QLabel()
@@ -332,6 +368,16 @@ class MainWindow(QMainWindow):
             btn.style().unpolish(btn)
             btn.style().polish(btn)
 
+    def _toggle_high_contrast(self, enabled):
+        self._settings["high_contrast"] = bool(enabled)
+        save_settings(self._settings)
+        apply_application_theme(QApplication.instance(), enabled)
+        self._check_deps()
+        self.toast.show_message(
+            "High-contrast theme enabled" if enabled else "Standard theme enabled",
+            C["green"],
+        )
+
     def _check_deps(self):
         if FFMPEG:
             self.lbl_ffmpeg_status.setText("FFmpeg: Found")
@@ -453,19 +499,7 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
-    app.setStyleSheet(STYLESHEET)
-
-    palette = QPalette()
-    palette.setColor(QPalette.ColorRole.Window, QColor(C["base"]))
-    palette.setColor(QPalette.ColorRole.WindowText, QColor(C["text"]))
-    palette.setColor(QPalette.ColorRole.Base, QColor(C["mantle"]))
-    palette.setColor(QPalette.ColorRole.AlternateBase, QColor(C["surface0"]))
-    palette.setColor(QPalette.ColorRole.Text, QColor(C["text"]))
-    palette.setColor(QPalette.ColorRole.Button, QColor(C["surface0"]))
-    palette.setColor(QPalette.ColorRole.ButtonText, QColor(C["text"]))
-    palette.setColor(QPalette.ColorRole.Highlight, QColor(C["blue"]))
-    palette.setColor(QPalette.ColorRole.HighlightedText, QColor(C["crust"]))
-    app.setPalette(palette)
+    apply_application_theme(app, load_settings().get("high_contrast", False))
 
     window = MainWindow()
     window.show()

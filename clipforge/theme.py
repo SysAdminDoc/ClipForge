@@ -2,7 +2,10 @@
 
 from .constants import C
 
-STYLESHEET = f"""
+
+def stylesheet_for(colors):
+    C = colors
+    return f"""
 QMainWindow, QWidget {{
     background-color: {C['base']};
     color: {C['text']};
@@ -446,3 +449,6 @@ QToolTip {{
     font-size: 11px;
 }}
 """
+
+
+STYLESHEET = stylesheet_for(C)

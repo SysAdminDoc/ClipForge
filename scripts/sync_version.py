@@ -84,6 +84,12 @@ def expected_surfaces(version: str) -> dict[Path, str]:
         WEB_FILE.read_text(encoding="utf-8"),
         count=1,
     )
+    web = re.sub(
+        r'editor\.js\?v=\d+\.\d+\.\d+',
+        f"editor.js?v={version}",
+        web,
+        count=1,
+    )
     return {
         README_FILE: readme,
         WEB_FILE: web,
