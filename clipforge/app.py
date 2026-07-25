@@ -209,9 +209,17 @@ class MainWindow(QMainWindow):
         self.streams_panel = StreamsPanel(self.console, self.player)
         self.batch_panel = BatchPanel(self.console)
 
-        for panel in [self.trim_panel, self.crop_panel, self.upscale_panel,
-                      self.convert_panel, self.filters_panel, self.audio_panel,
-                      self.streams_panel, self.batch_panel]:
+        self._panels = [
+            self.trim_panel,
+            self.crop_panel,
+            self.upscale_panel,
+            self.convert_panel,
+            self.filters_panel,
+            self.audio_panel,
+            self.streams_panel,
+            self.batch_panel,
+        ]
+        for panel in self._panels:
             scroll = QScrollArea()
             scroll.setWidget(panel)
             scroll.setWidgetResizable(True)
@@ -234,9 +242,7 @@ class MainWindow(QMainWindow):
         self.toast = Toast(self)
 
         # Connect toast signals
-        for panel in [self.trim_panel, self.crop_panel, self.upscale_panel,
-                      self.convert_panel, self.filters_panel, self.audio_panel,
-                      self.streams_panel, self.batch_panel]:
+        for panel in self._panels:
             panel.requestToast.connect(self.toast.show_message)
 
         # Status bar
@@ -360,6 +366,22 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
 
     def closeEvent(self, event):
+        active_workers = []
+        seen_workers = set()
+        for panel in self._panels:
+            for value in vars(panel).values():
+                if (
+                    id(value) not in seen_workers
+                    and hasattr(value, "isRunning")
+                    and value.isRunning()
+                ):
+                    seen_workers.add(id(value))
+                    active_workers.append(value)
+        for worker in active_workers:
+            if hasattr(worker, "cancel"):
+                worker.cancel()
+        for worker in active_workers:
+            worker.wait(5000)
         # Save window geometry
         self._settings["window_width"] = self.width()
         self._settings["window_height"] = self.height()

@@ -12,7 +12,7 @@ from PyQt6.QtCore import pyqtSignal
 from clipforge_utils import format_size
 
 from ..constants import C
-from ..tools import FFMPEG, extract_frame
+from ..tools import FFMPEG, _confirm_overwrite, extract_frame
 from ..workers import FFmpegWorker
 from ..widgets import CropView
 
@@ -146,8 +146,9 @@ class CropPanel(QWidget):
         out_path, _ = QFileDialog.getSaveFileName(
             self, "Save Cropped Video", str(src.parent / f"{src.stem}_cropped{src.suffix}"),
             "Video Files (*.mp4 *.mkv *.mov *.webm *.avi);;All Files (*)")
-        if not out_path:
+        if not out_path or not _confirm_overwrite(self, out_path, self._filepath):
             return
+        overwrite = os.path.exists(out_path)
         x, y, w, h = self.spn_x.value(), self.spn_y.value(), self.spn_w.value(), self.spn_h.value()
         duration = self._info.get("duration", 0) if self._info else 0
         vf_parts = [f"crop={w}:{h}:{x}:{y}"]
@@ -168,7 +169,12 @@ class CropPanel(QWidget):
                "-c:a", "copy", out_path]
         self.progress.setValue(0)
         self.btn_crop.setEnabled(False)
-        self._worker = FFmpegWorker(cmd, duration)
+        self._worker = FFmpegWorker(
+            cmd,
+            duration,
+            output_path=out_path,
+            overwrite=overwrite,
+        )
         self._worker.progress.connect(lambda v: self.progress.setValue(int(v)))
         self._worker.speed_info.connect(self.lbl_progress_detail.setText)
         self._worker.log_output.connect(self.console.append)

@@ -19,7 +19,7 @@ from clipforge_utils import format_duration_short, format_size
 from ..constants import C
 from ..tools import (
     FFMPEG, extract_frame,
-    _confirm_overwrite, _register_temp_dir,
+    _confirm_overwrite, create_job_temp_dir, _unregister_temp_dir,
 )
 from ..workers import FFmpegWorker
 
@@ -311,7 +311,13 @@ class FiltersPanel(QWidget):
         self._preview_tmp.close()
         cmd = [FFMPEG, "-y", "-i", self._filepath, "-vf", ",".join(vf),
                "-frames:v", "1", "-q:v", "2", self._preview_tmp.name]
-        self._preview_worker = FFmpegWorker(cmd, 0, parse_progress=False)
+        self._preview_worker = FFmpegWorker(
+            cmd,
+            0,
+            parse_progress=False,
+            output_path=self._preview_tmp.name,
+            overwrite=True,
+        )
         self._preview_worker.finished_signal.connect(self._on_preview_done)
         self._preview_worker.start()
 
@@ -377,8 +383,9 @@ class FiltersPanel(QWidget):
         out_path, _ = QFileDialog.getSaveFileName(
             self, "Save Without Silence", str(src.parent / f"{src.stem}_no_silence{src.suffix}"),
             "Video Files (*.mp4 *.mkv *.mov);;All Files (*)")
-        if not out_path or not _confirm_overwrite(self, out_path):
+        if not out_path or not _confirm_overwrite(self, out_path, self._filepath):
             return
+        overwrite = os.path.exists(out_path)
         duration = self._info.get("duration", 0) if self._info else 0
         keep_segments = []
         prev_end = 0.0
@@ -399,7 +406,12 @@ class FiltersPanel(QWidget):
                "-c:a", "aac", "-b:a", "192k", out_path]
         self.progress.setValue(0)
         self.btn_remove_silence.setEnabled(False)
-        self._worker = FFmpegWorker(cmd, sum(e - s for s, e in keep_segments))
+        self._worker = FFmpegWorker(
+            cmd,
+            sum(e - s for s, e in keep_segments),
+            output_path=out_path,
+            overwrite=overwrite,
+        )
         self._worker.progress.connect(lambda v: self.progress.setValue(int(v)))
         self._worker.speed_info.connect(self.lbl_progress_detail.setText)
         self._worker.log_output.connect(self.console.append)
@@ -425,7 +437,7 @@ class FiltersPanel(QWidget):
         out_path, _ = QFileDialog.getSaveFileName(
             self, "Save Subtitles", str(src.parent / f"{src.stem}.srt"),
             "Subtitle Files (*.srt);;All Files (*)")
-        if not out_path:
+        if not out_path or not _confirm_overwrite(self, out_path):
             return
         model = self.cmb_whisper_model.currentText().split(" (")[0]
         lang = self.cmb_whisper_lang.currentText()
@@ -524,8 +536,9 @@ class FiltersPanel(QWidget):
         out_path, _ = QFileDialog.getSaveFileName(
             self, "Save Filtered Video", str(src.parent / f"{src.stem}_filtered{src.suffix}"),
             "Video Files (*.mp4 *.mkv *.mov);;All Files (*)")
-        if not out_path or not _confirm_overwrite(self, out_path):
+        if not out_path or not _confirm_overwrite(self, out_path, self._filepath):
             return
+        self._output_overwrite = os.path.exists(out_path)
 
         duration = self._info.get("duration", 0) if self._info else 0
 
@@ -533,8 +546,7 @@ class FiltersPanel(QWidget):
         self.btn_apply.setEnabled(False)
 
         if self.chk_stabilize.isChecked():
-            self._stab_tmpdir = tempfile.mkdtemp(prefix="clipforge_stab_")
-            _register_temp_dir(self._stab_tmpdir)
+            self._stab_tmpdir = create_job_temp_dir("stabilize")
             transforms = os.path.join(self._stab_tmpdir, "transforms.trf")
             cmd1 = [FFMPEG, "-y", "-i", self._filepath,
                     "-vf", f"vidstabdetect=result='{transforms}'",
@@ -571,7 +583,12 @@ class FiltersPanel(QWidget):
             cmd += ["-c:a", "aac", "-b:a", "192k"]
         cmd.append(out_path)
 
-        self._worker = FFmpegWorker(cmd, duration)
+        self._worker = FFmpegWorker(
+            cmd,
+            duration,
+            output_path=out_path,
+            overwrite=getattr(self, "_output_overwrite", False),
+        )
         self._worker.progress.connect(lambda v: self.progress.setValue(40 + int(v * 0.6)))
         self._worker.speed_info.connect(self.lbl_progress_detail.setText)
         self._worker.log_output.connect(self.console.append)
@@ -581,6 +598,10 @@ class FiltersPanel(QWidget):
     def _on_done(self, ok, msg, out_path):
         self.btn_apply.setEnabled(True)
         self.lbl_progress_detail.setText("")
+        if hasattr(self, "_stab_tmpdir"):
+            shutil.rmtree(self._stab_tmpdir, ignore_errors=True)
+            _unregister_temp_dir(self._stab_tmpdir)
+            del self._stab_tmpdir
         if ok:
             self.progress.setValue(100)
             size = format_size(os.path.getsize(out_path)) if os.path.exists(out_path) else ""

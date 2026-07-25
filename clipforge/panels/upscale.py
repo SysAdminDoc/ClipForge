@@ -12,7 +12,13 @@ from PyQt6.QtCore import pyqtSignal
 from clipforge_utils import format_size
 
 from ..constants import C
-from ..tools import FFMPEG, find_realesrgan, find_rife, find_span
+from ..tools import (
+    FFMPEG,
+    _confirm_overwrite,
+    find_realesrgan,
+    find_rife,
+    find_span,
+)
 from ..workers import UpscaleWorker, InterpolateWorker
 
 
@@ -171,11 +177,19 @@ class UpscalePanel(QWidget):
         out_path, _ = QFileDialog.getSaveFileName(
             self, "Save Upscaled Video", str(src.parent / f"{src.stem}_{scale}x{src.suffix}"),
             "Video Files (*.mp4 *.mkv *.mov);;All Files (*)")
-        if not out_path:
+        if not out_path or not _confirm_overwrite(self, out_path, self._filepath):
             return
+        overwrite = os.path.exists(out_path)
         self.progress.setValue(0)
         self._set_processing(True)
-        self._worker = UpscaleWorker(self._filepath, out_path, scale, model, engine=engine)
+        self._worker = UpscaleWorker(
+            self._filepath,
+            out_path,
+            scale,
+            model,
+            engine=engine,
+            overwrite=overwrite,
+        )
         self._worker.progress.connect(lambda v: self.progress.setValue(int(v)))
         self._worker.log_output.connect(self.console.append)
         self._worker.finished_signal.connect(lambda ok, msg: self._on_done(ok, msg, out_path))
@@ -191,12 +205,19 @@ class UpscalePanel(QWidget):
             self, "Save Interpolated Video",
             str(src.parent / f"{src.stem}_{int(fps * mult)}fps{src.suffix}"),
             "Video Files (*.mp4 *.mkv *.mov);;All Files (*)")
-        if not out_path:
+        if not out_path or not _confirm_overwrite(self, out_path, self._filepath):
             return
+        overwrite = os.path.exists(out_path)
         self.progress.setValue(0)
         self._set_processing(True)
         rife_model = self.cmb_rife_model.currentText()
-        self._worker = InterpolateWorker(self._filepath, out_path, mult, model=rife_model)
+        self._worker = InterpolateWorker(
+            self._filepath,
+            out_path,
+            mult,
+            model=rife_model,
+            overwrite=overwrite,
+        )
         self._worker.progress.connect(lambda v: self.progress.setValue(int(v)))
         self._worker.log_output.connect(self.console.append)
         self._worker.finished_signal.connect(lambda ok, msg: self._on_done(ok, msg, out_path))

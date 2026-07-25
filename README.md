@@ -116,7 +116,8 @@ All-in-one video editor — Trim, Crop, Upscale, Interpolate, Convert, Filter, A
 - Status bar with current state
 - Dependency detection with guidance for missing tools
 - **Process tree cleanup** — cancelling kills child processes
-- **Temp directory cleanup** on exit or crash
+- **Owned temp directory cleanup** on exit without touching another running instance
+- **Atomic output safety** — validates staged media before replacing the chosen destination
 - 42-test suite covering utility functions
 
 ### Web Editor

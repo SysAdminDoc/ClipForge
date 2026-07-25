@@ -1,8 +1,6 @@
 """Streams panel -- media info, stream management, remux, snapshot, contact sheet."""
 
-import sys
 import os
-import subprocess
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
@@ -14,7 +12,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from clipforge_utils import format_duration, format_size, format_bitrate
 
 from ..constants import C
-from ..tools import FFMPEG, probe_video
+from ..tools import FFMPEG, _confirm_overwrite, probe_video
 from ..workers import FFmpegWorker
 
 
@@ -218,8 +216,9 @@ class StreamsPanel(QWidget):
         out_path, _ = QFileDialog.getSaveFileName(
             self, "Save Remuxed Video", str(src.parent / f"{src.stem}_remux{ext}"),
             "Video Files (*.mp4 *.mkv *.mov *.webm);;All Files (*)")
-        if not out_path:
+        if not out_path or not _confirm_overwrite(self, out_path, self._filepath):
             return
+        overwrite = os.path.exists(out_path)
         cmd = [FFMPEG, "-y", "-i", self._filepath]
         # Map selected streams
         for i, chk in enumerate(self._stream_checks):
@@ -232,7 +231,12 @@ class StreamsPanel(QWidget):
         duration = self._info.get("duration", 0) if self._info else 0
         self.progress.setRange(0, 0)
         self.btn_remux.setEnabled(False)
-        self._worker = FFmpegWorker(cmd, duration)
+        self._worker = FFmpegWorker(
+            cmd,
+            duration,
+            output_path=out_path,
+            overwrite=overwrite,
+        )
         self._worker.log_output.connect(self.console.append)
         self._worker.finished_signal.connect(lambda ok, msg: self._on_remux_done(ok, msg, out_path))
         self._worker.start()
@@ -254,19 +258,34 @@ class StreamsPanel(QWidget):
         out_path, _ = QFileDialog.getSaveFileName(
             self, "Save Snapshot", str(src.parent / f"{src.stem}_snapshot.png"),
             "Images (*.png *.jpg);;All Files (*)")
-        if not out_path:
+        if not out_path or not _confirm_overwrite(self, out_path, self._filepath):
             return
+        overwrite = os.path.exists(out_path)
         seek_sec = 0
         if self._player:
             seek_sec = self._player.get_position_sec()
         cmd = [FFMPEG, "-y", "-ss", str(seek_sec), "-i", self._filepath, "-frames:v", "1", "-q:v", "1", out_path]
-        subprocess.run(cmd, capture_output=True,
-                       creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
-        if os.path.exists(out_path):
+        self.btn_snapshot.setEnabled(False)
+        self._worker = FFmpegWorker(
+            cmd,
+            0,
+            parse_progress=False,
+            output_path=out_path,
+            overwrite=overwrite,
+        )
+        self._worker.log_output.connect(self.console.append)
+        self._worker.finished_signal.connect(
+            lambda ok, msg: self._on_snapshot_done(ok, msg, out_path)
+        )
+        self._worker.start()
+
+    def _on_snapshot_done(self, ok, msg, out_path):
+        self.btn_snapshot.setEnabled(bool(FFMPEG) and bool(self._filepath))
+        if ok and os.path.exists(out_path):
             size = format_size(os.path.getsize(out_path))
             self.requestToast.emit(f"Snapshot saved ({size})", C["green"])
         else:
-            self.requestToast.emit("Snapshot failed", C["red"])
+            self.requestToast.emit(f"Snapshot failed: {msg}", C["red"])
 
     def _do_contact_sheet(self):
         """Generate an NxM contact sheet of evenly-spaced thumbnails."""
@@ -285,8 +304,9 @@ class StreamsPanel(QWidget):
             self, "Save Contact Sheet",
             str(src.parent / f"{src.stem}_contact_{cols}x{rows}.{fmt}"),
             f"Images (*.{fmt});;All Files (*)")
-        if not out_path:
+        if not out_path or not _confirm_overwrite(self, out_path, self._filepath):
             return
+        overwrite = os.path.exists(out_path)
         # Use FFmpeg select filter + tile filter for efficient single-pass generation
         # select every Nth frame to get evenly spaced frames across duration
         interval = duration / total_frames
@@ -301,7 +321,13 @@ class StreamsPanel(QWidget):
         self.console.append(f"[Contact Sheet] Generating {cols}x{rows} grid...\n")
         self.progress.setRange(0, 0)
         self.btn_contact_sheet.setEnabled(False)
-        self._worker = FFmpegWorker(cmd, 0, parse_progress=False)
+        self._worker = FFmpegWorker(
+            cmd,
+            0,
+            parse_progress=False,
+            output_path=out_path,
+            overwrite=overwrite,
+        )
         self._worker.log_output.connect(self.console.append)
         self._worker.finished_signal.connect(
             lambda ok, msg: self._on_contact_sheet_done(ok, msg, out_path))
@@ -388,8 +414,9 @@ class StreamsPanel(QWidget):
             self, "Save Video with Chapters",
             str(src.parent / f"{src.stem}_chapters{src.suffix}"),
             "Video Files (*.mp4 *.mkv *.mov);;All Files (*)")
-        if not out_path:
+        if not out_path or not _confirm_overwrite(self, out_path, self._filepath):
             return
+        overwrite = os.path.exists(out_path)
         import tempfile
         meta_file = tempfile.NamedTemporaryFile(
             mode="w", suffix=".txt", prefix="clipforge_meta_", delete=False, encoding="utf-8")
@@ -405,7 +432,13 @@ class StreamsPanel(QWidget):
         self.btn_mux_chapters.setEnabled(False)
         self.console.append("[Chapters] Muxing chapter metadata...\n")
         self._meta_tmpfile = meta_file.name
-        self._worker = FFmpegWorker(cmd, duration, parse_progress=False)
+        self._worker = FFmpegWorker(
+            cmd,
+            duration,
+            parse_progress=False,
+            output_path=out_path,
+            overwrite=overwrite,
+        )
         self._worker.log_output.connect(self.console.append)
         self._worker.finished_signal.connect(
             lambda ok, msg: self._on_chapters_done(ok, msg, out_path))

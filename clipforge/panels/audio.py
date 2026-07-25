@@ -12,7 +12,7 @@ from PyQt6.QtCore import pyqtSignal
 from clipforge_utils import format_size
 
 from ..constants import C
-from ..tools import FFMPEG
+from ..tools import FFMPEG, _confirm_overwrite
 from ..workers import FFmpegWorker
 
 
@@ -152,7 +152,7 @@ class AudioPanel(QWidget):
         out_path, _ = QFileDialog.getSaveFileName(
             self, "Save Audio", str(src.parent / f"{src.stem}_audio{ext}"),
             f"Audio Files (*{ext});;All Files (*)")
-        if not out_path:
+        if not out_path or not _confirm_overwrite(self, out_path, self._filepath):
             return
         duration = self._info.get("duration", 0) if self._info else 0
         cmd = [FFMPEG, "-y", "-i", self._filepath, "-vn", "-c:a"] + codec_args + [out_path]
@@ -165,7 +165,7 @@ class AudioPanel(QWidget):
         out_path, _ = QFileDialog.getSaveFileName(
             self, "Save Video", str(src.parent / f"{src.stem}_newaudio{src.suffix}"),
             "Video Files (*.mp4 *.mkv *.mov);;All Files (*)")
-        if not out_path:
+        if not out_path or not _confirm_overwrite(self, out_path, self._filepath):
             return
         duration = self._info.get("duration", 0) if self._info else 0
         if self.chk_keep_original.isChecked():
@@ -187,7 +187,7 @@ class AudioPanel(QWidget):
         out_path, _ = QFileDialog.getSaveFileName(
             self, "Save Video (No Audio)", str(src.parent / f"{src.stem}_noaudio{src.suffix}"),
             "Video Files (*.mp4 *.mkv *.mov);;All Files (*)")
-        if not out_path:
+        if not out_path or not _confirm_overwrite(self, out_path, self._filepath):
             return
         duration = self._info.get("duration", 0) if self._info else 0
         cmd = [FFMPEG, "-y", "-i", self._filepath, "-c:v", "copy", "-an", out_path]
@@ -200,7 +200,12 @@ class AudioPanel(QWidget):
     def _run_worker(self, cmd, duration, out_path, label):
         self.progress.setValue(0)
         self._set_buttons_enabled(False)
-        self._worker = FFmpegWorker(cmd, duration)
+        self._worker = FFmpegWorker(
+            cmd,
+            duration,
+            output_path=out_path,
+            overwrite=os.path.exists(out_path),
+        )
         self._worker.progress.connect(lambda v: self.progress.setValue(int(v)))
         self._worker.log_output.connect(self.console.append)
         self._worker.finished_signal.connect(lambda ok, msg: self._on_done(ok, msg, out_path, label))

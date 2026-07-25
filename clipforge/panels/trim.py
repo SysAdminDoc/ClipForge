@@ -4,7 +4,6 @@ import os
 import sys
 import subprocess
 import shutil
-import tempfile
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
@@ -16,7 +15,14 @@ from PyQt6.QtCore import pyqtSignal
 from clipforge_utils import format_duration, format_size
 
 from ..constants import C
-from ..tools import FFMPEG, FFPROBE, _confirm_overwrite, _register_temp_dir, _unregister_temp_dir
+from ..tools import (
+    FFMPEG,
+    FFPROBE,
+    _confirm_overwrite,
+    create_job_temp_dir,
+    write_concat_manifest,
+    _unregister_temp_dir,
+)
 from ..workers import FFmpegWorker
 from ..widgets import RangeSlider
 
@@ -211,12 +217,13 @@ class TrimPanel(QWidget):
         out_path, _ = QFileDialog.getSaveFileName(
             self, "Save Trimmed Video", str(src.parent / f"{src.stem}_trimmed{ext}"),
             "Video Files (*.mp4 *.mkv *.mov *.webm *.avi);;All Files (*)")
-        if not out_path or not _confirm_overwrite(self, out_path):
+        if not out_path or not _confirm_overwrite(self, out_path, self._filepath):
             return
+        overwrite = os.path.exists(out_path)
         start = self.range_slider.low()
         end = self.range_slider.high()
         if self.chk_smart.isChecked():
-            self._do_smart_cut(start, end, out_path)
+            self._do_smart_cut(start, end, out_path, overwrite)
             return
         elif self.chk_lossless.isChecked():
             cmd = [FFMPEG, "-y", "-ss", str(start), "-i", self._filepath,
@@ -231,20 +238,24 @@ class TrimPanel(QWidget):
         else:
             self.progress.setRange(0, 100)
             self.progress.setValue(0)
-        self._worker = FFmpegWorker(cmd, end - start)
+        self._worker = FFmpegWorker(
+            cmd,
+            end - start,
+            output_path=out_path,
+            overwrite=overwrite,
+        )
         self._worker.progress.connect(lambda v: self.progress.setValue(int(v)))
         self._worker.speed_info.connect(self.lbl_progress_detail.setText)
         self._worker.log_output.connect(self.console.append)
         self._worker.finished_signal.connect(lambda ok, msg: self._on_done(ok, msg, out_path))
         self._worker.start()
 
-    def _do_smart_cut(self, start, end, out_path):
+    def _do_smart_cut(self, start, end, out_path, overwrite):
         self.btn_trim.setEnabled(False)
         self.progress.setRange(0, 0)
         self.console.append("[Smart Cut] Finding keyframes and preparing segments...\n")
         prev_kf = self._find_prev_keyframe(self._filepath, start)
-        tmpdir = tempfile.mkdtemp(prefix="clipforge_smartcut_")
-        _register_temp_dir(tmpdir)
+        tmpdir = create_job_temp_dir("smartcut")
         self._smart_tmpdir = tmpdir
 
         head_seg = os.path.join(tmpdir, "head.mp4")
@@ -266,12 +277,11 @@ class TrimPanel(QWidget):
                    "-avoid_negative_ts", "make_zero", mid_seg]
         steps.append(("Copying middle (lossless)...", cmd_mid))
 
-        parts = []
+        manifest_paths = []
         if use_head:
-            parts.append(f"file '{head_seg}'")
-        parts.append(f"file '{mid_seg}'")
-        with open(concat_list, "w") as f:
-            f.write("\n".join(parts) + "\n")
+            manifest_paths.append(head_seg)
+        manifest_paths.append(mid_seg)
+        write_concat_manifest(manifest_paths, concat_list)
 
         cmd_concat = [FFMPEG, "-y", "-f", "concat", "-safe", "0",
                       "-i", concat_list, "-c", "copy", out_path]
@@ -279,6 +289,7 @@ class TrimPanel(QWidget):
 
         self._smart_steps = steps
         self._smart_out_path = out_path
+        self._smart_overwrite = overwrite
         self._smart_step_idx = 0
         self._run_next_smart_step()
 
@@ -291,7 +302,14 @@ class TrimPanel(QWidget):
             return
         label, cmd = self._smart_steps[self._smart_step_idx]
         self.console.append(f"[Smart Cut] {label}\n")
-        self._worker = FFmpegWorker(cmd, 0, parse_progress=False)
+        is_final_step = self._smart_step_idx == len(self._smart_steps) - 1
+        self._worker = FFmpegWorker(
+            cmd,
+            0,
+            parse_progress=False,
+            output_path=self._smart_out_path if is_final_step else None,
+            overwrite=self._smart_overwrite if is_final_step else False,
+        )
         self._worker.log_output.connect(self.console.append)
         self._worker.finished_signal.connect(self._on_smart_step_done)
         self._worker.start()
@@ -352,7 +370,13 @@ class TrimPanel(QWidget):
         for i in range(num_segments):
             start = i * interval
             seg_path = os.path.join(out_dir, f"{src.stem}_part{i+1:03d}{src.suffix}")
-            self._split_segments.append((start, interval, seg_path))
+            if not _confirm_overwrite(self, seg_path, self._filepath):
+                self.btn_split.setEnabled(True)
+                self.lbl_split_info.setText("Split cancelled")
+                return
+            self._split_segments.append(
+                (start, interval, seg_path, os.path.exists(seg_path))
+            )
         self._split_idx = 0
         self._split_out_dir = out_dir
         self._process_next_split()
@@ -365,13 +389,19 @@ class TrimPanel(QWidget):
             self.lbl_split_info.setText(f"Split complete: {total} segments")
             self.requestToast.emit(f"Split complete: {total} segments", C["green"])
             return
-        start, seg_dur, out_path = self._split_segments[self._split_idx]
+        start, seg_dur, out_path, overwrite = self._split_segments[self._split_idx]
         self.lbl_split_info.setText(
             f"Segment {self._split_idx + 1}/{len(self._split_segments)}")
         cmd = [FFMPEG, "-y", "-ss", str(start), "-i", self._filepath,
                "-t", str(seg_dur), "-c", "copy",
                "-avoid_negative_ts", "make_zero", out_path]
-        self._worker = FFmpegWorker(cmd, 0, parse_progress=False)
+        self._worker = FFmpegWorker(
+            cmd,
+            0,
+            parse_progress=False,
+            output_path=out_path,
+            overwrite=overwrite,
+        )
         self._worker.log_output.connect(self.console.append)
         self._worker.finished_signal.connect(self._on_split_segment_done)
         self._worker.start()

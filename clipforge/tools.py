@@ -7,6 +7,7 @@ import json
 import shutil
 import tempfile
 import atexit
+import threading
 from pathlib import Path
 
 from clipforge_utils import _parse_fps
@@ -15,28 +16,41 @@ from clipforge_utils import _parse_fps
 # Temp-dir tracking
 # ---------------------------------------------------------------------------
 
-_active_temp_dirs = []
+_active_temp_dirs = set()
+_temp_dirs_lock = threading.Lock()
 
 
 def _register_temp_dir(path):
-    _active_temp_dirs.append(path)
+    with _temp_dirs_lock:
+        _active_temp_dirs.add(str(Path(path).resolve()))
 
 
 def _unregister_temp_dir(path):
-    if path in _active_temp_dirs:
-        _active_temp_dirs.remove(path)
+    with _temp_dirs_lock:
+        _active_temp_dirs.discard(str(Path(path).resolve()))
 
 
 def _cleanup_temp_dirs():
-    for d in list(_active_temp_dirs):
+    with _temp_dirs_lock:
+        owned_dirs = list(_active_temp_dirs)
+        _active_temp_dirs.clear()
+    for d in owned_dirs:
         shutil.rmtree(d, ignore_errors=True)
-    _active_temp_dirs.clear()
-    for d in Path(tempfile.gettempdir()).glob("clipforge_*"):
-        if d.is_dir():
-            try:
-                shutil.rmtree(d)
-            except OSError:
-                pass
+
+
+def create_job_temp_dir(prefix):
+    path = tempfile.mkdtemp(prefix=f"clipforge_{os.getpid()}_{prefix}_")
+    _register_temp_dir(path)
+    return path
+
+
+def write_concat_manifest(paths, manifest_path):
+    """Write an ffconcat-safe absolute path list."""
+    lines = []
+    for path in paths:
+        normalized = Path(path).resolve().as_posix().replace("'", r"\'")
+        lines.append(f"file '{normalized}'")
+    Path(manifest_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 atexit.register(_cleanup_temp_dirs)
@@ -214,25 +228,51 @@ def probe_video(filepath):
 def extract_frame(filepath, time_sec=0):
     if not FFMPEG:
         return None
+    tmp_name = None
     try:
         tmp = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
         tmp.close()
+        tmp_name = tmp.name
         cmd = [FFMPEG, "-y", "-ss", str(time_sec), "-i", filepath,
                "-frames:v", "1", "-q:v", "2", tmp.name]
-        subprocess.run(cmd, capture_output=True, timeout=10,
-                       creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            timeout=10,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+        if result.returncode != 0:
+            return None
         if os.path.exists(tmp.name) and os.path.getsize(tmp.name) > 0:
             from PyQt6.QtGui import QPixmap
             pix = QPixmap(tmp.name)
-            os.unlink(tmp.name)
             return pix
-        os.unlink(tmp.name)
     except (OSError, subprocess.TimeoutExpired):
         pass
+    finally:
+        if tmp_name:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
     return None
 
 
-def _confirm_overwrite(parent, filepath):
+def _confirm_overwrite(parent, filepath, source_path=None):
+    if source_path:
+        try:
+            if os.path.normcase(os.path.abspath(filepath)) == os.path.normcase(
+                os.path.abspath(source_path)
+            ):
+                from PyQt6.QtWidgets import QMessageBox
+                QMessageBox.warning(
+                    parent,
+                    "Invalid Output",
+                    "The output path must be different from the input file.",
+                )
+                return False
+        except OSError:
+            return False
     if not os.path.exists(filepath):
         return True
     from PyQt6.QtWidgets import QMessageBox

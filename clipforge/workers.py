@@ -2,10 +2,9 @@
 
 import sys
 import os
-import subprocess
 import re
 import shutil
-import tempfile
+import threading
 import time as _time
 from pathlib import Path
 
@@ -18,7 +17,14 @@ from .tools import (
     FFMPEG, FFPROBE,
     find_realesrgan, find_rife, find_span,
     probe_video, extract_frame,
-    _register_temp_dir, _unregister_temp_dir,
+    create_job_temp_dir, _unregister_temp_dir,
+)
+from .processes import (
+    command_with_staging_output,
+    run_managed_process,
+    staging_output_path,
+    terminate_process_tree,
+    validate_output,
 )
 
 # ---------------------------------------------------------------------------
@@ -27,18 +33,7 @@ from .tools import (
 
 
 def _kill_process_tree(proc):
-    try:
-        if sys.platform == "win32":
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                           capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
-        else:
-            import signal
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-    except OSError:
-        try:
-            proc.kill()
-        except OSError:
-            pass
+    terminate_process_tree(proc)
 
 
 _FFMPEG_ERROR_PATTERNS = [
@@ -74,60 +69,106 @@ class FFmpegWorker(QThread):
     finished_signal = pyqtSignal(bool, str)
     speed_info = pyqtSignal(str)
 
-    def __init__(self, cmd, duration=0, parse_progress=True, parent=None):
+    def __init__(
+        self,
+        cmd,
+        duration=0,
+        parse_progress=True,
+        parent=None,
+        *,
+        output_path=None,
+        overwrite=False,
+        timeout=None,
+    ):
         super().__init__(parent)
-        self.cmd = cmd
+        self.cmd = [str(part) for part in cmd]
         self.duration = duration
         self.parse_progress = parse_progress
-        self._cancelled = False
+        self.output_path = output_path
+        self.overwrite = overwrite
+        self.timeout = timeout or max(3600, float(duration or 0) * 20)
+        self._cancel_event = threading.Event()
         self._start_time = 0
         self._stderr_buffer = []
+        self._progress_values = {}
 
     def cancel(self):
-        self._cancelled = True
+        self._cancel_event.set()
+
+    def _progress_line(self, line):
+        key, separator, value = line.strip().partition("=")
+        if not separator:
+            return
+        self._progress_values[key] = value
+        if key not in {"out_time_us", "out_time_ms"} or self.duration <= 0:
+            return
+        try:
+            current = float(value) / 1_000_000
+        except ValueError:
+            return
+        pct = min(current / self.duration * 100, 100)
+        self.progress.emit(pct)
+        elapsed = _time.time() - self._start_time
+        speed = self._progress_values.get("speed", "")
+        fps = self._progress_values.get("fps", "")
+        size = self._progress_values.get("total_size", "")
+        remaining = (
+            (self.duration - current) / max(current / elapsed, 0.01)
+            if elapsed > 0.5 and current > 0
+            else 0
+        )
+        details = []
+        if fps and fps != "N/A":
+            details.append(f"{fps} fps")
+        if speed and speed != "N/A":
+            details.append(speed)
+        if remaining > 0:
+            details.append(f"ETA: {format_duration_short(remaining)}")
+        if size.isdigit():
+            details.append(f"{int(size) / (1024 * 1024):.1f} MiB")
+        self.speed_info.emit(" | ".join(details))
+
+    def _stderr_line(self, line):
+        self.log_output.emit(line)
+        self._stderr_buffer.append(line)
 
     def run(self):
+        staged_path = None
         try:
             self._start_time = _time.time()
-            self.log_output.emit(f"$ {' '.join(self.cmd)}\n")
-            popen_kwargs = dict(stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-            if sys.platform == "win32":
-                popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
-            else:
-                popen_kwargs["start_new_session"] = True
-            process = subprocess.Popen(self.cmd, **popen_kwargs)
-            ema_speed = 0
-            for line in process.stderr:
-                if self._cancelled:
-                    _kill_process_tree(process)
-                    self.finished_signal.emit(False, "Cancelled")
+            command = list(self.cmd)
+            final_path = Path(self.output_path) if self.output_path else None
+            if final_path:
+                if final_path.exists() and not self.overwrite:
+                    self.finished_signal.emit(False, "Output already exists")
                     return
-                self.log_output.emit(line)
-                self._stderr_buffer.append(line)
-                if not self.parse_progress:
-                    continue
-                match = re.search(r"time=(\d{2}):(\d{2}):(\d{2}\.\d+)", line)
-                if match and self.duration > 0:
-                    h, m, s = float(match.group(1)), float(match.group(2)), float(match.group(3))
-                    current = h * 3600 + m * 60 + s
-                    pct = min(current / self.duration * 100, 100)
-                    self.progress.emit(pct)
-                    # Speed + ETA calculation
-                    elapsed = _time.time() - self._start_time
-                    if elapsed > 0.5 and current > 0:
-                        speed_x = current / elapsed
-                        ema_speed = speed_x if ema_speed == 0 else ema_speed * 0.7 + speed_x * 0.3
-                        remaining = (self.duration - current) / max(ema_speed, 0.01)
-                        fps_match = re.search(r"fps=\s*([\d.]+)", line)
-                        fps_str = f"{float(fps_match.group(1)):.1f} fps" if fps_match else ""
-                        size_match = re.search(r"size=\s*(\d+\w+)", line)
-                        size_str = size_match.group(1) if size_match else ""
-                        eta_str = format_duration_short(remaining)
-                        parts = [p for p in [fps_str, f"{ema_speed:.1f}x", f"ETA: {eta_str}", size_str] if p]
-                        self.speed_info.emit(" | ".join(parts))
-            process.wait()
+                final_path.parent.mkdir(parents=True, exist_ok=True)
+                staged_path = staging_output_path(final_path)
+                command = command_with_staging_output(command, final_path, staged_path)
+            if self.parse_progress and FFMPEG and Path(command[0]).name.lower().startswith("ffmpeg"):
+                if "-progress" not in command:
+                    command[1:1] = ["-progress", "pipe:1", "-nostats"]
+            self.log_output.emit(f"$ {' '.join(command)}\n")
+            outcome = run_managed_process(
+                command,
+                cancel_event=self._cancel_event,
+                timeout=self.timeout,
+                stdout_callback=self._progress_line if self.parse_progress else self.log_output.emit,
+                stderr_callback=self._stderr_line,
+            )
             elapsed = _time.time() - self._start_time
-            if process.returncode == 0:
+            if outcome.cancelled:
+                self.finished_signal.emit(False, "Cancelled")
+            elif outcome.timed_out:
+                self.finished_signal.emit(False, "Process timed out")
+            elif outcome.returncode == 0:
+                if final_path:
+                    valid, reason = validate_output(staged_path, ffprobe_path=FFPROBE)
+                    if not valid:
+                        self.finished_signal.emit(False, reason)
+                        return
+                    os.replace(staged_path, final_path)
+                    staged_path = None
                 self.progress.emit(100)
                 self.finished_signal.emit(True, f"Complete ({format_duration_short(elapsed)})")
             else:
@@ -138,9 +179,18 @@ class FFmpegWorker(QThread):
                 else:
                     last_lines = stderr_text.strip().split("\n")[-3:]
                     hint = " | ".join(l.strip() for l in last_lines if l.strip())[:200]
-                    self.finished_signal.emit(False, hint or f"Process exited with code {process.returncode}")
+                    self.finished_signal.emit(
+                        False,
+                        hint or f"Process exited with code {outcome.returncode}",
+                    )
         except Exception as e:
             self.finished_signal.emit(False, str(e))
+        finally:
+            if staged_path:
+                try:
+                    Path(staged_path).unlink(missing_ok=True)
+                except OSError:
+                    pass
 
 
 # ---------------------------------------------------------------------------
@@ -187,17 +237,28 @@ class UpscaleWorker(QThread):
     log_output = pyqtSignal(str)
     finished_signal = pyqtSignal(bool, str)
 
-    def __init__(self, input_path, output_path, scale=2, model="realesrgan-x4plus", engine="realesrgan", parent=None):
+    def __init__(
+        self,
+        input_path,
+        output_path,
+        scale=2,
+        model="realesrgan-x4plus",
+        engine="realesrgan",
+        parent=None,
+        *,
+        overwrite=False,
+    ):
         super().__init__(parent)
         self.input_path = input_path
         self.output_path = output_path
         self.scale = scale
         self.model = model
         self.engine = engine
-        self._cancelled = False
+        self.overwrite = overwrite
+        self._cancel_event = threading.Event()
 
     def cancel(self):
-        self._cancelled = True
+        self._cancel_event.set()
 
     def run(self):
         if self.engine == "span":
@@ -219,9 +280,14 @@ class UpscaleWorker(QThread):
         if not FFMPEG:
             self.finished_signal.emit(False, "FFmpeg not found")
             return
+        staged_output = None
         try:
-            tmpdir = tempfile.mkdtemp(prefix="clipforge_upscale_")
-            _register_temp_dir(tmpdir)
+            final_output = Path(self.output_path)
+            if final_output.exists() and not self.overwrite:
+                self.finished_signal.emit(False, "Output already exists")
+                return
+            staged_output = staging_output_path(final_output)
+            tmpdir = create_job_temp_dir("upscale")
             frames_dir = os.path.join(tmpdir, "frames")
             upscaled_dir = os.path.join(tmpdir, "upscaled")
             os.makedirs(frames_dir)
@@ -233,12 +299,18 @@ class UpscaleWorker(QThread):
             fps = info.get("fps", 30)
 
             self.log_output.emit("[1/3] Extracting frames...\n")
-            subprocess.run(
+            extract_result = run_managed_process(
                 [FFMPEG, "-y", "-i", self.input_path, "-qscale:v", "2",
                  os.path.join(frames_dir, "frame_%06d.jpg")],
-                capture_output=True,
-                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+                cancel_event=self._cancel_event,
+                timeout=max(3600, float(info.get("duration", 0) or 0) * 20),
             )
+            if extract_result.cancelled:
+                self.finished_signal.emit(False, "Cancelled")
+                return
+            if extract_result.returncode != 0:
+                self.finished_signal.emit(False, "Frame extraction failed")
+                return
             frames = sorted(Path(frames_dir).glob("*.jpg"))
             total = len(frames)
             if total == 0:
@@ -251,33 +323,39 @@ class UpscaleWorker(QThread):
             cmd_up = [upscaler, "-i", frames_dir, "-o", upscaled_dir,
                       "-n", self.model, "-s", str(self.scale), "-f", "jpg"]
             self.log_output.emit(f"$ {' '.join(cmd_up)}\n")
-            proc = subprocess.Popen(
-                cmd_up, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
-            )
-            for line in proc.stderr:
-                if self._cancelled:
-                    _kill_process_tree(proc)
-                    self.finished_signal.emit(False, "Cancelled")
-                    return
+            def upscaler_log(line):
                 self.log_output.emit(line)
-                m = re.search(r"(\d+\.\d+)%", line)
-                if m:
-                    self.progress.emit(10 + float(m.group(1)) * 0.7)
-            proc.wait()
-            if proc.returncode != 0:
+                match = re.search(r"(\d+\.\d+)%", line)
+                if match:
+                    self.progress.emit(10 + float(match.group(1)) * 0.7)
+
+            upscale_result = run_managed_process(
+                cmd_up,
+                cancel_event=self._cancel_event,
+                timeout=max(3600, total * 60),
+                stdout_callback=upscaler_log,
+                stderr_callback=upscaler_log,
+            )
+            if upscale_result.cancelled:
+                self.finished_signal.emit(False, "Cancelled")
+                return
+            if upscale_result.returncode != 0:
                 self.finished_signal.emit(False, f"{upscaler_name} failed")
                 return
             self.progress.emit(80)
 
             self.log_output.emit("[3/3] Reassembling video...\n")
             audio_path = os.path.join(tmpdir, "audio.aac")
-            subprocess.run(
+            audio_result = run_managed_process(
                 [FFMPEG, "-y", "-i", self.input_path, "-vn", "-acodec", "copy", audio_path],
-                capture_output=True,
-                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+                cancel_event=self._cancel_event,
+                timeout=600,
             )
-            has_audio = os.path.exists(audio_path) and os.path.getsize(audio_path) > 0
+            has_audio = (
+                audio_result.returncode == 0
+                and os.path.exists(audio_path)
+                and os.path.getsize(audio_path) > 0
+            )
             cmd_re = [FFMPEG, "-y", "-framerate", str(fps),
                       "-i", os.path.join(upscaled_dir, "frame_%06d.jpg")]
             if has_audio:
@@ -285,20 +363,37 @@ class UpscaleWorker(QThread):
             cmd_re += ["-c:v", "libx264", "-crf", "18", "-preset", "medium", "-pix_fmt", "yuv420p"]
             if has_audio:
                 cmd_re += ["-c:a", "aac", "-b:a", "192k", "-shortest"]
-            cmd_re.append(self.output_path)
-            subprocess.run(cmd_re, capture_output=True,
-                           creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+            cmd_re.append(str(staged_output))
+            reassemble_result = run_managed_process(
+                cmd_re,
+                cancel_event=self._cancel_event,
+                timeout=max(3600, float(info.get("duration", 0) or 0) * 20),
+            )
+            if reassemble_result.cancelled:
+                self.finished_signal.emit(False, "Cancelled")
+                return
+            if reassemble_result.returncode != 0:
+                self.finished_signal.emit(False, "Video reassembly failed")
+                return
+            valid, reason = validate_output(staged_output, ffprobe_path=FFPROBE)
+            if not valid:
+                self.finished_signal.emit(False, reason)
+                return
+            os.replace(staged_output, final_output)
+            staged_output = None
             self.progress.emit(100)
-            if os.path.exists(self.output_path):
-                self.finished_signal.emit(True, "Upscale complete")
-            else:
-                self.finished_signal.emit(False, "Output file not created")
+            self.finished_signal.emit(True, "Upscale complete")
         except Exception as e:
             self.finished_signal.emit(False, str(e))
         finally:
             if 'tmpdir' in locals():
                 shutil.rmtree(tmpdir, ignore_errors=True)
                 _unregister_temp_dir(tmpdir)
+            if staged_output:
+                try:
+                    Path(staged_output).unlink(missing_ok=True)
+                except OSError:
+                    pass
 
 
 # ---------------------------------------------------------------------------
@@ -312,16 +407,26 @@ class InterpolateWorker(QThread):
     log_output = pyqtSignal(str)
     finished_signal = pyqtSignal(bool, str)
 
-    def __init__(self, input_path, output_path, multiplier=2, model="rife-v4.25", parent=None):
+    def __init__(
+        self,
+        input_path,
+        output_path,
+        multiplier=2,
+        model="rife-v4.25",
+        parent=None,
+        *,
+        overwrite=False,
+    ):
         super().__init__(parent)
         self.input_path = input_path
         self.output_path = output_path
         self.multiplier = multiplier
         self.model = model
-        self._cancelled = False
+        self.overwrite = overwrite
+        self._cancel_event = threading.Event()
 
     def cancel(self):
-        self._cancelled = True
+        self._cancel_event.set()
 
     def run(self):
         rife = find_rife()
@@ -336,9 +441,14 @@ class InterpolateWorker(QThread):
         if not FFMPEG:
             self.finished_signal.emit(False, "FFmpeg not found")
             return
+        staged_output = None
         try:
-            tmpdir = tempfile.mkdtemp(prefix="clipforge_interp_")
-            _register_temp_dir(tmpdir)
+            final_output = Path(self.output_path)
+            if final_output.exists() and not self.overwrite:
+                self.finished_signal.emit(False, "Output already exists")
+                return
+            staged_output = staging_output_path(final_output)
+            tmpdir = create_job_temp_dir("interpolate")
             frames_dir = os.path.join(tmpdir, "frames")
             interp_dir = os.path.join(tmpdir, "interpolated")
             os.makedirs(frames_dir)
@@ -351,12 +461,18 @@ class InterpolateWorker(QThread):
             new_fps = fps * self.multiplier
 
             self.log_output.emit("[1/3] Extracting frames...\n")
-            subprocess.run(
+            extract_result = run_managed_process(
                 [FFMPEG, "-y", "-i", self.input_path, "-qscale:v", "2",
                  os.path.join(frames_dir, "frame_%06d.png")],
-                capture_output=True,
-                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+                cancel_event=self._cancel_event,
+                timeout=max(3600, float(info.get("duration", 0) or 0) * 20),
             )
+            if extract_result.cancelled:
+                self.finished_signal.emit(False, "Cancelled")
+                return
+            if extract_result.returncode != 0:
+                self.finished_signal.emit(False, "Frame extraction failed")
+                return
             frames = sorted(Path(frames_dir).glob("*.png"))
             if len(frames) == 0:
                 self.finished_signal.emit(False, "No frames extracted")
@@ -368,33 +484,39 @@ class InterpolateWorker(QThread):
             cmd_rife = [rife, "-i", frames_dir, "-o", interp_dir,
                         "-m", self.model, "-n", str(len(frames) * self.multiplier)]
             self.log_output.emit(f"$ {' '.join(cmd_rife)}\n")
-            proc = subprocess.Popen(
-                cmd_rife, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
-            )
-            for line in proc.stderr:
-                if self._cancelled:
-                    _kill_process_tree(proc)
-                    self.finished_signal.emit(False, "Cancelled")
-                    return
+            def rife_log(line):
                 self.log_output.emit(line)
-                m = re.search(r"(\d+\.\d+)%", line)
-                if m:
-                    self.progress.emit(15 + float(m.group(1)) * 0.65)
-            proc.wait()
-            if proc.returncode != 0:
+                match = re.search(r"(\d+\.\d+)%", line)
+                if match:
+                    self.progress.emit(15 + float(match.group(1)) * 0.65)
+
+            interpolate_result = run_managed_process(
+                cmd_rife,
+                cancel_event=self._cancel_event,
+                timeout=max(3600, len(frames) * self.multiplier * 60),
+                stdout_callback=rife_log,
+                stderr_callback=rife_log,
+            )
+            if interpolate_result.cancelled:
+                self.finished_signal.emit(False, "Cancelled")
+                return
+            if interpolate_result.returncode != 0:
                 self.finished_signal.emit(False, "RIFE failed")
                 return
             self.progress.emit(80)
 
             self.log_output.emit("[3/3] Reassembling video...\n")
             audio_path = os.path.join(tmpdir, "audio.aac")
-            subprocess.run(
+            audio_result = run_managed_process(
                 [FFMPEG, "-y", "-i", self.input_path, "-vn", "-acodec", "copy", audio_path],
-                capture_output=True,
-                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+                cancel_event=self._cancel_event,
+                timeout=600,
             )
-            has_audio = os.path.exists(audio_path) and os.path.getsize(audio_path) > 0
+            has_audio = (
+                audio_result.returncode == 0
+                and os.path.exists(audio_path)
+                and os.path.getsize(audio_path) > 0
+            )
 
             interp_frames = sorted(Path(interp_dir).glob("*.png"))
             if not interp_frames:
@@ -408,17 +530,37 @@ class InterpolateWorker(QThread):
             cmd_re += ["-c:v", "libx264", "-crf", "18", "-preset", "medium", "-pix_fmt", "yuv420p"]
             if has_audio:
                 cmd_re += ["-c:a", "aac", "-b:a", "192k", "-shortest"]
-            cmd_re.append(self.output_path)
-            subprocess.run(cmd_re, capture_output=True,
-                           creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+            cmd_re.append(str(staged_output))
+            reassemble_result = run_managed_process(
+                cmd_re,
+                cancel_event=self._cancel_event,
+                timeout=max(3600, float(info.get("duration", 0) or 0) * 20),
+            )
+            if reassemble_result.cancelled:
+                self.finished_signal.emit(False, "Cancelled")
+                return
+            if reassemble_result.returncode != 0:
+                self.finished_signal.emit(False, "Video reassembly failed")
+                return
+            valid, reason = validate_output(staged_output, ffprobe_path=FFPROBE)
+            if not valid:
+                self.finished_signal.emit(False, reason)
+                return
+            os.replace(staged_output, final_output)
+            staged_output = None
             self.progress.emit(100)
-            if os.path.exists(self.output_path):
-                self.finished_signal.emit(True, f"Interpolation complete ({fps} -> {new_fps} fps)")
-            else:
-                self.finished_signal.emit(False, "Output file not created")
+            self.finished_signal.emit(
+                True,
+                f"Interpolation complete ({fps} -> {new_fps} fps)",
+            )
         except Exception as e:
             self.finished_signal.emit(False, str(e))
         finally:
             if 'tmpdir' in locals():
                 shutil.rmtree(tmpdir, ignore_errors=True)
                 _unregister_temp_dir(tmpdir)
+            if staged_output:
+                try:
+                    Path(staged_output).unlink(missing_ok=True)
+                except OSError:
+                    pass

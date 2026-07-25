@@ -16,7 +16,7 @@ from PyQt6.QtCore import pyqtSignal
 from clipforge_utils import format_size, estimate_output_size
 
 from ..constants import C, VIDEO_EXTS
-from ..tools import FFMPEG, probe_video
+from ..tools import FFMPEG, _confirm_overwrite, probe_video
 from ..workers import FFmpegWorker
 
 
@@ -29,6 +29,8 @@ class BatchPanel(QWidget):
         self._items = []
         self._worker = None
         self._current_idx = 0
+        self._cancel_requested = False
+        self._batch_overwrite = {}
         self._setup_ui()
 
     def _setup_ui(self):
@@ -242,17 +244,34 @@ class BatchPanel(QWidget):
     def _start_batch(self):
         if not self._items or not FFMPEG:
             return
+        operation = self.cmb_operation.currentText()
+        self._batch_overwrite = {}
+        output_keys = set()
+        for source_path in self._items:
+            output_path = self._get_output_path(source_path, operation)
+            output_key = os.path.normcase(os.path.abspath(output_path))
+            if output_key in output_keys:
+                self.requestToast.emit(
+                    f"Duplicate batch output: {Path(output_path).name}",
+                    C["red"],
+                )
+                return
+            output_keys.add(output_key)
+            if not _confirm_overwrite(self, output_path, source_path):
+                return
+            self._batch_overwrite[output_path] = os.path.exists(output_path)
         out_dir = self._out_dir or (str(Path(self._items[0]).parent) if self._items else "")
         if out_dir:
             try:
                 usage = shutil.disk_usage(out_dir)
                 estimated_needed = 0
-                operation = self.cmb_operation.currentText()
                 for p in self._items:
                     if not os.path.exists(p):
                         continue
                     info = probe_video(p)
-                    if info and "Downscale" in operation or "Convert" in operation:
+                    if info and (
+                        "Downscale" in operation or "Convert" in operation
+                    ):
                         w = info.get("width", 1920)
                         h = info.get("height", 1080)
                         dur = info.get("duration", 0)
@@ -263,10 +282,13 @@ class BatchPanel(QWidget):
                     self.requestToast.emit(
                         f"Low disk space: {format_size(usage.free)} free, ~{format_size(estimated_needed)} needed",
                         C["yellow"])
+                    return
             except OSError:
                 pass
         self._current_idx = 0
+        self._cancel_requested = False
         self.btn_start.setEnabled(False)
+        self.btn_cancel.setEnabled(True)
         self.btn_cancel.setVisible(True)
         self._process_next()
 
@@ -296,7 +318,12 @@ class BatchPanel(QWidget):
         info = probe_video(src)
         duration = info.get("duration", 0) if info else 0
 
-        self._worker = FFmpegWorker(cmd, duration)
+        self._worker = FFmpegWorker(
+            cmd,
+            duration,
+            output_path=out_path,
+            overwrite=self._batch_overwrite.get(out_path, False),
+        )
         self._worker.progress.connect(self._on_item_progress)
         self._worker.log_output.connect(self.console.append)
         self._worker.finished_signal.connect(self._on_item_done)
@@ -315,15 +342,21 @@ class BatchPanel(QWidget):
             else:
                 item.setText(f"✗  {Path(self._items[self._current_idx]).name}")
                 self.console.append(f"[ERROR] {msg}\n")
+        if self._cancel_requested:
+            self.btn_start.setEnabled(True)
+            self.btn_cancel.setVisible(False)
+            self.lbl_batch_status.setText("Batch cancelled")
+            self._cancel_requested = False
+            return
         self._current_idx += 1
         self._process_next()
 
     def _cancel(self):
         if self._worker:
+            self._cancel_requested = True
+            self.btn_cancel.setEnabled(False)
             self._worker.cancel()
-        self.btn_start.setEnabled(True)
-        self.btn_cancel.setVisible(False)
-        self.lbl_batch_status.setText("Batch cancelled")
+            self.lbl_batch_status.setText("Cancelling current job...")
 
     def _post_completion(self):
         action = self.cmb_post_action.currentText()
