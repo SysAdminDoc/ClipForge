@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, TypedDict
 
 from clipforge_utils import _parse_fps
+from .ai_tools import AIToolManager
 
 # ---------------------------------------------------------------------------
 # Temp-dir tracking
@@ -61,6 +62,8 @@ atexit.register(_cleanup_temp_dirs)
 # Tool detection
 # ---------------------------------------------------------------------------
 
+_AI_TOOL_MANAGER = AIToolManager()
+
 
 def find_tool(name):
     path = shutil.which(name)
@@ -83,6 +86,9 @@ def find_tool(name):
 
 
 def find_realesrgan():
+    managed = _AI_TOOL_MANAGER.managed_path("realesrgan")
+    if managed:
+        return str(managed)
     name = "realesrgan-ncnn-vulkan"
     path = shutil.which(name)
     if path:
@@ -94,6 +100,9 @@ def find_realesrgan():
 
 
 def find_rife():
+    managed = _AI_TOOL_MANAGER.managed_path("rife")
+    if managed:
+        return str(managed)
     name = "rife-ncnn-vulkan"
     path = shutil.which(name)
     if path:
@@ -105,6 +114,9 @@ def find_rife():
 
 
 def find_span():
+    managed = _AI_TOOL_MANAGER.managed_path("span")
+    if managed:
+        return str(managed)
     name = "span-ncnn-vulkan"
     path = shutil.which(name)
     if path:

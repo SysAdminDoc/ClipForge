@@ -81,6 +81,7 @@ def run_managed_process(
     timeout: float = 3600,
     stdout_callback: LineCallback | None = None,
     stderr_callback: LineCallback | None = None,
+    cwd: str | os.PathLike[str] | None = None,
 ) -> ProcessOutcome:
     """Run a process while draining both pipes and enforcing cancel/timeout."""
     process = subprocess.Popen(
@@ -90,6 +91,7 @@ def run_managed_process(
         text=True,
         errors="replace",
         bufsize=1,
+        cwd=os.fspath(cwd) if cwd else None,
         **_popen_group_options(),
     )
     events: queue.Queue[tuple[str, str | None]] = queue.Queue()

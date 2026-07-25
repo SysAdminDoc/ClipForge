@@ -33,6 +33,7 @@ from .processes import (
     validate_output,
 )
 from .diagnostics import DIAGNOSTICS
+from .ai_tools import AIFrameCache
 
 # ---------------------------------------------------------------------------
 # Process helpers
@@ -644,30 +645,60 @@ class UpscaleWorker(QThread):
                 return
             staged_output = staging_output_path(final_output)
             tmpdir = create_job_temp_dir("upscale")
-            frames_dir = os.path.join(tmpdir, "frames")
             upscaled_dir = os.path.join(tmpdir, "upscaled")
-            os.makedirs(frames_dir)
             os.makedirs(upscaled_dir)
             info = probe_video(self.input_path)
             if not info:
                 self.finished_signal.emit(False, "Could not probe video")
                 return
             fps = info.get("fps", 30)
-
-            self.log_output.emit("[1/3] Extracting frames...\n")
-            extract_result = run_managed_process(
-                [FFMPEG, "-y", "-i", self.input_path, "-qscale:v", "2",
-                 os.path.join(frames_dir, "frame_%06d.jpg")],
-                cancel_event=self._cancel_event,
-                timeout=max(3600, float(info.get("duration", 0) or 0) * 20),
-            )
-            if extract_result.cancelled:
-                self.finished_signal.emit(False, "Cancelled")
-                return
-            if extract_result.returncode != 0:
-                self.finished_signal.emit(False, "Frame extraction failed")
-                return
-            frames = sorted(Path(frames_dir).glob("*.jpg"))
+            frame_cache = AIFrameCache()
+            frames_dir = frame_cache.lookup(self.input_path)
+            frame_cache_staging = None
+            if frames_dir:
+                self.log_output.emit(f"[1/3] Reusing {frames_dir.name} frame cache.\n")
+            else:
+                required = frame_cache.estimate_required_bytes(info)
+                free = shutil.disk_usage(frame_cache.root).free
+                if required > free * 0.9:
+                    self.finished_signal.emit(
+                        False,
+                        f"Insufficient cache space: need about {required / 1024**3:.1f} GiB",
+                    )
+                    return
+                frame_cache_staging = frame_cache.staging_dir(self.input_path)
+                self.log_output.emit(
+                    f"[1/3] Extracting reusable PNG frames "
+                    f"(estimate {required / 1024**3:.1f} GiB)...\n"
+                )
+                extract_result = run_managed_process(
+                    [
+                        FFMPEG,
+                        "-y",
+                        "-i",
+                        self.input_path,
+                        os.path.join(frame_cache_staging, "frame_%06d.png"),
+                    ],
+                    cancel_event=self._cancel_event,
+                    timeout=max(3600, float(info.get("duration", 0) or 0) * 20),
+                )
+                if extract_result.cancelled:
+                    self.finished_signal.emit(False, "Cancelled")
+                    return
+                if extract_result.returncode != 0:
+                    self.finished_signal.emit(False, "Frame extraction failed")
+                    return
+                extracted = sorted(Path(frame_cache_staging).glob("*.png"))
+                if not extracted:
+                    self.finished_signal.emit(False, "No frames extracted")
+                    return
+                frames_dir = frame_cache.commit(
+                    self.input_path,
+                    frame_cache_staging,
+                    len(extracted),
+                )
+                frame_cache_staging = None
+            frames = sorted(Path(frames_dir).glob("*.png"))
             total = len(frames)
             if total == 0:
                 self.finished_signal.emit(False, "No frames extracted")
@@ -676,8 +707,8 @@ class UpscaleWorker(QThread):
             self.progress.emit(10)
 
             self.log_output.emit(f"[2/3] Upscaling with {upscaler_name}...\n")
-            cmd_up = [upscaler, "-i", frames_dir, "-o", upscaled_dir,
-                      "-n", self.model, "-s", str(self.scale), "-f", "jpg"]
+            cmd_up = [upscaler, "-i", str(frames_dir), "-o", upscaled_dir,
+                      "-n", self.model, "-s", str(self.scale), "-f", "png"]
             self.log_output.emit(f"$ {' '.join(cmd_up)}\n")
             def upscaler_log(line):
                 self.log_output.emit(line)
@@ -691,6 +722,7 @@ class UpscaleWorker(QThread):
                 timeout=max(3600, total * 60),
                 stdout_callback=upscaler_log,
                 stderr_callback=upscaler_log,
+                cwd=str(Path(upscaler).parent),
             )
             if upscale_result.cancelled:
                 self.finished_signal.emit(False, "Cancelled")
@@ -713,7 +745,7 @@ class UpscaleWorker(QThread):
                 and os.path.getsize(audio_path) > 0
             )
             cmd_re = [FFMPEG, "-y", "-framerate", str(fps),
-                      "-i", os.path.join(upscaled_dir, "frame_%06d.jpg")]
+                      "-i", os.path.join(upscaled_dir, "frame_%06d.png")]
             if has_audio:
                 cmd_re += ["-i", audio_path]
             cmd_re += ["-c:v", "libx264", "-crf", "18", "-preset", "medium", "-pix_fmt", "yuv420p"]
@@ -748,6 +780,8 @@ class UpscaleWorker(QThread):
             DIAGNOSTICS.update(diagnostic_id, exception=type(e).__name__)
             self.finished_signal.emit(False, str(e))
         finally:
+            if "frame_cache_staging" in locals() and frame_cache_staging:
+                shutil.rmtree(frame_cache_staging, ignore_errors=True)
             if 'tmpdir' in locals():
                 shutil.rmtree(tmpdir, ignore_errors=True)
                 _unregister_temp_dir(tmpdir)
@@ -823,9 +857,7 @@ class InterpolateWorker(QThread):
                 return
             staged_output = staging_output_path(final_output)
             tmpdir = create_job_temp_dir("interpolate")
-            frames_dir = os.path.join(tmpdir, "frames")
             interp_dir = os.path.join(tmpdir, "interpolated")
-            os.makedirs(frames_dir)
             os.makedirs(interp_dir)
             info = probe_video(self.input_path)
             if not info:
@@ -833,20 +865,52 @@ class InterpolateWorker(QThread):
                 return
             fps = info.get("fps", 30)
             new_fps = fps * self.multiplier
-
-            self.log_output.emit("[1/3] Extracting frames...\n")
-            extract_result = run_managed_process(
-                [FFMPEG, "-y", "-i", self.input_path, "-qscale:v", "2",
-                 os.path.join(frames_dir, "frame_%06d.png")],
-                cancel_event=self._cancel_event,
-                timeout=max(3600, float(info.get("duration", 0) or 0) * 20),
-            )
-            if extract_result.cancelled:
-                self.finished_signal.emit(False, "Cancelled")
-                return
-            if extract_result.returncode != 0:
-                self.finished_signal.emit(False, "Frame extraction failed")
-                return
+            frame_cache = AIFrameCache()
+            frames_dir = frame_cache.lookup(self.input_path)
+            frame_cache_staging = None
+            if frames_dir:
+                self.log_output.emit(f"[1/3] Reusing {frames_dir.name} frame cache.\n")
+            else:
+                required = frame_cache.estimate_required_bytes(info)
+                free = shutil.disk_usage(frame_cache.root).free
+                if required > free * 0.9:
+                    self.finished_signal.emit(
+                        False,
+                        f"Insufficient cache space: need about {required / 1024**3:.1f} GiB",
+                    )
+                    return
+                frame_cache_staging = frame_cache.staging_dir(self.input_path)
+                self.log_output.emit(
+                    f"[1/3] Extracting reusable PNG frames "
+                    f"(estimate {required / 1024**3:.1f} GiB)...\n"
+                )
+                extract_result = run_managed_process(
+                    [
+                        FFMPEG,
+                        "-y",
+                        "-i",
+                        self.input_path,
+                        os.path.join(frame_cache_staging, "frame_%06d.png"),
+                    ],
+                    cancel_event=self._cancel_event,
+                    timeout=max(3600, float(info.get("duration", 0) or 0) * 20),
+                )
+                if extract_result.cancelled:
+                    self.finished_signal.emit(False, "Cancelled")
+                    return
+                if extract_result.returncode != 0:
+                    self.finished_signal.emit(False, "Frame extraction failed")
+                    return
+                extracted = sorted(Path(frame_cache_staging).glob("*.png"))
+                if not extracted:
+                    self.finished_signal.emit(False, "No frames extracted")
+                    return
+                frames_dir = frame_cache.commit(
+                    self.input_path,
+                    frame_cache_staging,
+                    len(extracted),
+                )
+                frame_cache_staging = None
             frames = sorted(Path(frames_dir).glob("*.png"))
             if len(frames) == 0:
                 self.finished_signal.emit(False, "No frames extracted")
@@ -855,7 +919,7 @@ class InterpolateWorker(QThread):
             self.progress.emit(15)
 
             self.log_output.emit(f"[2/3] Interpolating {self.multiplier}x with RIFE...\n")
-            cmd_rife = [rife, "-i", frames_dir, "-o", interp_dir,
+            cmd_rife = [rife, "-i", str(frames_dir), "-o", interp_dir,
                         "-m", self.model, "-n", str(len(frames) * self.multiplier)]
             self.log_output.emit(f"$ {' '.join(cmd_rife)}\n")
             def rife_log(line):
@@ -870,6 +934,7 @@ class InterpolateWorker(QThread):
                 timeout=max(3600, len(frames) * self.multiplier * 60),
                 stdout_callback=rife_log,
                 stderr_callback=rife_log,
+                cwd=str(Path(rife).parent),
             )
             if interpolate_result.cancelled:
                 self.finished_signal.emit(False, "Cancelled")
@@ -936,6 +1001,8 @@ class InterpolateWorker(QThread):
             DIAGNOSTICS.update(diagnostic_id, exception=type(e).__name__)
             self.finished_signal.emit(False, str(e))
         finally:
+            if "frame_cache_staging" in locals() and frame_cache_staging:
+                shutil.rmtree(frame_cache_staging, ignore_errors=True)
             if 'tmpdir' in locals():
                 shutil.rmtree(tmpdir, ignore_errors=True)
                 _unregister_temp_dir(tmpdir)

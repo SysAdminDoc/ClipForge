@@ -31,12 +31,14 @@ All-in-one video editor — Trim, Crop, Upscale, Interpolate, Convert, Filter, A
 - **SPAN** integration for fast AI upscaling (~7x faster than Real-ESRGAN)
 - Engine selector: choose Real-ESRGAN (quality) or SPAN (fast)
 - Scale options: 2x, 3x, 4x
-- Models: realesrgan-x4plus, anime-specific, animevideo, spanx4_ch48, ClearRealityV1
+- Models: realesrgan-x4plus, anime-specific, animevideo, spanx2_ch48, spanx4_ch48
 - **RIFE v4.25** frame interpolation for frame rate boosting (upgraded from v4.6)
 - Model selector: v4.25, v4.22, v4.6, v4
 - Multiplier options: 2x, 4x, 8x — converts 30fps to 60/120/240fps
 - Frame extraction -> AI processing -> reassembly pipeline
 - Preserves original audio
+- Checksum-pinned Windows tool manager with resumable official-package downloads, safe extraction, license/version/path/capability status, and post-install executable verification
+- Source-keyed reusable lossless frame cache shared by upscale and interpolation, with conservative storage preflight and invalidation when source metadata changes
 
 ### Convert
 - Containers: MP4, MKV, WebM, MOV, AVI, GIF
@@ -121,7 +123,7 @@ All-in-one video editor — Trim, Crop, Upscale, Interpolate, Convert, Filter, A
 - **Process tree cleanup** — cancelling kills child processes
 - **Owned temp directory cleanup** on exit without touching another running instance
 - **Atomic output safety** — validates staged media before replacing the chosen destination
-- 85-test suite covering utilities, process safety, generated media, probing, proxy caching, diagnostics, and accessibility contracts
+- 91-test suite covering utilities, process safety, generated media, probing, proxy/AI caching, supply-chain validation, diagnostics, and accessibility contracts
 
 ### Web Editor
 

@@ -54,6 +54,16 @@ def test_managed_process_times_out():
     assert outcome.timed_out
 
 
+def test_managed_process_uses_requested_working_directory(tmp_path):
+    outcome = run_managed_process(
+        [sys.executable, "-c", "from pathlib import Path; print(Path.cwd())"],
+        cwd=tmp_path,
+        timeout=10,
+    )
+    assert outcome.returncode == 0
+    assert Path(outcome.stdout.strip()).resolve() == tmp_path.resolve()
+
+
 def test_staging_command_replaces_only_last_output(tmp_path):
     output = tmp_path / "video with spaces.mp4"
     staged = staging_output_path(output)

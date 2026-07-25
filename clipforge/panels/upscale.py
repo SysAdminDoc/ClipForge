@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QGroupBox, QComboBox, QProgressBar, QFileDialog,
 )
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
 
 from clipforge_utils import format_size
 
@@ -20,6 +20,11 @@ from ..tools import (
     find_span,
 )
 from ..workers import UpscaleWorker, InterpolateWorker
+from ..ai_tools import (
+    AIFrameCache,
+    AIToolInstallWorker,
+    AIToolManager,
+)
 
 
 class UpscalePanel(QWidget):
@@ -31,6 +36,8 @@ class UpscalePanel(QWidget):
         self._filepath = None
         self._info = None
         self._worker = None
+        self._install_worker = None
+        self._ai_manager = AIToolManager()
         self._setup_ui()
 
     def _setup_ui(self):
@@ -84,11 +91,32 @@ class UpscalePanel(QWidget):
         info_grp = QGroupBox("Dependencies")
         info_l = QVBoxLayout(info_grp)
         self.lbl_esrgan = QLabel("Checking Real-ESRGAN...")
+        self.lbl_span = QLabel("Checking SPAN...")
         self.lbl_rife = QLabel("Checking RIFE...")
-        self.lbl_esrgan.setProperty("class", "dimLabel")
-        self.lbl_rife.setProperty("class", "dimLabel")
-        info_l.addWidget(self.lbl_esrgan)
-        info_l.addWidget(self.lbl_rife)
+        self._tool_labels = {
+            "realesrgan": self.lbl_esrgan,
+            "span": self.lbl_span,
+            "rife": self.lbl_rife,
+        }
+        self._tool_buttons = {}
+        for tool_id, label in self._tool_labels.items():
+            row = QHBoxLayout()
+            label.setProperty("class", "dimLabel")
+            label.setWordWrap(True)
+            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            row.addWidget(label, 1)
+            button = QPushButton("Install Verified")
+            button.setAccessibleName(f"Install verified {tool_id} package")
+            button.clicked.connect(
+                lambda _checked=False, selected=tool_id: self._install_tool(selected)
+            )
+            row.addWidget(button)
+            self._tool_buttons[tool_id] = button
+            info_l.addLayout(row)
+        self.lbl_storage_estimate = QLabel("Frame-cache estimate appears after loading media.")
+        self.lbl_storage_estimate.setProperty("class", "dimLabel")
+        self.lbl_storage_estimate.setWordWrap(True)
+        info_l.addWidget(self.lbl_storage_estimate)
         layout.addWidget(info_grp)
 
         self.progress = QProgressBar()
@@ -117,25 +145,73 @@ class UpscalePanel(QWidget):
         self._check_tools()
 
     def _check_tools(self):
-        if find_realesrgan():
-            self.lbl_esrgan.setText("Real-ESRGAN: Found")
-            self.lbl_esrgan.setStyleSheet(f"color: {C['green']};")
-        else:
-            self.lbl_esrgan.setText("Real-ESRGAN: Not found - download from github.com/xinntao/Real-ESRGAN/releases")
-            self.lbl_esrgan.setStyleSheet(f"color: {C['yellow']};")
-        if find_span():
-            self.lbl_esrgan.setText(self.lbl_esrgan.text() + "  |  SPAN: Found")
-        if find_rife():
-            self.lbl_rife.setText("RIFE: Found")
-            self.lbl_rife.setStyleSheet(f"color: {C['green']};")
-        else:
-            self.lbl_rife.setText("RIFE: Not found - download from github.com/nihui/rife-ncnn-vulkan/releases")
-            self.lbl_rife.setStyleSheet(f"color: {C['yellow']};")
+        finders = {
+            "realesrgan": find_realesrgan,
+            "span": find_span,
+            "rife": find_rife,
+        }
+        for tool_id, finder in finders.items():
+            status = self._ai_manager.status(tool_id, finder())
+            checksum = status["archive_sha256"][:12]
+            package_size = format_size(status["archive_size"])
+            unpacked_size = format_size(status["unpacked_size"])
+            if status["path"]:
+                trust = "managed + verified" if status["verified"] else "external path (package checksum unverified)"
+                text = (
+                    f"{status['name']} {status['version']} — {trust}\n"
+                    f"{status['license']} | SHA-256 {checksum}… | {status['path']}"
+                )
+                color = C["green"] if status["verified"] else C["yellow"]
+            else:
+                text = (
+                    f"{status['name']} {status['version']} — not installed\n"
+                    f"{status['license']} | SHA-256 {checksum}… | "
+                    f"{package_size} download / {unpacked_size} installed"
+                )
+                color = C["yellow"]
+            self._tool_labels[tool_id].setText(text)
+            self._tool_labels[tool_id].setToolTip(
+                f"Models: {', '.join(status['models'])}\n"
+                f"License: {status['license_url']}\n"
+                f"Full package SHA-256: {status['archive_sha256']}"
+            )
+            self._tool_labels[tool_id].setStyleSheet(f"color: {color};")
+            self._tool_buttons[tool_id].setEnabled(
+                status["install_supported"] and self._install_worker is None
+            )
+            self._tool_buttons[tool_id].setText(
+                "Reinstall Verified" if status["verified"] else "Install Verified"
+            )
+        self._refresh_action_state()
+
+    def _install_tool(self, tool_id):
+        if self._install_worker and self._install_worker.isRunning():
+            self._install_worker.cancel()
+            return
+        worker = AIToolInstallWorker(self._ai_manager, tool_id, self)
+        self._install_worker = worker
+        for current_id, button in self._tool_buttons.items():
+            button.setEnabled(current_id == tool_id)
+            if current_id == tool_id:
+                button.setText("Cancel Install")
+        self.progress.setValue(0)
+        worker.progress.connect(self.progress.setValue)
+        worker.status.connect(lambda message: self.console.append(f"[AI Manager] {message}\n"))
+        worker.finished_signal.connect(self._on_install_finished)
+        worker.start()
+
+    def _on_install_finished(self, ok, message, _status):
+        self.console.append(
+            f"[{'INFO' if ok else 'ERROR'}] AI manager: {message}\n"
+        )
+        self.requestToast.emit(message, C["green"] if ok else C["red"])
+        self._install_worker = None
+        self._check_tools()
 
     def _on_engine_changed(self, text):
         if "SPAN" in text:
             self.cmb_model.clear()
-            self.cmb_model.addItems(["spanx4_ch48", "spanx2_ch48", "ClearRealityV1"])
+            self.cmb_model.addItems(["spanx4_ch48", "spanx2_ch48"])
             self.cmb_scale.clear()
             self.cmb_scale.addItems(["2x", "4x"])
         else:
@@ -143,12 +219,18 @@ class UpscalePanel(QWidget):
             self.cmb_model.addItems(["realesrgan-x4plus", "realesrgan-x4plus-anime", "realesr-animevideov3"])
             self.cmb_scale.clear()
             self.cmb_scale.addItems(["2x", "3x", "4x"])
+        self._refresh_action_state()
 
     def load_file(self, filepath, info):
         self._filepath = filepath
         self._info = info
-        self.btn_upscale.setEnabled(bool(FFMPEG))
-        self.btn_interp.setEnabled(bool(FFMPEG))
+        required = AIFrameCache.estimate_required_bytes(info)
+        self.lbl_storage_estimate.setText(
+            f"Reusable lossless frame cache estimate: {format_size(required)}. "
+            "Upscale and interpolation share this metadata-keyed cache; "
+            "source changes create a new entry."
+        )
+        self._refresh_action_state()
         self._update_output_res()
         self._update_interp_info()
 
@@ -166,6 +248,16 @@ class UpscalePanel(QWidget):
         fps = self._info.get("fps", 30)
         mult = int(self.cmb_interp.currentText().split("x")[0])
         self.lbl_interp_info.setText(f"{fps} fps -> {fps * mult} fps")
+
+    def _refresh_action_state(self):
+        processing = self._worker is not None and self._worker.isRunning()
+        selected_tool = find_span() if "SPAN" in self.cmb_engine.currentText() else find_realesrgan()
+        self.btn_upscale.setEnabled(
+            bool(self._filepath and FFMPEG and selected_tool and not processing)
+        )
+        self.btn_interp.setEnabled(
+            bool(self._filepath and FFMPEG and find_rife() and not processing)
+        )
 
     def _do_upscale(self):
         if not self._filepath:
@@ -228,11 +320,15 @@ class UpscalePanel(QWidget):
             self._worker.cancel()
 
     def _set_processing(self, active):
-        self.btn_upscale.setEnabled(not active)
-        self.btn_interp.setEnabled(not active)
+        if active:
+            self.btn_upscale.setEnabled(False)
+            self.btn_interp.setEnabled(False)
+        else:
+            self._refresh_action_state()
         self.btn_cancel.setVisible(active)
 
     def _on_done(self, ok, msg, out_path):
+        self._worker = None
         self._set_processing(False)
         if ok:
             self.progress.setValue(100)
