@@ -5,7 +5,7 @@ from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QSlider,
-    QComboBox, QFileDialog, QGraphicsView, QGraphicsScene,
+    QComboBox, QFileDialog, QGraphicsView, QGraphicsScene, QProgressBar,
 )
 from PyQt6.QtCore import (
     Qt, QUrl, QTimer, QPointF, QPropertyAnimation, QEasingCurve, QRect,
@@ -22,9 +22,10 @@ from clipforge_utils import (
     validate_media_path,
 )
 from .constants import C
-from .tools import probe_media, probe_video, extract_frame
+from .tools import FFMPEG, probe_media, probe_video, extract_frame
 from .settings import add_recent
-from .workers import ThumbnailWorker
+from .workers import FFmpegWorker, ThumbnailWorker
+from .proxy import ProxyCache
 
 
 # ---------------------------------------------------------------------------
@@ -347,12 +348,19 @@ class VideoPlayer(QWidget):
     """Embedded video player with enhanced playback controls."""
     positionChanged = pyqtSignal(float)
     playbackError = pyqtSignal(str)
+    proxyLog = pyqtSignal(str)
+    proxyStatus = pyqtSignal(bool, str)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, proxy_cache=None):
         super().__init__(parent)
         self.setObjectName("videoPlayer")
         self._duration = 0
         self._filepath = None
+        self._source_info = {}
+        self._playback_path = None
+        self._proxy_path = None
+        self._proxy_worker = None
+        self._proxy_cache = proxy_cache or ProxyCache()
         self._thumb_worker = None
         self._fps = 30.0
         self._last_player_error = None
@@ -463,6 +471,32 @@ class VideoPlayer(QWidget):
 
         layout.addWidget(controls)
 
+        proxy_controls = QWidget()
+        proxy_layout = QHBoxLayout(proxy_controls)
+        proxy_layout.setContentsMargins(8, 0, 8, 0)
+        proxy_layout.setSpacing(6)
+        self.lbl_proxy_status = QLabel("Preview: original source")
+        self.lbl_proxy_status.setProperty("class", "dimLabel")
+        self.lbl_proxy_status.setAccessibleName("Proxy preview status")
+        proxy_layout.addWidget(self.lbl_proxy_status, 1)
+        self.proxy_progress = QProgressBar()
+        self.proxy_progress.setRange(0, 100)
+        self.proxy_progress.setFixedWidth(110)
+        self.proxy_progress.setAccessibleName("Proxy generation progress")
+        self.proxy_progress.hide()
+        proxy_layout.addWidget(self.proxy_progress)
+        self.btn_create_proxy = QPushButton("Create Proxy")
+        self.btn_create_proxy.setAccessibleName("Create or cancel preview proxy")
+        self.btn_create_proxy.clicked.connect(self._create_or_cancel_proxy)
+        self.btn_create_proxy.setEnabled(False)
+        proxy_layout.addWidget(self.btn_create_proxy)
+        self.btn_toggle_proxy = QPushButton("Use Proxy")
+        self.btn_toggle_proxy.setAccessibleName("Switch between proxy and original preview")
+        self.btn_toggle_proxy.clicked.connect(self._toggle_proxy)
+        self.btn_toggle_proxy.setEnabled(False)
+        proxy_layout.addWidget(self.btn_toggle_proxy)
+        layout.addWidget(proxy_controls)
+
         # Timecode display
         self.lbl_timecode = QLabel("00:00:00.000 | Frame: 0")
         self.lbl_timecode.setProperty("class", "dimLabel")
@@ -470,18 +504,138 @@ class VideoPlayer(QWidget):
         layout.addWidget(self.lbl_timecode)
 
     def load(self, filepath, info=None):
+        self._cancel_background_reads()
         self._filepath = filepath
+        self._source_info = info or {}
         self._last_player_error = None
         if info:
             self._fps = info.get("fps", 30.0) or 30.0
         else:
             self._fps = 30.0
+        self._proxy_path = self._proxy_cache.lookup(filepath)
+        estimate = self._proxy_cache.estimate_size(self._source_info)
+        estimate_text = format_size(estimate) if estimate > 0 else "size unknown"
+        self.btn_create_proxy.setText(f"Create Proxy (~{estimate_text})")
+        self.btn_create_proxy.setEnabled(bool(FFMPEG))
+        self.btn_toggle_proxy.setEnabled(bool(self._proxy_path))
+        self._set_playback_source(self._proxy_path or filepath)
+
+    def _cancel_background_reads(self):
+        if self._thumb_worker and self._thumb_worker.isRunning():
+            self._thumb_worker.cancel()
+            self._thumb_worker.wait(5000)
+        self._thumb_worker = None
+        if self._proxy_worker and self._proxy_worker.isRunning():
+            self._proxy_worker.cancel()
+            self._proxy_worker.wait(5000)
+        self._proxy_worker = None
+
+    def _set_playback_source(self, path):
+        if not path:
+            return
+        self._playback_path = os.fspath(path)
+        using_proxy = (
+            self._proxy_path is not None
+            and Path(self._playback_path).resolve() == Path(self._proxy_path).resolve()
+        )
         self._show_player_status("Loading preview…", C["subtext0"])
-        self.player.setSource(QUrl.fromLocalFile(filepath))
+        self.player.setSource(QUrl.fromLocalFile(self._playback_path))
         self.btn_play.setText("Play")
-        self._thumb_worker = ThumbnailWorker(filepath, 16)
-        self._thumb_worker.thumbnails_ready.connect(self.thumb_strip.set_thumbnails)
-        self._thumb_worker.start()
+        self.lbl_proxy_status.setText(
+            f"Preview: proxy ({format_size(Path(self._playback_path).stat().st_size)})"
+            if using_proxy
+            else "Preview: original source (exports always use original)"
+        )
+        self.btn_toggle_proxy.setText("Use Original" if using_proxy else "Use Proxy")
+        if self._thumb_worker and self._thumb_worker.isRunning():
+            self._thumb_worker.cancel()
+            self._thumb_worker.wait(5000)
+        self.thumb_strip.set_thumbnails([])
+        worker = ThumbnailWorker(self._playback_path, 16)
+        self._thumb_worker = worker
+        worker.thumbnails_ready.connect(
+            lambda thumbs, active_worker=worker: (
+                self.thumb_strip.set_thumbnails(thumbs)
+                if self._thumb_worker is active_worker
+                else None
+            )
+        )
+        worker.start()
+
+    def _create_or_cancel_proxy(self):
+        if self._proxy_worker and self._proxy_worker.isRunning():
+            self._proxy_worker.cancel()
+            self.btn_create_proxy.setEnabled(False)
+            self.lbl_proxy_status.setText("Proxy: cancelling…")
+            return
+        if not FFMPEG or not self._filepath:
+            return
+        proxy_path, _manifest_path = self._proxy_cache.paths_for(self._filepath)
+        command = self._proxy_cache.command(FFMPEG, self._filepath, proxy_path)
+        source_path = self._filepath
+        worker = FFmpegWorker(
+            command,
+            duration=float(self._source_info.get("duration") or 0),
+            output_path=str(proxy_path),
+            overwrite=True,
+            timeout=max(300, float(self._source_info.get("duration") or 0) * 5),
+            parent=self,
+        )
+        self._proxy_worker = worker
+        worker.progress.connect(lambda value: self.proxy_progress.setValue(int(value)))
+        worker.log_output.connect(self.proxyLog.emit)
+        worker.finished_signal.connect(
+            lambda ok, message, active_worker=worker, source=source_path: (
+                self._on_proxy_finished(active_worker, source, ok, message)
+            )
+        )
+        self.proxy_progress.setValue(0)
+        self.proxy_progress.show()
+        self.btn_create_proxy.setText("Cancel Proxy")
+        self.lbl_proxy_status.setText("Proxy: generating…")
+        worker.start()
+
+    def _on_proxy_finished(self, worker, source_path, ok, message):
+        if worker is not self._proxy_worker or source_path != self._filepath:
+            return
+        self.proxy_progress.hide()
+        estimate = self._proxy_cache.estimate_size(self._source_info)
+        estimate_text = format_size(estimate) if estimate > 0 else "size unknown"
+        self.btn_create_proxy.setText(f"Create Proxy (~{estimate_text})")
+        self.btn_create_proxy.setEnabled(bool(FFMPEG))
+        if ok:
+            try:
+                proxy_path, _manifest_path = self._proxy_cache.paths_for(source_path)
+                self._proxy_path = self._proxy_cache.record(source_path, proxy_path)
+                self._proxy_cache.prune()
+                self.btn_toggle_proxy.setEnabled(True)
+                self._set_playback_source(self._proxy_path)
+                message = "Proxy ready; preview switched to proxy. Exports still use the original."
+            except (OSError, ValueError) as error:
+                ok = False
+                message = f"Proxy cache validation failed: {error}"
+        else:
+            self.lbl_proxy_status.setText(f"Proxy unavailable: {message}")
+        self.proxyStatus.emit(ok, message)
+        self._proxy_worker = None
+
+    def _toggle_proxy(self):
+        if not self._filepath:
+            return
+        active_proxy = (
+            self._proxy_path is not None
+            and self._playback_path
+            and Path(self._playback_path).resolve() == Path(self._proxy_path).resolve()
+        )
+        if active_proxy:
+            self._set_playback_source(self._filepath)
+            return
+        self._proxy_path = self._proxy_cache.lookup(self._filepath)
+        if self._proxy_path:
+            self._set_playback_source(self._proxy_path)
+        else:
+            self.btn_toggle_proxy.setEnabled(False)
+            self.lbl_proxy_status.setText("Proxy cache is stale; create a new proxy")
 
     def _show_player_status(self, message, color):
         self.lbl_player_status.setText(message)
@@ -608,8 +762,7 @@ class VideoPlayer(QWidget):
         """Release media handles and finish the current thumbnail read."""
         self.stop()
         self.player.setSource(QUrl())
-        if self._thumb_worker and self._thumb_worker.isRunning():
-            self._thumb_worker.wait(5000)
+        self._cancel_background_reads()
 
     def get_position_sec(self):
         return self.player.position() / 1000

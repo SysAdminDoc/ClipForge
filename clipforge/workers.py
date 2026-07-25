@@ -22,7 +22,7 @@ from clipforge_utils import (
 from .tools import (
     FFMPEG, FFPROBE,
     find_realesrgan, find_rife, find_span,
-    probe_video, extract_frame,
+    probe_video,
     create_job_temp_dir, _unregister_temp_dir,
 )
 from .processes import (
@@ -506,13 +506,17 @@ class QualityMetricsWorker(QThread):
 
 
 class ThumbnailWorker(QThread):
-    """Extract thumbnail frames in background."""
+    """Extract a filmstrip in one cancellable FFmpeg decode pass."""
     thumbnails_ready = pyqtSignal(list)  # list of QPixmap
 
     def __init__(self, filepath, count=12, parent=None):
         super().__init__(parent)
         self.filepath = filepath
         self.count = count
+        self._cancel_event = threading.Event()
+
+    def cancel(self):
+        self._cancel_event.set()
 
     def run(self):
         if not FFMPEG:
@@ -523,15 +527,48 @@ class ThumbnailWorker(QThread):
         duration = info.get("duration", 0)
         if duration <= 0:
             return
-        thumbs = []
-        for i in range(self.count):
-            t = duration * i / self.count
-            pix = extract_frame(self.filepath, t)
-            if pix:
-                thumbs.append(pix.scaledToHeight(44, Qt.TransformationMode.SmoothTransformation))
-            else:
-                thumbs.append(QPixmap())
-        self.thumbnails_ready.emit(thumbs)
+        tmpdir = create_job_temp_dir("thumbs")
+        try:
+            output_pattern = str(Path(tmpdir) / "thumb_%03d.jpg")
+            command = [
+                FFMPEG,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                self.filepath,
+                "-vf",
+                f"fps={self.count / duration:.9f},scale=-2:44",
+                "-frames:v",
+                str(self.count),
+                "-q:v",
+                "4",
+                "-y",
+                output_pattern,
+            ]
+            outcome = run_managed_process(
+                command,
+                cancel_event=self._cancel_event,
+                timeout=max(60, duration * 2),
+            )
+            if outcome.returncode != 0 or outcome.cancelled or outcome.timed_out:
+                return
+            thumbs = []
+            for index in range(1, self.count + 1):
+                path = Path(tmpdir) / f"thumb_{index:03d}.jpg"
+                pixmap = QPixmap(str(path)) if path.exists() else QPixmap()
+                thumbs.append(
+                    pixmap.scaledToHeight(
+                        44,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                    if not pixmap.isNull()
+                    else pixmap
+                )
+            self.thumbnails_ready.emit(thumbs)
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            _unregister_temp_dir(tmpdir)
 
 
 # ---------------------------------------------------------------------------

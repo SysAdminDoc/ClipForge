@@ -100,6 +100,7 @@ All-in-one video editor — Trim, Crop, Upscale, Interpolate, Convert, Filter, A
 - Playback speed control (0.25x - 2x)
 - A-B loop for segment preview
 - Thumbnail filmstrip with click-to-seek
+- Cancellable 720p preview proxies with metadata-keyed atomic cache, source-change invalidation, size estimates, and original/proxy switching; exports always use the original
 - Timecode display (current / total)
 
 ### General
@@ -120,7 +121,7 @@ All-in-one video editor — Trim, Crop, Upscale, Interpolate, Convert, Filter, A
 - **Process tree cleanup** — cancelling kills child processes
 - **Owned temp directory cleanup** on exit without touching another running instance
 - **Atomic output safety** — validates staged media before replacing the chosen destination
-- 82-test suite covering utilities, process safety, generated media, probing, diagnostics, and accessibility contracts
+- 85-test suite covering utilities, process safety, generated media, probing, proxy caching, diagnostics, and accessibility contracts
 
 ### Web Editor
 
@@ -137,6 +138,7 @@ Try it in the browser: **[sysadmindoc.github.io/ClipForge](https://sysadmindoc.g
 - **Truthful multi-clip export** — contiguous video clips and embedded source audio are rendered; preflight blocks unsupported gaps, overlaps, transitions, unlinked audio/music, or unrendered effects instead of silently dropping them
 - Cancellable MP4, WebM, and GIF export with sanitized filenames, cleanup, and quality/resolution options
 - Versioned `.clipforge` project save/load with legacy migration, IndexedDB crash recovery, and explicit local-media relinking
+- IndexedDB-backed 720p browser proxies with visible estimates, cancellation, original/proxy switching, ten-entry pruning, and project relink restoration
 - Keyboard shortcuts: V (select), C (razor), S (split), Space (play/pause), J/K/L (transport)
 
 ## Requirements

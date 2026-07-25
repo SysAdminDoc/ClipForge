@@ -12,12 +12,14 @@ const PROJECT_SCHEMA_VERSION = 1;
 const PROJECT_DB_NAME = 'clipforge-recovery';
 const PROJECT_STORE_NAME = 'projects';
 const PROJECT_RECOVERY_KEY = 'current';
+const BROWSER_PROXY_PROFILE = 1;
 let recoveryDbPromise = null;
 let recoverySaveTimer = null;
 let recoverySnapshot = null;
 let projectLoading = false;
 let exportInProgress = false;
 let exportCancelRequested = false;
+let browserProxyJob = null;
 const trackStates = {
     video: { visible: true, locked: false },
     audio: { muted: false, solo: false },
@@ -425,6 +427,11 @@ function renderMediaList() {
                     <span>${media.missing ? 'Missing — relink required' : escapeHtml(media.type)}</span>
                     <span class="media-duration">${formatTimecode(media.duration)}</span>
                 </div>
+                ${media.type === 'video' && !media.missing ? `
+                    <button class="media-proxy-btn" onclick="event.stopPropagation(); generateBrowserProxy('${media.id}')" aria-label="${escapeHtml(browserProxyButtonLabel(media))}">
+                        ${escapeHtml(browserProxyButtonLabel(media))}
+                    </button>
+                ` : ''}
             </div>
         </div>
     `).join('');
@@ -458,7 +465,8 @@ function addToTimeline(mediaId) {
         type: media.type,
         thumbnail: media.thumbnail,
         waveform: media.waveform,
-        url: media.url,
+        url: media.proxyUrl || media.url,
+        proxyActive: Boolean(media.proxyUrl),
         // Effects
         opacity: 100,
         scale: 100,
@@ -494,7 +502,7 @@ function addToTimeline(mediaId) {
     
     // Show preview
     if (media.type === 'video') {
-        loadPreview(media.url);
+        loadPreview(media.proxyUrl || media.url);
     }
     
     toast('info', `Added "${media.name}" to timeline`);
@@ -537,6 +545,159 @@ async function generateVideoWaveform(media) {
     } catch (e) {
         console.warn('Video waveform extraction failed:', e);
         return null;
+    }
+}
+
+function browserProxyKey(file) {
+    return `v${BROWSER_PROXY_PROFILE}:${file.name}:${file.size}:${file.lastModified}`;
+}
+
+function browserProxyButtonLabel(media) {
+    if (browserProxyJob?.mediaId == media.id) {
+        return browserProxyJob.cancelRequested ? 'Cancelling proxy…' : 'Cancel proxy';
+    }
+    if (media.proxyUrl) {
+        return media.proxyActive
+            ? `Use original (${formatBytes(media.proxySize || 0)} proxy active)`
+            : `Use proxy (${formatBytes(media.proxySize || 0)})`;
+    }
+    const estimate = Math.max(
+        1024 * 1024,
+        Math.min(Number(media.file?.size || 0) * 0.35, Number(media.duration || 0) * 4_128_000 / 8),
+    );
+    return `Create proxy (~${formatBytes(estimate)})`;
+}
+
+function applyBrowserProxy(media, payload) {
+    if (media.proxyUrl?.startsWith('blob:')) URL.revokeObjectURL(media.proxyUrl);
+    media.proxyKey = payload.key;
+    media.proxySize = payload.size;
+    media.proxyUrl = URL.createObjectURL(payload.blob);
+    media.proxyActive = true;
+    clips.filter(clip => clip.mediaId == media.id).forEach(clip => {
+        clip.url = media.proxyUrl;
+        clip.proxyActive = true;
+    });
+}
+
+async function restoreBrowserProxy(media) {
+    if (!media.file) return false;
+    const key = browserProxyKey(media.file);
+    if (media.proxy?.key && media.proxy.key !== key) return false;
+    try {
+        const payload = await browserProxyStore('get', key);
+        if (!payload || payload.profile !== BROWSER_PROXY_PROFILE || !(payload.blob instanceof Blob)) {
+            return false;
+        }
+        applyBrowserProxy(media, payload);
+        return true;
+    } catch (error) {
+        console.warn('Browser proxy restore failed:', error);
+        return false;
+    }
+}
+
+async function pruneBrowserProxyCache() {
+    try {
+        const records = await browserProxyStore('all');
+        records.sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
+        for (const record of records.slice(10)) {
+            await browserProxyStore('delete', record.key);
+        }
+    } catch (error) {
+        console.warn('Browser proxy pruning failed:', error);
+    }
+}
+
+async function generateBrowserProxy(mediaId) {
+    const media = mediaItems.find(item => item.id == mediaId);
+    if (!media?.file || media.type !== 'video') return;
+    if (media.proxyUrl && !browserProxyJob) {
+        media.proxyActive = !media.proxyActive;
+        clips.filter(clip => clip.mediaId == media.id).forEach(clip => {
+            clip.url = media.proxyActive ? media.proxyUrl : media.url;
+            clip.proxyActive = media.proxyActive;
+        });
+        loadPreview(media.proxyActive ? media.proxyUrl : media.url);
+        renderMediaList();
+        renderTimeline();
+        toast('info', media.proxyActive ? 'Proxy selected for preview' : 'Original selected for preview');
+        return;
+    }
+    if (browserProxyJob) {
+        if (browserProxyJob.mediaId != media.id) {
+            toast('info', 'Finish or cancel the active proxy before starting another');
+            return;
+        }
+        browserProxyJob.cancelRequested = true;
+        try { ffmpeg?.terminate(); } catch (_) {}
+        renderMediaList();
+        return;
+    }
+    if (exportInProgress) {
+        toast('error', 'Wait for export to finish before generating a proxy');
+        return;
+    }
+    if (!ffmpegLoaded) {
+        toast('error', 'The FFmpeg engine is not ready');
+        return;
+    }
+
+    const job = { mediaId: media.id, cancelRequested: false };
+    browserProxyJob = job;
+    renderMediaList();
+    const runId = `proxy_${Date.now().toString(36)}`;
+    const extension = media.file.name.match(/\.[A-Za-z0-9]{1,8}$/)?.[0]?.toLowerCase() || '.bin';
+    const inputName = `${runId}_input${extension}`;
+    const outputName = `${runId}.mp4`;
+    try {
+        await ffmpeg.writeFile(inputName, await window.ffmpegFetchFile(media.file));
+        const exitCode = await ffmpeg.exec([
+            '-i', inputName,
+            '-map', '0:v:0', '-map', '0:a?',
+            '-vf', 'scale=w=min(1280\\,iw):h=-2',
+            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '28', '-pix_fmt', 'yuv420p',
+            '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart',
+            '-y', outputName,
+        ]);
+        if (job.cancelRequested) throw new Error('Proxy cancelled');
+        if (exitCode !== 0) throw new Error(`Proxy encode failed with FFmpeg exit code ${exitCode}`);
+        const data = await ffmpeg.readFile(outputName);
+        const blob = new Blob([data.buffer], { type: 'video/mp4' });
+        const payload = {
+            key: browserProxyKey(media.file),
+            profile: BROWSER_PROXY_PROFILE,
+            blob,
+            size: blob.size,
+            createdAt: Date.now(),
+        };
+        await browserProxyStore('put', payload.key, payload);
+        applyBrowserProxy(media, payload);
+        await pruneBrowserProxyCache();
+        if (previewVideo?.src === media.url) loadPreview(media.proxyUrl);
+        toast('success', 'Proxy cached and selected for preview; export still uses the original');
+    } catch (error) {
+        if (!job.cancelRequested) {
+            console.error('Browser proxy error:', error);
+            toast('error', `Proxy failed: ${error.message}`);
+        }
+    } finally {
+        if (!job.cancelRequested) {
+            try { await ffmpeg.deleteFile(inputName); } catch (_) {}
+            try { await ffmpeg.deleteFile(outputName); } catch (_) {}
+        }
+        browserProxyJob = null;
+        renderMediaList();
+        renderTimeline();
+        if (job.cancelRequested) {
+            ffmpegLoaded = false;
+            ffmpeg = null;
+            document.getElementById('statusDot').classList.remove('ready');
+            document.getElementById('statusText').textContent = 'Restarting engine';
+            document.getElementById('loadingOverlay').classList.remove('hidden');
+            document.getElementById('loadingText').textContent = 'Restarting FFmpeg after proxy cancellation...';
+            setTimeout(() => initFFmpeg(), 0);
+        }
     }
 }
 
@@ -1720,6 +1881,11 @@ function serializeProject() {
             width: finiteNumber(media.width),
             height: finiteNumber(media.height),
             reference: projectMediaReference(media),
+            proxy: media.proxyKey ? {
+                key: media.proxyKey,
+                profile: BROWSER_PROXY_PROFILE,
+                size: finiteNumber(media.proxySize),
+            } : null,
         })),
         clips: clips.map(clip => ({
             id: clip.id,
@@ -1805,8 +1971,17 @@ function normalizeProject(raw) {
             mime: String(item.reference?.mime || '').slice(0, 127),
             relativePath: String(item.reference?.relativePath || '').slice(0, 1024),
         },
+        proxy: item.proxy && typeof item.proxy === 'object' ? {
+            key: String(item.proxy.key || '').slice(0, 1024),
+            profile: finiteNumber(item.proxy.profile),
+            size: Math.max(0, finiteNumber(item.proxy.size)),
+        } : null,
         file: null,
         url: null,
+        proxyUrl: null,
+        proxyKey: null,
+        proxySize: 0,
+        proxyActive: false,
         thumbnail: null,
         waveform: null,
         missing: true,
@@ -1863,6 +2038,7 @@ function normalizeProject(raw) {
 function releaseMediaUrls() {
     mediaItems.forEach(media => {
         if (media.url?.startsWith('blob:')) URL.revokeObjectURL(media.url);
+        if (media.proxyUrl?.startsWith('blob:')) URL.revokeObjectURL(media.proxyUrl);
     });
 }
 
@@ -1927,8 +2103,10 @@ async function handleRelinkFileInput(event) {
         if (media.type === 'image') {
             media.thumbnail = media.url;
         }
+        await restoreBrowserProxy(media);
         clips.filter(clip => clip.mediaId == media.id).forEach(clip => {
-            clip.url = media.url;
+            clip.url = media.proxyUrl || media.url;
+            clip.proxyActive = Boolean(media.proxyUrl);
             clip.name = media.name;
             if (media.thumbnail) clip.thumbnail = media.thumbnail;
         });
@@ -1948,10 +2126,13 @@ function openRecoveryDb() {
     if (!('indexedDB' in window)) return Promise.reject(new Error('IndexedDB is unavailable'));
     if (!recoveryDbPromise) {
         recoveryDbPromise = new Promise((resolve, reject) => {
-            const request = indexedDB.open(PROJECT_DB_NAME, 1);
+            const request = indexedDB.open(PROJECT_DB_NAME, 2);
             request.onupgradeneeded = () => {
                 if (!request.result.objectStoreNames.contains(PROJECT_STORE_NAME)) {
                     request.result.createObjectStore(PROJECT_STORE_NAME);
+                }
+                if (!request.result.objectStoreNames.contains('proxies')) {
+                    request.result.createObjectStore('proxies');
                 }
             };
             request.onsuccess = () => resolve(request.result);
@@ -1971,6 +2152,25 @@ async function recoveryStore(mode, value) {
             : store.put(value, PROJECT_RECOVERY_KEY);
         request.onsuccess = () => resolve(request.result);
         request.onerror = () => reject(request.error || new Error('Recovery storage operation failed'));
+    });
+}
+
+async function browserProxyStore(mode, key = null, value = null) {
+    const db = await openRecoveryDb();
+    return new Promise((resolve, reject) => {
+        const transaction = db.transaction('proxies', mode === 'get' || mode === 'all' ? 'readonly' : 'readwrite');
+        const store = transaction.objectStore('proxies');
+        let request;
+        if (mode === 'get') request = store.get(key);
+        else if (mode === 'put') request = store.put(value, key);
+        else if (mode === 'delete') request = store.delete(key);
+        else if (mode === 'all') request = store.getAll();
+        else {
+            reject(new Error(`Unsupported browser proxy operation: ${mode}`));
+            return;
+        }
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error || new Error('Browser proxy storage operation failed'));
     });
 }
 
@@ -2087,6 +2287,13 @@ function formatTimecodeShort(seconds) {
     return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+function formatBytes(bytes) {
+    const value = Math.max(0, Number(bytes) || 0);
+    if (value < 1024 * 1024) return `${Math.max(1, Math.round(value / 1024))} KiB`;
+    if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
+    return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GiB`;
+}
+
 function toast(type, message) {
     const container = document.getElementById('toastContainer');
     const el = document.createElement('div');
@@ -2117,5 +2324,5 @@ Object.assign(window, {
     selectAllClips, addTransition, selectTransitionType, unlinkAudio,
     setVolume, toggleMute, showExportModal, hideExportModal, exportVideo,
     cancelExport, saveProject, recoverLastProject, showEditMenu,
-    updateClipProperty, applyQuickEffect,
+    generateBrowserProxy, updateClipProperty, applyQuickEffect,
 });

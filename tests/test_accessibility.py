@@ -118,7 +118,9 @@ def test_browser_project_and_export_contract_is_explicit():
     assert by_id["cancelExportButton"][0] == "button"
     assert "const PROJECT_SCHEMA_VERSION = 1" in script
     assert "Project schema v${source.version} is newer" in script
-    assert "indexedDB.open(PROJECT_DB_NAME, 1)" in script
+    assert "indexedDB.open(PROJECT_DB_NAME, 2)" in script
+    assert "browserProxyKey" in script
+    assert "Proxy cached and selected for preview" in script
     assert "Transitions are visible in the editor but are not yet rendered" in script
     assert "Unlinked audio and music tracks are not yet mixed" in script
     assert "sanitizeDownloadName" in script

@@ -249,6 +249,8 @@ class MainWindow(QMainWindow):
                 self._original_console_append(text)
 
         self.console.append = _tracked_append
+        self.player.proxyLog.connect(self.console.append)
+        self.player.proxyStatus.connect(self._on_proxy_status)
 
         self.stack = QStackedWidget()
         self.trim_panel = TrimPanel(self.console, self.player)
@@ -435,6 +437,16 @@ class MainWindow(QMainWindow):
         self.console.append(f"[WARNING] Preview unavailable: {message}\n")
         self.status_bar.showMessage("Preview unavailable; FFmpeg tools remain available")
         self.toast.show_message("Preview unavailable; see player details", C["yellow"], 5000)
+
+    def _on_proxy_status(self, ok, message):
+        severity = "INFO" if ok else "WARNING"
+        self.console.append(f"[{severity}] {message}\n")
+        self.status_bar.showMessage(message, 8000)
+        self.toast.show_message(
+            "Proxy ready" if ok else "Proxy generation stopped",
+            C["green"] if ok else C["yellow"],
+            5000,
+        )
 
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
