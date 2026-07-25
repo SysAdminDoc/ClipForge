@@ -91,5 +91,5 @@ def test_concat_manifest_escapes_quote_and_uses_absolute_paths(tmp_path):
     write_concat_manifest([media], manifest)
     content = manifest.read_text(encoding="utf-8")
     assert content.startswith("file '")
-    assert "clip\\'s sample.mp4" in content
-    assert Path(media).resolve().as_posix().replace("'", r"\'") in content
+    assert "clip'\\''s sample.mp4" in content
+    assert Path(media).resolve().as_posix().replace("'", r"'\''") in content

@@ -177,13 +177,16 @@ explicitly before launch.
 ```powershell
 python -m pip install -r requirements-dev.lock
 python scripts/sync_version.py --check
-python -m pytest -q
-pyinstaller --noconfirm --clean ClipForge.spec
+python scripts/release_check.py
+python scripts/release_check.py --build
 ```
 
 Release builds are unsigned and produced locally. `clipforge/version.py` is the
 version source of truth; use `python scripts/sync_version.py --set X.Y.Z` to
 update desktop, web, README, and Windows executable metadata together.
+The release check generates disposable FFmpeg fixtures for audio/video,
+subtitles, chapters, rotation, VFR, odd filenames, and core edit operations;
+`--build` also creates and launch-smokes the unsigned PyInstaller executable.
 
 ## Usage
 

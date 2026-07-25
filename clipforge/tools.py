@@ -48,7 +48,7 @@ def write_concat_manifest(paths, manifest_path):
     """Write an ffconcat-safe absolute path list."""
     lines = []
     for path in paths:
-        normalized = Path(path).resolve().as_posix().replace("'", r"\'")
+        normalized = Path(path).resolve().as_posix().replace("'", r"'\''")
         lines.append(f"file '{normalized}'")
     Path(manifest_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
