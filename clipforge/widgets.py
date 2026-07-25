@@ -22,7 +22,7 @@ from clipforge_utils import (
     validate_media_path,
 )
 from .constants import C
-from .tools import probe_video, extract_frame
+from .tools import probe_media, probe_video, extract_frame
 from .settings import add_recent
 from .workers import ThumbnailWorker
 
@@ -297,6 +297,7 @@ class CropView(QGraphicsView):
 class VideoPlayer(QWidget):
     """Embedded video player with enhanced playback controls."""
     positionChanged = pyqtSignal(float)
+    playbackError = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -305,6 +306,7 @@ class VideoPlayer(QWidget):
         self._filepath = None
         self._thumb_worker = None
         self._fps = 30.0
+        self._last_player_error = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -315,6 +317,13 @@ class VideoPlayer(QWidget):
         self.video_widget.setMinimumHeight(200)
         self.video_widget.setStyleSheet(f"background: {C['crust']}; border-radius: 8px;")
         layout.addWidget(self.video_widget)
+
+        self.lbl_player_status = QLabel()
+        self.lbl_player_status.setWordWrap(True)
+        self.lbl_player_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.lbl_player_status.setAccessibleName("Player status")
+        self.lbl_player_status.hide()
+        layout.addWidget(self.lbl_player_status)
 
         # Thumbnail strip
         self.thumb_strip = ThumbnailStrip()
@@ -329,6 +338,8 @@ class VideoPlayer(QWidget):
         self.player.setVideoOutput(self.video_widget)
         self.player.positionChanged.connect(self._on_position)
         self.player.durationChanged.connect(self._on_duration)
+        self.player.errorOccurred.connect(self._on_player_error)
+        self.player.mediaStatusChanged.connect(self._on_media_status)
 
         # Controls bar
         controls = QWidget()
@@ -411,15 +422,64 @@ class VideoPlayer(QWidget):
 
     def load(self, filepath, info=None):
         self._filepath = filepath
+        self._last_player_error = None
         if info:
             self._fps = info.get("fps", 30.0) or 30.0
         else:
             self._fps = 30.0
+        self._show_player_status("Loading preview…", C["subtext0"])
         self.player.setSource(QUrl.fromLocalFile(filepath))
         self.btn_play.setText("Play")
         self._thumb_worker = ThumbnailWorker(filepath, 16)
         self._thumb_worker.thumbnails_ready.connect(self.thumb_strip.set_thumbnails)
         self._thumb_worker.start()
+
+    def _show_player_status(self, message, color):
+        self.lbl_player_status.setText(message)
+        self.lbl_player_status.setStyleSheet(
+            f"color: {color}; padding: 4px; font-weight: 600;"
+        )
+        self.lbl_player_status.show()
+
+    def _on_player_error(self, error, message=""):
+        if error == QMediaPlayer.Error.NoError:
+            return
+        error_key = (error, message or self.player.errorString())
+        if self._last_player_error == error_key:
+            return
+        self._last_player_error = error_key
+        labels = {
+            QMediaPlayer.Error.ResourceError: "The media file could not be opened",
+            QMediaPlayer.Error.FormatError: "This media format is not supported for preview",
+            QMediaPlayer.Error.NetworkError: "The preview backend reported a network error",
+            QMediaPlayer.Error.AccessDeniedError: "Access to the media file was denied",
+        }
+        summary = labels.get(error, "The preview backend could not decode this file")
+        details = message or self.player.errorString()
+        actionable = f"{summary}. Editing with FFmpeg may still work."
+        if details:
+            actionable += f" Backend: {details}"
+        self._show_player_status(actionable, C["red"])
+        self.btn_play.setText("Play")
+        self.playbackError.emit(actionable)
+
+    def _on_media_status(self, status):
+        if status in (
+            QMediaPlayer.MediaStatus.LoadedMedia,
+            QMediaPlayer.MediaStatus.BufferedMedia,
+        ):
+            self.lbl_player_status.hide()
+        elif status == QMediaPlayer.MediaStatus.LoadingMedia:
+            self._show_player_status("Loading preview…", C["subtext0"])
+        elif status == QMediaPlayer.MediaStatus.StalledMedia:
+            self._show_player_status(
+                "Preview is stalled; wait or reopen the file.", C["yellow"]
+            )
+        elif status == QMediaPlayer.MediaStatus.InvalidMedia:
+            self._on_player_error(
+                self.player.error() or QMediaPlayer.Error.FormatError,
+                self.player.errorString(),
+            )
 
     def _toggle_play(self):
         if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
@@ -495,6 +555,13 @@ class VideoPlayer(QWidget):
         self.player.stop()
         self.btn_play.setText("Play")
 
+    def release(self):
+        """Release media handles and finish the current thumbnail read."""
+        self.stop()
+        self.player.setSource(QUrl())
+        if self._thumb_worker and self._thumb_worker.isRunning():
+            self._thumb_worker.wait(5000)
+
     def get_position_sec(self):
         return self.player.position() / 1000
 
@@ -509,6 +576,7 @@ class VideoPlayer(QWidget):
 
 class FileInfoBar(QWidget):
     fileLoaded = pyqtSignal(str, dict)
+    fileLoadFailed = pyqtSignal(str, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -545,9 +613,23 @@ class FileInfoBar(QWidget):
     def load_file(self, path):
         if not validate_media_path(path):
             self.lbl_name.setText("Invalid file path")
+            self.lbl_info.setText("Choose an existing local media file")
+            self.fileLoadFailed.emit(path or "", "The selected file does not exist.")
+            return
+        result = probe_media(path)
+        if result.error:
+            self._filepath = None
+            self._info = None
+            self.lbl_name.setText("Could not open media")
+            details = result.error.message
+            if result.error.details:
+                details += f" {result.error.details}"
+            self.lbl_info.setText(result.error.message)
+            self.lbl_info.setToolTip(details)
+            self.fileLoadFailed.emit(path, details)
             return
         self._filepath = path
-        self._info = probe_video(path)
+        self._info = result.info
         add_recent(path)
         name = Path(path).name
         if len(name) > 50:
@@ -562,9 +644,7 @@ class FileInfoBar(QWidget):
             size = format_size(self._info.get("size", 0))
             br = format_bitrate(self._info.get("bit_rate", 0))
             self.lbl_info.setText(f"{w}x{h}  |  {fps} fps  |  {dur}  |  {size}  |  {br}")
-        else:
-            self.lbl_info.setText("Could not read metadata")
-        self.fileLoaded.emit(path, self._info or {})
+        self.fileLoaded.emit(path, self._info)
 
     def filepath(self):
         return self._filepath

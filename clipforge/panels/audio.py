@@ -12,7 +12,7 @@ from PyQt6.QtCore import pyqtSignal
 from clipforge_utils import format_size
 
 from ..constants import C
-from ..tools import FFMPEG, _confirm_overwrite
+from ..tools import FFMPEG, _confirm_overwrite, probe_media, stream_copy_issues
 from ..workers import FFmpegWorker
 
 
@@ -25,6 +25,8 @@ class AudioPanel(QWidget):
         self._filepath = None
         self._info = None
         self._worker = None
+        self._audio_streams = []
+        self._replace_audio_streams = []
         self._setup_ui()
 
     def _setup_ui(self):
@@ -36,6 +38,17 @@ class AudioPanel(QWidget):
         self.lbl_audio_info = QLabel("Open a video to see audio details")
         self.lbl_audio_info.setProperty("class", "dimLabel")
         il.addWidget(self.lbl_audio_info)
+        stream_row = QHBoxLayout()
+        stream_row.addWidget(QLabel("Source stream:"))
+        self.cmb_audio_stream = QComboBox()
+        stream_row.addWidget(self.cmb_audio_stream, 1)
+        stream_row.addWidget(QLabel("Output layout:"))
+        self.cmb_audio_layout = QComboBox()
+        self.cmb_audio_layout.addItems(
+            ["Keep source layout", "Mono", "Stereo", "5.1 surround"]
+        )
+        stream_row.addWidget(self.cmb_audio_layout)
+        il.addLayout(stream_row)
         layout.addWidget(info_grp)
 
         ext_grp = QGroupBox("Extract Audio")
@@ -60,6 +73,10 @@ class AudioPanel(QWidget):
         self.btn_browse_audio = QPushButton("Browse Audio")
         self.btn_browse_audio.clicked.connect(self._browse_audio)
         rep_row.addWidget(self.lbl_replace_file, 1)
+        self.cmb_replace_stream = QComboBox()
+        self.cmb_replace_stream.setEnabled(False)
+        self.cmb_replace_stream.setToolTip("Audio stream from the replacement file")
+        rep_row.addWidget(self.cmb_replace_stream)
         rep_row.addWidget(self.btn_browse_audio)
         rl.addLayout(rep_row)
 
@@ -105,7 +122,27 @@ class AudioPanel(QWidget):
         self._info = info
         has_ffmpeg = bool(FFMPEG)
         self.btn_extract.setEnabled(has_ffmpeg)
-        self.btn_remove.setEnabled(has_ffmpeg)
+        self._audio_streams = [
+            stream
+            for stream in (info or {}).get("streams", [])
+            if stream.get("codec_type") == "audio"
+        ]
+        self.cmb_audio_stream.clear()
+        for stream in self._audio_streams:
+            disposition = stream.get("disposition", {})
+            default = " · default" if disposition.get("default") else ""
+            self.cmb_audio_stream.addItem(
+                (
+                    f"#{stream.get('index')} · {stream.get('codec_name')} · "
+                    f"{stream.get('channel_layout') or str(stream.get('channels')) + 'ch'}"
+                    f"{default}"
+                ),
+                stream.get("index"),
+            )
+        has_audio = bool(self._audio_streams)
+        self.cmb_audio_stream.setEnabled(has_audio)
+        self.btn_extract.setEnabled(has_ffmpeg and has_audio)
+        self.btn_remove.setEnabled(has_ffmpeg and has_audio)
         if info:
             codec = info.get("audio_codec", "none")
             channels = info.get("audio_channels", 0)
@@ -122,8 +159,12 @@ class AudioPanel(QWidget):
     def _reset_to_defaults(self):
         """Reset audio panel to defaults."""
         self.cmb_extract_fmt.setCurrentIndex(0)
+        self.cmb_audio_layout.setCurrentIndex(0)
         self._replace_audio_path = None
+        self._replace_audio_streams = []
         self.lbl_replace_file.setText("No replacement audio selected")
+        self.cmb_replace_stream.clear()
+        self.cmb_replace_stream.setEnabled(False)
         self.btn_replace.setEnabled(False)
         self.chk_keep_original.setChecked(False)
         self.requestToast.emit("Audio settings reset to defaults", C["blue"])
@@ -133,9 +174,59 @@ class AudioPanel(QWidget):
             self, "Select Audio File", "",
             "Audio Files (*.mp3 *.aac *.wav *.flac *.ogg *.m4a *.wma);;All Files (*)")
         if path:
+            result = probe_media(path)
+            streams = [
+                stream
+                for stream in (result.info or {}).get("streams", [])
+                if stream.get("codec_type") == "audio"
+            ]
+            if result.error or not streams:
+                message = result.error.message if result.error else "No audio stream found"
+                self.requestToast.emit(
+                    f"Replacement audio is not usable: {message}", C["red"]
+                )
+                return
             self._replace_audio_path = path
+            self._replace_audio_streams = streams
             self.lbl_replace_file.setText(Path(path).name)
+            self.cmb_replace_stream.clear()
+            for stream in streams:
+                self.cmb_replace_stream.addItem(
+                    (
+                        f"#{stream.get('index')} · {stream.get('codec_name')} · "
+                        f"{stream.get('channel_layout') or str(stream.get('channels')) + 'ch'}"
+                    ),
+                    stream.get("index"),
+                )
+            self.cmb_replace_stream.setEnabled(True)
             self.btn_replace.setEnabled(bool(FFMPEG))
+
+    def _selected_source_audio_index(self):
+        value = self.cmb_audio_stream.currentData()
+        return int(value) if value is not None else None
+
+    def _layout_args(self):
+        return {
+            "Mono": ["-ac", "1"],
+            "Stereo": ["-ac", "2"],
+            "5.1 surround": ["-ac", "6"],
+        }.get(self.cmb_audio_layout.currentText(), [])
+
+    def _video_copy_issues(self, output_path):
+        container = {
+            ".mp4": "MP4",
+            ".mov": "MOV",
+            ".mkv": "MKV",
+            ".webm": "WEBM",
+        }.get(Path(output_path).suffix.lower())
+        if not container:
+            return ["Choose an MP4, MOV, MKV, or WebM output file."]
+        video_streams = [
+            stream
+            for stream in (self._info or {}).get("streams", [])
+            if stream.get("codec_type") == "video"
+        ][:1]
+        return stream_copy_issues(container, video_streams)
 
     def _do_extract(self):
         if not self._filepath or not FFMPEG:
@@ -148,6 +239,17 @@ class AudioPanel(QWidget):
                    "Original (copy)": (".mka", ["copy"])}
         fmt = self.cmb_extract_fmt.currentText()
         ext, codec_args = fmt_map.get(fmt, (".mp3", ["libmp3lame", "-b:a", "192k"]))
+        stream_index = self._selected_source_audio_index()
+        if stream_index is None:
+            self.requestToast.emit("Select an audio stream to extract", C["red"])
+            return
+        layout_args = self._layout_args()
+        if fmt == "Original (copy)" and layout_args:
+            self.requestToast.emit(
+                "Original copy cannot change channel layout; choose an encoded format",
+                C["red"],
+            )
+            return
         src = Path(self._filepath)
         out_path, _ = QFileDialog.getSaveFileName(
             self, "Save Audio", str(src.parent / f"{src.stem}_audio{ext}"),
@@ -155,47 +257,133 @@ class AudioPanel(QWidget):
         if not out_path or not _confirm_overwrite(self, out_path, self._filepath):
             return
         duration = self._info.get("duration", 0) if self._info else 0
-        cmd = [FFMPEG, "-y", "-i", self._filepath, "-vn", "-c:a"] + codec_args + [out_path]
+        cmd = [
+            FFMPEG,
+            "-y",
+            "-i",
+            self._filepath,
+            "-map",
+            f"0:{stream_index}",
+            "-vn",
+            "-c:a",
+        ] + codec_args + layout_args + [out_path]
         self._run_worker(cmd, duration, out_path, "Extract")
 
     def _do_replace(self):
         if not self._filepath or not self._replace_audio_path or not FFMPEG:
             return
         src = Path(self._filepath)
+        default_suffix = (
+            src.suffix
+            if src.suffix.lower() in {".mp4", ".mkv", ".mov", ".webm"}
+            else ".mkv"
+        )
         out_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Video", str(src.parent / f"{src.stem}_newaudio{src.suffix}"),
-            "Video Files (*.mp4 *.mkv *.mov);;All Files (*)")
+            self,
+            "Save Video",
+            str(src.parent / f"{src.stem}_newaudio{default_suffix}"),
+            "Video Files (*.mp4 *.mkv *.mov *.webm);;All Files (*)",
+        )
         if not out_path or not _confirm_overwrite(self, out_path, self._filepath):
             return
+        issues = self._video_copy_issues(out_path)
+        if issues:
+            self.requestToast.emit(issues[0], C["red"])
+            self.console.append(f"[Audio preflight] {issues[0]}\n")
+            return
         duration = self._info.get("duration", 0) if self._info else 0
+        source_audio_index = self._selected_source_audio_index()
+        replacement_audio_index = self.cmb_replace_stream.currentData()
+        if replacement_audio_index is None:
+            self.requestToast.emit("Select a replacement audio stream", C["red"])
+            return
+        video_stream = next(
+            (
+                stream
+                for stream in (self._info or {}).get("streams", [])
+                if stream.get("codec_type") == "video"
+            ),
+            None,
+        )
+        if not video_stream:
+            self.requestToast.emit("The source has no video stream to preserve", C["red"])
+            return
+        video_map = f"0:{video_stream.get('index')}"
+        layout_args = self._layout_args()
         if self.chk_keep_original.isChecked():
+            if source_audio_index is None:
+                self.requestToast.emit(
+                    "The source has no audio stream to mix", C["red"]
+                )
+                return
             cmd = [FFMPEG, "-y", "-i", self._filepath, "-i", self._replace_audio_path,
                    "-c:v", "copy",
-                   "-filter_complex", "[0:a][1:a]amerge=inputs=2[a]",
-                   "-map", "0:v", "-map", "[a]",
-                   "-c:a", "aac", "-b:a", "192k", "-shortest", out_path]
+                   "-filter_complex",
+                   (
+                       f"[0:{source_audio_index}][1:{int(replacement_audio_index)}]"
+                       "amix=inputs=2:duration=shortest:normalize=0[a]"
+                   ),
+                   "-map", video_map, "-map", "[a]",
+                   "-c:a", "aac", "-b:a", "192k"] + layout_args + [
+                       "-shortest", out_path
+                   ]
         else:
             cmd = [FFMPEG, "-y", "-i", self._filepath, "-i", self._replace_audio_path,
-                   "-c:v", "copy", "-map", "0:v", "-map", "1:a",
-                   "-c:a", "aac", "-b:a", "192k", "-shortest", out_path]
+                   "-c:v", "copy", "-map", video_map,
+                   "-map", f"1:{int(replacement_audio_index)}",
+                   "-c:a", "aac", "-b:a", "192k"] + layout_args + [
+                       "-shortest", out_path
+                   ]
         self._run_worker(cmd, duration, out_path, "Replace audio")
 
     def _do_remove(self):
         if not self._filepath or not FFMPEG:
             return
         src = Path(self._filepath)
+        default_suffix = (
+            src.suffix
+            if src.suffix.lower() in {".mp4", ".mkv", ".mov", ".webm"}
+            else ".mkv"
+        )
         out_path, _ = QFileDialog.getSaveFileName(
-            self, "Save Video (No Audio)", str(src.parent / f"{src.stem}_noaudio{src.suffix}"),
-            "Video Files (*.mp4 *.mkv *.mov);;All Files (*)")
+            self,
+            "Save Video (No Audio)",
+            str(src.parent / f"{src.stem}_noaudio{default_suffix}"),
+            "Video Files (*.mp4 *.mkv *.mov *.webm);;All Files (*)",
+        )
         if not out_path or not _confirm_overwrite(self, out_path, self._filepath):
             return
+        container = {
+            ".mp4": "MP4",
+            ".mov": "MOV",
+            ".mkv": "MKV",
+            ".webm": "WEBM",
+        }.get(Path(out_path).suffix.lower())
+        selected_streams = [
+            stream
+            for stream in (self._info or {}).get("streams", [])
+            if stream.get("codec_type") != "audio"
+        ]
+        issues = (
+            stream_copy_issues(container, selected_streams)
+            if container
+            else ["Choose an MP4, MOV, MKV, or WebM output file."]
+        )
+        if issues:
+            self.requestToast.emit(issues[0], C["red"])
+            self.console.append(f"[Audio preflight] {issues[0]}\n")
+            return
         duration = self._info.get("duration", 0) if self._info else 0
-        cmd = [FFMPEG, "-y", "-i", self._filepath, "-c:v", "copy", "-an", out_path]
+        cmd = [
+            FFMPEG, "-y", "-i", self._filepath,
+            "-map", "0", "-map", "-0:a", "-c", "copy", out_path,
+        ]
         self._run_worker(cmd, duration, out_path, "Remove audio")
 
     def _set_buttons_enabled(self, enabled):
-        self.btn_extract.setEnabled(enabled)
-        self.btn_remove.setEnabled(enabled)
+        has_audio = bool(self._audio_streams)
+        self.btn_extract.setEnabled(enabled and has_audio)
+        self.btn_remove.setEnabled(enabled and has_audio)
 
     def _run_worker(self, cmd, duration, out_path, label):
         self.progress.setValue(0)

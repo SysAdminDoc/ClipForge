@@ -17,7 +17,7 @@ from clipforge_utils import format_size, estimate_output_size
 
 from ..constants import C, BUILTIN_PRESETS
 from ..settings import load_user_presets, save_user_preset, delete_user_preset, export_presets, import_presets
-from ..tools import FFMPEG, HW_ENCODERS, _confirm_overwrite
+from ..tools import FFMPEG, HW_ENCODERS, _confirm_overwrite, stream_copy_issues
 from ..workers import FFmpegWorker
 
 
@@ -574,11 +574,53 @@ class ConvertPanel(QWidget):
             lambda ok, msg: self._on_done(ok, msg, out_path or ""))
         self._worker.start()
 
+    def _conversion_preflight(self):
+        container = self.cmb_container.currentText()
+        video_copy = self.cmb_vcodec.currentText() == "Copy (no re-encode)"
+        audio_copy = self.cmb_acodec.currentText() == "Copy (no re-encode)"
+        issues = []
+        if video_copy and (
+            self.cmb_resolution.currentText() != "Original"
+            or self.cmb_fps.currentText() != "Original"
+            or self.spn_speed.value() != 1.0
+        ):
+            issues.append(
+                "Video stream copy cannot change resolution, frame rate, or speed; "
+                "choose a video encoder."
+            )
+        if audio_copy and self.spn_speed.value() != 1.0:
+            issues.append(
+                "Audio stream copy cannot change speed; choose an audio encoder."
+            )
+        copied_streams = []
+        if video_copy:
+            copied_streams.extend(
+                stream
+                for stream in (self._info or {}).get("streams", [])
+                if stream.get("codec_type") == "video"
+            )
+        if audio_copy:
+            copied_streams.extend(
+                stream
+                for stream in (self._info or {}).get("streams", [])
+                if stream.get("codec_type") == "audio"
+            )
+        if copied_streams:
+            issues.extend(stream_copy_issues(container, copied_streams))
+        return issues
+
     def _do_convert(self):
         if not self._filepath or not FFMPEG:
             return
         ext_map = {"MP4": ".mp4", "MKV": ".mkv", "WebM": ".webm", "MOV": ".mov", "AVI": ".avi", "GIF": ".gif"}
         container = self.cmb_container.currentText()
+        issues = self._conversion_preflight()
+        if issues:
+            self.console.append(
+                "[Convert preflight]\n" + "\n".join(f"• {issue}" for issue in issues) + "\n"
+            )
+            self.requestToast.emit(issues[0], C["red"])
+            return
         ext = ext_map.get(container, ".mp4")
         src = Path(self._filepath)
         out_path, _ = QFileDialog.getSaveFileName(

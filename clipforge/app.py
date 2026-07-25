@@ -137,6 +137,7 @@ class MainWindow(QMainWindow):
         # File info bar
         self.file_bar = FileInfoBar()
         self.file_bar.fileLoaded.connect(self._on_file_loaded)
+        self.file_bar.fileLoadFailed.connect(self._on_file_load_failed)
         content_layout.addWidget(self.file_bar)
 
         # Main splitter: top (player + panels) / bottom (console)
@@ -147,6 +148,7 @@ class MainWindow(QMainWindow):
 
         # Video player
         self.player = VideoPlayer()
+        self.player.playbackError.connect(self._on_playback_error)
         top_splitter.addWidget(self.player)
 
         # Panel stack — Console with log filtering
@@ -337,6 +339,17 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"Loaded: {Path(filepath).name}")
         self._load_recent()
 
+    def _on_file_load_failed(self, filepath, message):
+        name = Path(filepath).name if filepath else "media"
+        self.console.append(f"[ERROR] Could not load {name}: {message}\n")
+        self.status_bar.showMessage(f"Load failed: {name}")
+        self.toast.show_message(f"Could not load {name}", C["red"], 5000)
+
+    def _on_playback_error(self, message):
+        self.console.append(f"[WARNING] Preview unavailable: {message}\n")
+        self.status_bar.showMessage("Preview unavailable; FFmpeg tools remain available")
+        self.toast.show_message("Preview unavailable; see player details", C["yellow"], 5000)
+
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
@@ -366,6 +379,7 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
 
     def closeEvent(self, event):
+        self.player.release()
         active_workers = []
         seen_workers = set()
         for panel in self._panels:

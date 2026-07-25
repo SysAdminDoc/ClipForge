@@ -16,7 +16,12 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from clipforge_utils import format_duration, format_size, format_bitrate
 
 from ..constants import C
-from ..tools import FFMPEG, _confirm_overwrite, probe_video
+from ..tools import (
+    FFMPEG,
+    _confirm_overwrite,
+    probe_video,
+    stream_copy_issues,
+)
 from ..workers import FFmpegWorker, QualityMetricsWorker
 
 
@@ -250,6 +255,8 @@ class StreamsPanel(QWidget):
                 detail += f", {s.get('pix_fmt', '')}, {s.get('profile', '')}"
                 if s.get('color_space'):
                     detail += f", {s['color_space']}"
+                if s.get("rotation"):
+                    detail += f", rotation {s['rotation']:g}°"
             elif codec_type == "audio":
                 detail += f" - {s.get('channels', '?')}ch, {s.get('sample_rate', '?')} Hz"
                 detail += f", {s.get('channel_layout', '')}"
@@ -257,12 +264,30 @@ class StreamsPanel(QWidget):
                 lang = s.get("language", "")
                 title = s.get("title", "")
                 detail += f" - {lang} {title}"
+            dispositions = [
+                name for name, enabled in s.get("disposition", {}).items() if enabled
+            ]
+            if dispositions:
+                detail += f" [{', '.join(dispositions)}]"
+            if s.get("time_base"):
+                detail += f" · time base {s['time_base']}"
             lines.append(detail)
             chk = QCheckBox(detail)
             chk.setChecked(True)
             chk.setObjectName("streamItem")
+            chk.setProperty("streamIndex", idx)
             self._stream_layout.addWidget(chk)
             self._stream_checks.append(chk)
+
+        chapters = self._info.get("chapters", [])
+        if chapters:
+            lines.append("")
+            lines.append(f"Chapters: {len(chapters)}")
+            for chapter in chapters:
+                title = chapter.get("tags", {}).get("title", "Untitled")
+                lines.append(
+                    f"  {format_duration(chapter.get('start_time', 0))} — {title}"
+                )
 
         # Tags
         tags = self._info.get("tags", {})
@@ -480,6 +505,18 @@ class StreamsPanel(QWidget):
             return
         ext_map = {"MP4": ".mp4", "MKV": ".mkv", "MOV": ".mov", "WebM": ".webm"}
         container = self.cmb_remux_container.currentText()
+        selected_indexes = self._selected_stream_indexes()
+        selected_streams = [
+            stream
+            for stream in (self._info or {}).get("streams", [])
+            if int(stream.get("index", -1)) in selected_indexes
+        ]
+        issues = stream_copy_issues(container, selected_streams)
+        if issues:
+            explanation = "\n".join(f"• {issue}" for issue in issues)
+            self.console.append(f"[Remux preflight]\n{explanation}\n")
+            self.requestToast.emit(issues[0], C["red"])
+            return
         ext = ext_map.get(container, ".mkv")
         src = Path(self._filepath)
         out_path, _ = QFileDialog.getSaveFileName(
@@ -489,10 +526,9 @@ class StreamsPanel(QWidget):
             return
         overwrite = os.path.exists(out_path)
         cmd = [FFMPEG, "-y", "-i", self._filepath]
-        # Map selected streams
-        for i, chk in enumerate(self._stream_checks):
-            if chk.isChecked():
-                cmd += ["-map", f"0:{i}"]
+        # Map by the actual ffprobe stream index; indexes need not be contiguous.
+        for stream_index in sorted(selected_indexes):
+            cmd += ["-map", f"0:{stream_index}"]
         cmd += ["-c", "copy"]
         if container == "MP4":
             cmd += ["-movflags", "+faststart"]
@@ -509,6 +545,13 @@ class StreamsPanel(QWidget):
         self._worker.log_output.connect(self.console.append)
         self._worker.finished_signal.connect(lambda ok, msg: self._on_remux_done(ok, msg, out_path))
         self._worker.start()
+
+    def _selected_stream_indexes(self):
+        return {
+            int(chk.property("streamIndex"))
+            for chk in self._stream_checks
+            if chk.isChecked()
+        }
 
     def _on_remux_done(self, ok, msg, out_path):
         self.progress.setRange(0, 100)

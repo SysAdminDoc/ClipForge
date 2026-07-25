@@ -8,7 +8,9 @@ import shutil
 import tempfile
 import atexit
 import threading
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, TypedDict
 
 from clipforge_utils import _parse_fps
 
@@ -156,7 +158,81 @@ HW_ENCODERS = detect_hw_encoders()
 # ffprobe cache & probing
 # ---------------------------------------------------------------------------
 
-_probe_cache = {}
+class StreamInfo(TypedDict, total=False):
+    index: int
+    codec_type: str
+    codec_name: str
+    codec_long_name: str
+    time_base: str
+    start_time: float
+    duration: float
+    disposition: dict[str, int]
+    tags: dict[str, str]
+    rotation: float
+    width: int
+    height: int
+    fps: float
+    avg_fps: float
+    pix_fmt: str
+    bit_rate: int
+    profile: str
+    color_range: str
+    color_space: str
+    color_transfer: str
+    color_primaries: str
+    field_order: str
+    sample_rate: str
+    sample_fmt: str
+    channels: int
+    channel_layout: str
+    language: str
+    title: str
+
+
+class ChapterInfo(TypedDict, total=False):
+    id: int
+    time_base: str
+    start_time: float
+    end_time: float
+    tags: dict[str, str]
+
+
+class MediaInfo(TypedDict, total=False):
+    path: str
+    streams: list[StreamInfo]
+    chapters: list[ChapterInfo]
+    duration: float
+    size: int
+    format_name: str
+    format_long_name: str
+    bit_rate: int
+    start_time: float
+    tags: dict[str, str]
+    width: int
+    height: int
+    fps: float
+    pix_fmt: str
+    rotation: float
+    audio_codec: str
+    audio_channels: int
+    audio_sample_rate: str
+    audio_channel_layout: str
+
+
+@dataclass(frozen=True)
+class ProbeError:
+    code: str
+    message: str
+    details: str = ""
+
+
+@dataclass(frozen=True)
+class ProbeResult:
+    info: MediaInfo | None = None
+    error: ProbeError | None = None
+
+
+_probe_cache: dict[tuple[Any, ...], ProbeResult] = {}
 
 
 def _probe_cache_key(filepath):
@@ -167,62 +243,223 @@ def _probe_cache_key(filepath):
         return None
 
 
-def probe_video(filepath):
+def _safe_int(value, default=0):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_float(value, default=0.0):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _stream_rotation(stream):
+    for side_data in stream.get("side_data_list", []):
+        if "rotation" in side_data:
+            return _safe_float(side_data.get("rotation"))
+    return _safe_float(stream.get("tags", {}).get("rotate"))
+
+
+def probe_media(filepath):
+    """Return typed metadata or a stable, user-presentable probe error."""
     if not FFPROBE:
-        return None
+        return ProbeResult(
+            error=ProbeError(
+                "ffprobe_missing",
+                "FFprobe is not installed or could not be found.",
+            )
+        )
     cache_key = _probe_cache_key(filepath)
     if cache_key and cache_key in _probe_cache:
         return _probe_cache[cache_key]
     try:
-        cmd = [FFPROBE, "-v", "quiet", "-print_format", "json",
-               "-show_format", "-show_streams", filepath]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15,
-                                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0)
+        cmd = [
+            FFPROBE,
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
+            "-show_chapters",
+            filepath,
+        ]
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+        if result.returncode != 0:
+            details = (result.stderr or result.stdout).strip()
+            probe_result = ProbeResult(
+                error=ProbeError(
+                    "probe_failed",
+                    "FFprobe could not read this media file.",
+                    details[-1000:],
+                )
+            )
+            if cache_key:
+                _probe_cache[cache_key] = probe_result
+            return probe_result
         data = json.loads(result.stdout)
-        info = {"path": filepath, "streams": []}
+        info: MediaInfo = {"path": filepath, "streams": [], "chapters": []}
         fmt = data.get("format", {})
-        info["duration"] = float(fmt.get("duration", 0))
-        info["size"] = int(fmt.get("size", 0))
+        info["duration"] = _safe_float(fmt.get("duration"))
+        info["size"] = _safe_int(fmt.get("size"))
         info["format_name"] = fmt.get("format_name", "unknown")
-        info["bit_rate"] = int(fmt.get("bit_rate", 0))
+        info["format_long_name"] = fmt.get("format_long_name", "")
+        info["bit_rate"] = _safe_int(fmt.get("bit_rate"))
+        info["start_time"] = _safe_float(fmt.get("start_time"))
         info["tags"] = fmt.get("tags", {})
         for s in data.get("streams", []):
-            si = {
-                "index": s.get("index", 0),
-                "codec_type": s.get("codec_type"),
-                "codec_name": s.get("codec_name"),
+            tags = s.get("tags", {})
+            si: StreamInfo = {
+                "index": _safe_int(s.get("index")),
+                "codec_type": s.get("codec_type") or "unknown",
+                "codec_name": s.get("codec_name") or "unknown",
                 "codec_long_name": s.get("codec_long_name", ""),
+                "time_base": s.get("time_base", ""),
+                "start_time": _safe_float(s.get("start_time")),
+                "duration": _safe_float(s.get("duration")),
+                "disposition": {
+                    key: _safe_int(value)
+                    for key, value in s.get("disposition", {}).items()
+                },
+                "tags": tags,
             }
             if s.get("codec_type") == "video":
-                si["width"] = s.get("width", 0)
-                si["height"] = s.get("height", 0)
-                si["fps"] = _parse_fps(s.get("r_frame_rate", "0/1"))
+                si["width"] = _safe_int(s.get("width"))
+                si["height"] = _safe_int(s.get("height"))
+                si["fps"] = _parse_fps(s.get("r_frame_rate", "0/1") or "0/1")
+                si["avg_fps"] = _parse_fps(s.get("avg_frame_rate", "0/1") or "0/1")
                 si["pix_fmt"] = s.get("pix_fmt", "")
-                si["bit_rate"] = int(s.get("bit_rate", 0))
+                si["bit_rate"] = _safe_int(s.get("bit_rate"))
                 si["profile"] = s.get("profile", "")
+                si["color_range"] = s.get("color_range", "")
                 si["color_space"] = s.get("color_space", "")
                 si["color_transfer"] = s.get("color_transfer", "")
+                si["color_primaries"] = s.get("color_primaries", "")
+                si["field_order"] = s.get("field_order", "")
+                si["rotation"] = _stream_rotation(s)
                 info["width"] = si["width"]
                 info["height"] = si["height"]
-                info["fps"] = si["fps"]
+                info["fps"] = si["avg_fps"] or si["fps"]
                 info["pix_fmt"] = si["pix_fmt"]
+                info["rotation"] = si["rotation"]
             elif s.get("codec_type") == "audio":
                 si["sample_rate"] = s.get("sample_rate", "")
-                si["channels"] = s.get("channels", 0)
+                si["sample_fmt"] = s.get("sample_fmt", "")
+                si["channels"] = _safe_int(s.get("channels"))
                 si["channel_layout"] = s.get("channel_layout", "")
-                si["bit_rate"] = int(s.get("bit_rate", 0))
+                si["bit_rate"] = _safe_int(s.get("bit_rate"))
                 info["audio_codec"] = s.get("codec_name", "")
-                info["audio_channels"] = s.get("channels", 0)
+                info["audio_channels"] = si["channels"]
                 info["audio_sample_rate"] = s.get("sample_rate", "")
+                info["audio_channel_layout"] = s.get("channel_layout", "")
             elif s.get("codec_type") == "subtitle":
-                si["language"] = s.get("tags", {}).get("language", "")
-                si["title"] = s.get("tags", {}).get("title", "")
+                si["language"] = tags.get("language", "")
+                si["title"] = tags.get("title", "")
             info["streams"].append(si)
+        for chapter in data.get("chapters", []):
+            info["chapters"].append(
+                {
+                    "id": _safe_int(chapter.get("id")),
+                    "time_base": chapter.get("time_base", ""),
+                    "start_time": _safe_float(chapter.get("start_time")),
+                    "end_time": _safe_float(chapter.get("end_time")),
+                    "tags": chapter.get("tags", {}),
+                }
+            )
+        probe_result = ProbeResult(info=info)
         if cache_key:
-            _probe_cache[cache_key] = info
-        return info
-    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError, KeyError, ValueError):
-        return None
+            _probe_cache[cache_key] = probe_result
+        return probe_result
+    except subprocess.TimeoutExpired:
+        return ProbeResult(
+            error=ProbeError(
+                "probe_timeout", "FFprobe timed out after 15 seconds."
+            )
+        )
+    except OSError as exc:
+        return ProbeResult(
+            error=ProbeError("probe_launch_failed", "FFprobe could not start.", str(exc))
+        )
+    except (json.JSONDecodeError, KeyError, ValueError) as exc:
+        return ProbeResult(
+            error=ProbeError(
+                "invalid_probe_data",
+                "FFprobe returned invalid metadata.",
+                str(exc),
+            )
+        )
+
+
+def probe_video(filepath):
+    """Compatibility wrapper returning metadata or ``None``."""
+    return probe_media(filepath).info
+
+
+_COPY_CODECS = {
+    "MP4": {
+        "video": {"h264", "hevc", "av1", "mpeg4", "mjpeg"},
+        "audio": {"aac", "mp3", "ac3", "eac3", "alac"},
+        "subtitle": {"mov_text"},
+    },
+    "MOV": {
+        "video": {"h264", "hevc", "mpeg4", "mjpeg", "prores"},
+        "audio": {
+            "aac", "mp3", "ac3", "alac", "pcm_s16le", "pcm_s24le", "pcm_s32le",
+        },
+        "subtitle": {"mov_text"},
+    },
+    "WEBM": {
+        "video": {"vp8", "vp9", "av1"},
+        "audio": {"vorbis", "opus"},
+        "subtitle": {"webvtt"},
+    },
+    "AVI": {
+        "video": {"h264", "mpeg4", "mjpeg"},
+        "audio": {"mp3", "ac3", "pcm_s16le", "pcm_s24le"},
+        "subtitle": set(),
+    },
+}
+
+
+def stream_copy_issues(container, streams):
+    """Explain selected streams that cannot be copied into a target container."""
+    selected = list(streams)
+    if not selected:
+        return ["Select at least one stream."]
+    container_name = container.upper()
+    if container_name == "MKV":
+        return []
+    supported = _COPY_CODECS.get(container_name)
+    if not supported:
+        return [f"Copy compatibility is not defined for {container_name}."]
+    issues = []
+    for stream in selected:
+        stream_type = stream.get("codec_type", "unknown")
+        codec = stream.get("codec_name", "unknown")
+        allowed = supported.get(stream_type)
+        if allowed is None:
+            issues.append(
+                f"Stream #{stream.get('index', '?')} ({stream_type}/{codec}) "
+                f"is not supported by {container_name}."
+            )
+        elif codec not in allowed:
+            issues.append(
+                f"Stream #{stream.get('index', '?')} codec {codec} cannot be "
+                f"copied into {container_name}; choose MKV or re-encode it."
+            )
+    return issues
 
 
 def extract_frame(filepath, time_sec=0):
