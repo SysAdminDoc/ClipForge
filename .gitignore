@@ -6,6 +6,7 @@ dist/
 build/
 *.egg
 *.spec
+!ClipForge.spec
 .env
 .venv/
 venv/

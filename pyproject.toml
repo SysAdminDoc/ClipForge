@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clipforge-video"
+dynamic = ["version"]
+description = "Local-first PyQt6 video editor powered by FFmpeg"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "SysAdminDoc" }]
+dependencies = [
+    "PyQt6>=6.7,<7",
+]
+
+[project.gui-scripts]
+clipforge = "clipforge.__main__:main"
+
+[tool.setuptools]
+py-modules = ["clipforge_utils"]
+
+[tool.setuptools.packages.find]
+include = ["clipforge*"]
+
+[tool.setuptools.dynamic]
+version = { attr = "clipforge.version.APP_VERSION" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"

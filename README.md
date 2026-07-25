@@ -159,12 +159,30 @@ Try it in the browser: **[sysadmindoc.github.io/ClipForge](https://sysadmindoc.g
 
 ## Install & Run
 
-```bash
-cd ~/repos/ClipForge
-python clipforge.py
+```powershell
+git clone https://github.com/SysAdminDoc/ClipForge.git
+cd ClipForge
+python -m venv .venv
+.\.venv\Scripts\python -m pip install -r requirements.lock
+.\.venv\Scripts\python clipforge.py
 ```
 
-PyQt6 auto-installs on first launch. All other dependencies are bundled or auto-bootstrapped.
+On Linux or macOS, replace `.\.venv\Scripts\python` with `.venv/bin/python`.
+ClipForge never changes the Python environment at runtime; install dependencies
+explicitly before launch.
+
+## Build and Verify
+
+```powershell
+python -m pip install -r requirements-dev.lock
+python scripts/sync_version.py --check
+python -m pytest -q
+pyinstaller --noconfirm --clean ClipForge.spec
+```
+
+Release builds are unsigned and produced locally. `clipforge/version.py` is the
+version source of truth; use `python scripts/sync_version.py --set X.Y.Z` to
+update desktop, web, README, and Windows executable metadata together.
 
 ## Usage
 
