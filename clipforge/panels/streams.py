@@ -1,11 +1,15 @@
 """Streams panel -- media info, stream management, remux, snapshot, contact sheet."""
 
+import csv
+import json
 import os
+import tempfile
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QGroupBox, QCheckBox, QComboBox, QSpinBox, QTextEdit, QProgressBar, QFileDialog,
+    QGroupBox, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit,
+    QProgressBar, QFileDialog,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 
@@ -13,7 +17,7 @@ from clipforge_utils import format_duration, format_size, format_bitrate
 
 from ..constants import C
 from ..tools import FFMPEG, _confirm_overwrite, probe_video
-from ..workers import FFmpegWorker
+from ..workers import FFmpegWorker, QualityMetricsWorker
 
 
 class StreamsPanel(QWidget):
@@ -26,6 +30,10 @@ class StreamsPanel(QWidget):
         self._filepath = None
         self._info = None
         self._worker = None
+        self._quality_worker = None
+        self._quality_path = None
+        self._quality_info = None
+        self._quality_report = None
         self._setup_ui()
 
     def _setup_ui(self):
@@ -44,6 +52,65 @@ class StreamsPanel(QWidget):
         btn_copy_info.clicked.connect(lambda: QApplication.clipboard().setText(self.txt_media_info.toPlainText()))
         il.addWidget(btn_copy_info, alignment=Qt.AlignmentFlag.AlignRight)
         layout.addWidget(info_grp)
+
+        # Quality comparison
+        quality_grp = QGroupBox("Quality Comparison")
+        quality_layout = QVBoxLayout(quality_grp)
+        quality_file_row = QHBoxLayout()
+        quality_file_row.addWidget(QLabel("Encoded file:"))
+        self.lbl_quality_file = QLabel("No comparison file selected")
+        self.lbl_quality_file.setProperty("class", "dimLabel")
+        quality_file_row.addWidget(self.lbl_quality_file, 1)
+        self.btn_browse_quality = QPushButton("Browse")
+        self.btn_browse_quality.clicked.connect(self._browse_quality_file)
+        quality_file_row.addWidget(self.btn_browse_quality)
+        quality_layout.addLayout(quality_file_row)
+
+        sync_row = QHBoxLayout()
+        sync_row.addWidget(QLabel("Encoded offset (seconds):"))
+        self.spn_quality_offset = QDoubleSpinBox()
+        self.spn_quality_offset.setRange(-30.0, 30.0)
+        self.spn_quality_offset.setDecimals(3)
+        self.spn_quality_offset.setSingleStep(0.100)
+        self.spn_quality_offset.setToolTip(
+            "Positive values trim the start of the encoded file; negative values "
+            "trim the reference. Both timelines are then aligned at zero."
+        )
+        sync_row.addWidget(self.spn_quality_offset)
+        self.lbl_quality_preflight = QLabel("Select an encoded file to preflight it")
+        self.lbl_quality_preflight.setProperty("class", "dimLabel")
+        sync_row.addWidget(self.lbl_quality_preflight, 1)
+        quality_layout.addLayout(sync_row)
+
+        self.txt_quality_results = QTextEdit()
+        self.txt_quality_results.setObjectName("cmdPreview")
+        self.txt_quality_results.setReadOnly(True)
+        self.txt_quality_results.setMaximumHeight(115)
+        self.txt_quality_results.setPlaceholderText("Compare the open reference video with an encoded output.")
+        quality_layout.addWidget(self.txt_quality_results)
+
+        quality_btn_row = QHBoxLayout()
+        self.lbl_quality_hint = QLabel(
+            "Compares the shorter aligned duration; encoded frames scale to the reference"
+        )
+        self.lbl_quality_hint.setProperty("class", "dimLabel")
+        quality_btn_row.addWidget(self.lbl_quality_hint)
+        quality_btn_row.addStretch()
+        self.btn_export_quality = QPushButton("Export Report")
+        self.btn_export_quality.setEnabled(False)
+        self.btn_export_quality.clicked.connect(self._export_quality_report)
+        quality_btn_row.addWidget(self.btn_export_quality)
+        self.btn_cancel_quality = QPushButton("Cancel")
+        self.btn_cancel_quality.setEnabled(False)
+        self.btn_cancel_quality.clicked.connect(self._cancel_quality_compare)
+        quality_btn_row.addWidget(self.btn_cancel_quality)
+        self.btn_compare_quality = QPushButton("Compare Quality")
+        self.btn_compare_quality.setObjectName("primaryBtn")
+        self.btn_compare_quality.setEnabled(False)
+        self.btn_compare_quality.clicked.connect(self._do_quality_compare)
+        quality_btn_row.addWidget(self.btn_compare_quality)
+        quality_layout.addLayout(quality_btn_row)
+        layout.addWidget(quality_grp)
 
         # Stream list with toggles
         stream_grp = QGroupBox("Streams (toggle for remux)")
@@ -152,6 +219,7 @@ class StreamsPanel(QWidget):
         self.btn_snapshot.setEnabled(has_ffmpeg)
         self.btn_contact_sheet.setEnabled(has_ffmpeg)
         self.btn_mux_chapters.setEnabled(has_ffmpeg and self._chapter_path is not None)
+        self.btn_compare_quality.setEnabled(has_ffmpeg and self._quality_path is not None)
         self._update_info()
 
     def _update_info(self):
@@ -205,6 +273,207 @@ class StreamsPanel(QWidget):
                 lines.append(f"  {k}: {v}")
 
         self.txt_media_info.setText("\n".join(lines))
+
+    def _browse_quality_file(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Encoded File to Compare", "",
+            "Video Files (*.mp4 *.mkv *.mov *.webm *.avi);;All Files (*)")
+        if not path:
+            return
+        if self._filepath and self._same_path(path, self._filepath):
+            self.requestToast.emit(
+                "Choose an encoded file different from the open reference", C["red"]
+            )
+            return
+        info = probe_video(path)
+        if not info or not info.get("width") or not info.get("height"):
+            self.requestToast.emit("Encoded file could not be probed", C["red"])
+            return
+        self._quality_path = path
+        self._quality_info = info
+        self._quality_report = None
+        self.btn_export_quality.setEnabled(False)
+        self.lbl_quality_file.setText(Path(path).name)
+        self.lbl_quality_file.setToolTip(path)
+        reference_width = int((self._info or {}).get("width") or 0)
+        reference_height = int((self._info or {}).get("height") or 0)
+        reference_duration = float((self._info or {}).get("duration") or 0)
+        dimensions = f"{info['width']}x{info['height']}"
+        if reference_width and reference_height:
+            dimensions += f" → {reference_width}x{reference_height}"
+        duration = min(
+            value for value in (reference_duration, float(info.get("duration") or 0))
+            if value > 0
+        ) if reference_duration > 0 or float(info.get("duration") or 0) > 0 else 0
+        self.lbl_quality_preflight.setText(
+            f"{dimensions}; compare up to {format_duration(duration)}"
+        )
+        self.btn_compare_quality.setEnabled(bool(FFMPEG) and bool(self._filepath))
+
+    @staticmethod
+    def _format_metric(name, data, unit="", decimals=2):
+        if not data or data.get("status") != "succeeded":
+            status = (data or {}).get("status", "unavailable").replace("_", " ").title()
+            message = (data or {}).get("message", "No result")
+            return f"{name}: {status} — {message}"
+        value = data["value"]
+        if value == float("inf"):
+            text = "inf"
+        else:
+            text = f"{value:.{decimals}f}"
+        return f"{name}: {text}{unit}"
+
+    @staticmethod
+    def _same_path(first, second):
+        return os.path.normcase(os.path.realpath(first)) == os.path.normcase(
+            os.path.realpath(second)
+        )
+
+    def _do_quality_compare(self):
+        if not self._filepath or not self._quality_path or not FFMPEG:
+            return
+        if not os.path.exists(self._quality_path):
+            self.requestToast.emit("Comparison file not found", C["red"])
+            return
+        if self._same_path(self._filepath, self._quality_path):
+            self.requestToast.emit(
+                "Reference and encoded files must be different", C["red"]
+            )
+            return
+        reference_info = probe_video(self._filepath)
+        encoded_info = probe_video(self._quality_path)
+        if not reference_info or not encoded_info:
+            self.requestToast.emit(
+                "Both files must be readable videos before comparison", C["red"]
+            )
+            return
+        self._info = reference_info
+        self._quality_info = encoded_info
+        self._quality_report = None
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.btn_compare_quality.setEnabled(False)
+        self.btn_browse_quality.setEnabled(False)
+        self.btn_cancel_quality.setEnabled(True)
+        self.btn_export_quality.setEnabled(False)
+        self.txt_quality_results.setText("Running quality comparison...")
+        self.console.append("[Quality] Comparing encoded file against open reference...\n")
+        self._quality_worker = QualityMetricsWorker(
+            self._filepath,
+            self._quality_path,
+            reference_info,
+            encoded_info,
+            self.spn_quality_offset.value(),
+        )
+        self._quality_worker.progress.connect(lambda v: self.progress.setValue(int(v)))
+        self._quality_worker.log_output.connect(self.console.append)
+        self._quality_worker.finished_signal.connect(self._on_quality_done)
+        self._quality_worker.start()
+
+    def _cancel_quality_compare(self):
+        if self._quality_worker and self._quality_worker.isRunning():
+            self.btn_cancel_quality.setEnabled(False)
+            self.txt_quality_results.setText("Cancelling quality comparison...")
+            self._quality_worker.cancel()
+
+    def _on_quality_done(self, ok, msg, results):
+        self.progress.setRange(0, 100)
+        self.btn_compare_quality.setEnabled(bool(FFMPEG) and bool(self._quality_path))
+        self.btn_browse_quality.setEnabled(True)
+        self.btn_cancel_quality.setEnabled(False)
+        self._quality_report = results if results else None
+        self.btn_export_quality.setEnabled(bool(results))
+        metrics = results.get("metrics", {})
+        lines = [
+            f"Status: {results.get('status', 'failed').title()}",
+            f"Reference: {Path(results.get('reference', self._filepath or '')).name}",
+            f"Encoded: {Path(results.get('encoded', self._quality_path or '')).name}",
+            f"Offset: {results.get('sync_offset_seconds', 0):.3f} seconds",
+            "",
+            self._format_metric("VMAF", metrics.get("vmaf")),
+            self._format_metric("PSNR", metrics.get("psnr"), " dB"),
+            self._format_metric("SSIM", metrics.get("ssim"), "", 6),
+        ]
+        self.txt_quality_results.setText("\n".join(lines))
+        if ok:
+            self.progress.setValue(100)
+            self.requestToast.emit(msg, C["green"])
+        elif results.get("status") == "cancelled":
+            self.requestToast.emit("Quality comparison cancelled", C["yellow"])
+        else:
+            self.requestToast.emit(f"Quality comparison failed: {msg}", C["red"])
+
+    def _export_quality_report(self):
+        if not self._quality_report:
+            return
+        source = Path(self._quality_path or "quality")
+        path, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "Export Quality Report",
+            str(source.parent / f"{source.stem}_quality.json"),
+            "JSON Report (*.json);;CSV Report (*.csv)",
+        )
+        if not path:
+            return
+        if "CSV" in selected_filter and not path.lower().endswith(".csv"):
+            path += ".csv"
+        elif "JSON" in selected_filter and not path.lower().endswith(".json"):
+            path += ".json"
+        if not _confirm_overwrite(self, path):
+            return
+        try:
+            self._write_quality_report(path, self._quality_report)
+        except (OSError, TypeError, ValueError) as exc:
+            self.requestToast.emit(f"Report export failed: {exc}", C["red"])
+            return
+        self.requestToast.emit(f"Quality report saved: {Path(path).name}", C["green"])
+
+    @staticmethod
+    def _write_quality_report(path, report):
+        final_path = Path(path)
+        final_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            newline="",
+            suffix=final_path.suffix,
+            prefix=f".{final_path.stem}.clipforge-",
+            dir=final_path.parent,
+            delete=False,
+        )
+        staged_path = Path(handle.name)
+        try:
+            with handle:
+                if final_path.suffix.lower() == ".csv":
+                    writer = csv.writer(handle)
+                    writer.writerow(("field", "value", "status", "message"))
+                    for field in (
+                        "schema_version",
+                        "generated_at",
+                        "status",
+                        "reference",
+                        "encoded",
+                        "sync_offset_seconds",
+                        "comparison_duration_seconds",
+                        "ffmpeg_version",
+                    ):
+                        writer.writerow((field, report.get(field, ""), "", ""))
+                    for name, metric in report.get("metrics", {}).items():
+                        writer.writerow(
+                            (
+                                name,
+                                metric.get("value", ""),
+                                metric.get("status", ""),
+                                metric.get("message", ""),
+                            )
+                        )
+                else:
+                    json.dump(report, handle, indent=2, ensure_ascii=False)
+                    handle.write("\n")
+            os.replace(staged_path, final_path)
+        except Exception:
+            staged_path.unlink(missing_ok=True)
+            raise
 
     def _do_remux(self):
         if not self._filepath or not FFMPEG:

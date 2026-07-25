@@ -69,3 +69,40 @@ def validate_media_path(filepath):
     if "\x00" in filepath:
         return False
     return os.path.isfile(filepath)
+
+
+def _parse_metric_number(value):
+    if value.lower() == "inf":
+        return float("inf")
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+def parse_vmaf_score(output_text):
+    match = re.search(r"VMAF score:\s*([0-9.]+)", output_text, re.IGNORECASE)
+    if match:
+        return float(match.group(1))
+    match = re.search(
+        r'"vmaf"\s*:\s*\{[^}]*"mean"\s*:\s*([0-9.]+)',
+        output_text,
+        re.IGNORECASE | re.DOTALL,
+    )
+    if match:
+        return float(match.group(1))
+    return None
+
+
+def parse_psnr_average(output_text):
+    match = re.search(r"\baverage:([0-9.]+|inf)\b", output_text, re.IGNORECASE)
+    if not match:
+        return None
+    return _parse_metric_number(match.group(1))
+
+
+def parse_ssim_all(output_text):
+    match = re.search(r"\bAll:([0-9.]+)\b", output_text, re.IGNORECASE)
+    if not match:
+        return None
+    return float(match.group(1))

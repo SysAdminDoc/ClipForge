@@ -80,6 +80,7 @@ All-in-one video editor — Trim, Crop, Upscale, Interpolate, Convert, Filter, A
 - Container remux without re-encoding
 - Frame snapshot export at **current player position** (PNG/JPG)
 - **ffprobe metadata cache** for instant re-open
+- **Cancellable VMAF / PSNR / SSIM comparison** with sync offsets and JSON/CSV reports
 
 ### Batch Processing
 - Add multiple files via browser or drag & drop
@@ -118,7 +119,7 @@ All-in-one video editor — Trim, Crop, Upscale, Interpolate, Convert, Filter, A
 - **Process tree cleanup** — cancelling kills child processes
 - **Owned temp directory cleanup** on exit without touching another running instance
 - **Atomic output safety** — validates staged media before replacing the chosen destination
-- 42-test suite covering utility functions
+- 67-test suite covering utilities, process safety, generated media, and quality diagnostics
 
 ### Web Editor
 

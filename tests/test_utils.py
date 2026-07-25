@@ -8,6 +8,7 @@ from clipforge_utils import (
     _parse_fps, format_duration, format_duration_short,
     format_size, format_bitrate, estimate_output_size,
     _sanitize_preset_name, validate_media_path,
+    parse_vmaf_score, parse_psnr_average, parse_ssim_all,
 )
 
 
@@ -218,3 +219,23 @@ class TestEqFilter:
     def test_saturation_default(self):
         result = _build_eq_filter(saturation=100)
         assert result is None
+
+
+class TestQualityMetricParsers:
+    def test_parse_vmaf_score_line(self):
+        assert parse_vmaf_score("[Parsed_libvmaf_0] VMAF score: 94.327115") == 94.327115
+
+    def test_parse_vmaf_json_mean(self):
+        text = '{"pooled_metrics":{"vmaf":{"min":83.0,"mean":91.25,"max":98.0}}}'
+        assert parse_vmaf_score(text) == 91.25
+
+    def test_parse_psnr_average(self):
+        text = "PSNR y:39.1 u:41.2 v:42.4 average:40.123456 min:31.0 max:inf"
+        assert parse_psnr_average(text) == 40.123456
+
+    def test_parse_psnr_infinite(self):
+        assert parse_psnr_average("PSNR y:inf u:inf v:inf average:inf min:inf max:inf") == float("inf")
+
+    def test_parse_ssim_all(self):
+        text = "SSIM Y:0.991 U:0.993 V:0.994 All:0.992187 (21.071234)"
+        assert parse_ssim_all(text) == 0.992187

@@ -6,12 +6,18 @@ import re
 import shutil
 import threading
 import time as _time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from PyQt6.QtCore import QThread, pyqtSignal, Qt
 from PyQt6.QtGui import QPixmap
 
-from clipforge_utils import format_duration_short
+from clipforge_utils import (
+    format_duration_short,
+    parse_psnr_average,
+    parse_ssim_all,
+    parse_vmaf_score,
+)
 
 from .tools import (
     FFMPEG, FFPROBE,
@@ -191,6 +197,230 @@ class FFmpegWorker(QThread):
                     Path(staged_path).unlink(missing_ok=True)
                 except OSError:
                     pass
+
+
+class QualityMetricsWorker(QThread):
+    """Compute synchronized VMAF, PSNR, and SSIM diagnostics."""
+
+    progress = pyqtSignal(float)
+    log_output = pyqtSignal(str)
+    finished_signal = pyqtSignal(bool, str, object)
+
+    def __init__(
+        self,
+        reference_path,
+        encoded_path,
+        reference_info=None,
+        encoded_info=None,
+        sync_offset=0.0,
+        parent=None,
+        *,
+        metric_timeout=None,
+    ):
+        super().__init__(parent)
+        self.reference_path = reference_path
+        self.encoded_path = encoded_path
+        self.reference_info = reference_info or {}
+        self.encoded_info = encoded_info or {}
+        self.sync_offset = float(sync_offset)
+        duration = min(
+            value for value in (
+                float(self.reference_info.get("duration") or 0),
+                float(self.encoded_info.get("duration") or 0),
+            ) if value > 0
+        ) if any(
+            float(info.get("duration") or 0) > 0
+            for info in (self.reference_info, self.encoded_info)
+        ) else 0
+        self.metric_timeout = float(metric_timeout or max(120, duration * 10))
+        self._cancel_event = threading.Event()
+
+    def cancel(self):
+        self._cancel_event.set()
+
+    def _comparison_duration(self):
+        reference_duration = float(self.reference_info.get("duration") or 0)
+        encoded_duration = float(self.encoded_info.get("duration") or 0)
+        reference_start = max(-self.sync_offset, 0.0)
+        encoded_start = max(self.sync_offset, 0.0)
+        remaining = [
+            duration - start
+            for duration, start in (
+                (reference_duration, reference_start),
+                (encoded_duration, encoded_start),
+            )
+            if duration > 0
+        ]
+        return max(min(remaining), 0.0) if remaining else 0.0
+
+    def _filter_for(self, metric_filter):
+        width = int(self.reference_info.get("width") or 0)
+        height = int(self.reference_info.get("height") or 0)
+        duration = self._comparison_duration()
+        encoded_start = max(self.sync_offset, 0.0)
+        reference_start = max(-self.sync_offset, 0.0)
+
+        def prep(label, start, scale):
+            chain = []
+            trim = []
+            if start > 0:
+                trim.append(f"start={start:.6f}")
+            if duration > 0:
+                trim.append(f"duration={duration:.6f}")
+            if trim:
+                chain.append(f"trim={':'.join(trim)}")
+            chain.extend(("settb=AVTB", "setpts=PTS-STARTPTS"))
+            if scale and width > 0 and height > 0:
+                chain.append(f"scale={width}:{height}:flags=bicubic")
+            chain.append("format=yuv420p")
+            return ",".join(chain) + f"[{label}]"
+
+        return (
+            f"[0:v]{prep('dist', encoded_start, True)};"
+            f"[1:v]{prep('ref', reference_start, False)};"
+            f"[dist][ref]{metric_filter}"
+        )
+
+    def _run_metric(self, key, label, metric_filter, parser):
+        cmd = [
+            FFMPEG, "-hide_banner", "-nostdin",
+            "-i", self.encoded_path,
+            "-i", self.reference_path,
+            "-lavfi", self._filter_for(metric_filter),
+            "-an", "-sn", "-f", "null", "-",
+        ]
+        self.log_output.emit(f"[Quality] {label}\n")
+        self.log_output.emit(f"$ {' '.join(cmd)}\n")
+        try:
+            outcome = run_managed_process(
+                cmd,
+                cancel_event=self._cancel_event,
+                timeout=self.metric_timeout,
+            )
+        except OSError as exc:
+            return {
+                "status": "failed",
+                "message": str(exc),
+                "command": cmd,
+            }
+
+        output = outcome.stdout + outcome.stderr
+        for line in output.splitlines()[-12:]:
+            self.log_output.emit(line + "\n")
+
+        if outcome.cancelled:
+            self._cancel_event.set()
+            return {
+                "status": "cancelled",
+                "message": "Cancelled by user",
+                "command": cmd,
+            }
+        if outcome.timed_out:
+            return {
+                "status": "timed_out",
+                "message": f"Timed out after {self.metric_timeout:.0f} seconds",
+                "command": cmd,
+            }
+        if outcome.returncode != 0:
+            lowered = output.lower()
+            if key == "vmaf" and ("no such filter" in lowered or "libvmaf" in lowered):
+                return {
+                    "status": "unavailable",
+                    "message": "FFmpeg was built without libvmaf",
+                    "command": cmd,
+                }
+            tail = " | ".join(line.strip() for line in output.splitlines()[-3:] if line.strip())
+            return {
+                "status": "failed",
+                "message": tail[:180] or f"{label} failed",
+                "command": cmd,
+            }
+
+        value = parser(output)
+        if value is None:
+            return {
+                "status": "failed",
+                "message": f"{label} score was not found in FFmpeg output",
+                "command": cmd,
+            }
+        return {"status": "succeeded", "value": value, "command": cmd}
+
+    def _ffmpeg_version(self):
+        try:
+            outcome = run_managed_process(
+                [FFMPEG, "-version"],
+                cancel_event=self._cancel_event,
+                timeout=10,
+            )
+        except OSError as exc:
+            return f"unavailable: {exc}"
+        first_line = (outcome.stdout or outcome.stderr).splitlines()
+        return first_line[0] if first_line else "unavailable"
+
+    def run(self):
+        if not FFMPEG:
+            self.finished_signal.emit(False, "FFmpeg not found", {})
+            return
+        results = {
+            "schema_version": 1,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "reference": self.reference_path,
+            "encoded": self.encoded_path,
+            "reference_info": self.reference_info,
+            "encoded_info": self.encoded_info,
+            "sync_offset_seconds": self.sync_offset,
+            "sync_policy": (
+                "Positive offsets trim the encoded input; negative offsets trim "
+                "the reference. Both timelines then start at zero, the encoded "
+                "video is scaled to the reference dimensions, and comparison "
+                "stops at the shorter remaining duration."
+            ),
+            "comparison_duration_seconds": self._comparison_duration(),
+            "ffmpeg_version": self._ffmpeg_version(),
+            "metric_timeout_seconds": self.metric_timeout,
+            "metrics": {},
+        }
+        metrics = [
+            ("vmaf", "VMAF", "libvmaf", parse_vmaf_score),
+            ("psnr", "PSNR", "psnr", parse_psnr_average),
+            ("ssim", "SSIM", "ssim", parse_ssim_all),
+        ]
+        try:
+            for idx, (key, label, metric_filter, parser) in enumerate(metrics, start=1):
+                if self._cancel_event.is_set():
+                    results["metrics"][key] = {
+                        "status": "cancelled",
+                        "message": "Cancelled before metric started",
+                    }
+                    continue
+                results["metrics"][key] = self._run_metric(
+                    key, label, metric_filter, parser
+                )
+                self.progress.emit(idx / len(metrics) * 100)
+            statuses = [
+                results["metrics"].get(key, {}).get("status", "failed")
+                for key in ("vmaf", "psnr", "ssim")
+            ]
+            succeeded = statuses.count("succeeded")
+            if self._cancel_event.is_set() or "cancelled" in statuses:
+                results["status"] = "cancelled"
+                self.finished_signal.emit(False, "Quality comparison cancelled", results)
+            elif succeeded == len(statuses):
+                results["status"] = "complete"
+                self.finished_signal.emit(True, "Quality comparison complete", results)
+            elif succeeded:
+                results["status"] = "partial"
+                self.finished_signal.emit(
+                    True, "Quality comparison completed with partial results", results
+                )
+            else:
+                results["status"] = "failed"
+                self.finished_signal.emit(
+                    False, "No quality metrics could be computed", results
+                )
+        except Exception as exc:
+            results["status"] = "failed"
+            self.finished_signal.emit(False, str(exc), results)
 
 
 # ---------------------------------------------------------------------------
