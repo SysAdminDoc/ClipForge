@@ -132,7 +132,6 @@ class FFmpegWorker(QThread):
         self.timeout = timeout or max(3600, float(duration or 0) * 20)
         self._cancel_event = threading.Event()
         self._start_time = 0
-        self._stderr_buffer = []
         self._progress_values = {}
 
     def cancel(self):
@@ -173,7 +172,6 @@ class FFmpegWorker(QThread):
 
     def _stderr_line(self, line):
         self.log_output.emit(line)
-        self._stderr_buffer.append(line)
 
     def run(self):
         staged_path = None
@@ -214,6 +212,8 @@ class FFmpegWorker(QThread):
                 exit_code=outcome.returncode,
                 cancelled=outcome.cancelled,
                 timed_out=outcome.timed_out,
+                stdout_truncated=outcome.stdout_truncated,
+                stderr_truncated=outcome.stderr_truncated,
             )
             elapsed = _time.time() - self._start_time
             if outcome.cancelled:
@@ -236,7 +236,7 @@ class FFmpegWorker(QThread):
                 self.progress.emit(100)
                 self.finished_signal.emit(True, f"Complete ({format_duration_short(elapsed)})")
             else:
-                stderr_text = "".join(self._stderr_buffer)
+                stderr_text = outcome.stderr
                 friendly = _parse_ffmpeg_error(stderr_text) if self.parse_progress else None
                 if friendly:
                     self.finished_signal.emit(False, friendly)

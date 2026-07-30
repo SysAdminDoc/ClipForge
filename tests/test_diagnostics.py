@@ -37,6 +37,16 @@ def test_diagnostics_are_bounded_and_failed_jobs_are_retained():
     assert len(snapshot["events"]) == 2
 
 
+def test_diagnostics_bound_individual_log_messages():
+    store = DiagnosticsStore(max_log_chars=64)
+    job_id = store.start_job("encode", ["tool"])
+    store.log(job_id, "prefix-" + "x" * 200 + "-tail")
+    message = store.snapshot(redact=False)["jobs"][0]["logs"][0]["message"]
+    assert message.startswith("…[earlier output truncated] ")
+    assert message.endswith("-tail")
+    assert len(message) <= 64 + len("…[earlier output truncated] ")
+
+
 def test_support_export_redacts_paths_and_never_includes_media(tmp_path):
     store = DiagnosticsStore()
     secret = r"C:\Users\Alice\Videos\private source.mp4"

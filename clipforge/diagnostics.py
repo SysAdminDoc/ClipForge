@@ -53,9 +53,17 @@ def _redact_value(value):
 
 
 class DiagnosticsStore:
-    def __init__(self, *, max_jobs=100, max_job_logs=500, max_events=2000):
+    def __init__(
+        self,
+        *,
+        max_jobs=100,
+        max_job_logs=500,
+        max_events=2000,
+        max_log_chars=16 * 1024,
+    ):
         self.max_jobs = max_jobs
         self.max_job_logs = max_job_logs
+        self.max_log_chars = max_log_chars
         self._jobs = OrderedDict()
         self._events = deque(maxlen=max_events)
         self._tool_versions = {}
@@ -115,10 +123,16 @@ class DiagnosticsStore:
         return job_id
 
     def log(self, job_id, message, severity=None):
+        message_text = str(message).rstrip()
+        if len(message_text) > self.max_log_chars:
+            message_text = (
+                "…[earlier output truncated] "
+                + message_text[-self.max_log_chars:]
+            )
         entry = {
             "at": _utc_now(),
-            "severity": severity or classify_severity(message),
-            "message": str(message).rstrip(),
+            "severity": severity or classify_severity(message_text),
+            "message": message_text,
         }
         with self._lock:
             record = self._jobs.get(job_id)

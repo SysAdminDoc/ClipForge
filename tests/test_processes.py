@@ -31,6 +31,79 @@ def test_managed_process_drains_stdout_and_stderr():
     assert "err-1999" in outcome.stderr
 
 
+def test_managed_process_bounds_tails_but_callbacks_receive_every_byte():
+    counts = {"stdout": 0, "stderr": 0}
+    script = (
+        "import sys\n"
+        "for i in range(4096):\n"
+        " print(f'out-{i:04d}-' + 'x' * 128)\n"
+        " print(f'err-{i:04d}-' + 'y' * 128, file=sys.stderr)\n"
+    )
+    outcome = run_managed_process(
+        [sys.executable, "-c", script],
+        timeout=20,
+        max_output_chars=4096,
+        stdout_callback=lambda text: counts.__setitem__(
+            "stdout", counts["stdout"] + len(text)
+        ),
+        stderr_callback=lambda text: counts.__setitem__(
+            "stderr", counts["stderr"] + len(text)
+        ),
+    )
+    assert outcome.returncode == 0
+    assert len(outcome.stdout) <= 4096
+    assert len(outcome.stderr) <= 4096
+    assert outcome.stdout_truncated
+    assert outcome.stderr_truncated
+    assert "out-4095-" in outcome.stdout
+    assert "err-4095-" in outcome.stderr
+    assert counts["stdout"] > len(outcome.stdout)
+    assert counts["stderr"] > len(outcome.stderr)
+
+
+def test_managed_process_bounds_a_single_unterminated_line():
+    seen = 0
+
+    def count_output(text):
+        nonlocal seen
+        seen += len(text)
+
+    outcome = run_managed_process(
+        [sys.executable, "-c", "import sys; sys.stdout.write('z' * 2000000)"],
+        timeout=20,
+        max_output_chars=1024,
+        stdout_callback=count_output,
+    )
+    assert outcome.returncode == 0
+    assert outcome.stdout == "z" * 1024
+    assert outcome.stdout_truncated
+    assert seen == 2_000_000
+
+
+def test_managed_process_can_spool_full_tagged_output(tmp_path):
+    outcome = run_managed_process(
+        [
+            sys.executable,
+            "-c",
+            "import sys; print('first-out'); print('first-err', file=sys.stderr); "
+            "print('last-out'); print('last-err', file=sys.stderr)",
+        ],
+        timeout=10,
+        max_output_chars=8,
+        spool_full_output=True,
+        spool_directory=tmp_path,
+    )
+    assert outcome.full_log_path
+    full_log = Path(outcome.full_log_path)
+    assert full_log.parent == tmp_path
+    content = full_log.read_text(encoding="utf-8")
+    assert "[stdout] first-out" in content
+    assert "[stdout] last-out" in content
+    assert "[stderr] first-err" in content
+    assert "[stderr] last-err" in content
+    full_log.unlink()
+
+
 def test_managed_process_cancels_quiet_child_quickly():
     cancel = threading.Event()
     timer = threading.Timer(0.2, cancel.set)
