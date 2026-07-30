@@ -49,7 +49,7 @@ class Toast(QLabel):
 
     def show_message(self, text, color=None, duration=3000):
         c = color or C["green"]
-        self.setText(text)
+        full_text = str(text)
         self.setStyleSheet(
             f"background: {C['surface0']}; color: {c}; border: 1px solid {C['surface1']}; "
             f"border-radius: 8px; padding: 10px 24px; font-weight: 600; font-size: 13px;"
@@ -60,6 +60,19 @@ class Toast(QLabel):
             content_w = pw - sidebar_w
             toast_w = min(content_w - 40, 500)
             self.setFixedWidth(toast_w)
+            visible_text = (
+                full_text
+                if len(full_text) <= 45
+                else full_text[:42].rstrip() + "..."
+            )
+            self.setText(visible_text)
+            self.setAlignment(
+                Qt.AlignmentFlag.AlignCenter
+                if visible_text == full_text
+                else Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+            )
+            self.setToolTip(full_text if visible_text != full_text else "")
+            self.setAccessibleName(full_text)
             target_x = sidebar_w + (content_w - toast_w) // 2
             self.move(target_x, -50)
             self.show()
@@ -72,6 +85,8 @@ class Toast(QLabel):
             self._anim.setEasingCurve(QEasingCurve.Type.OutBack)
             self._anim.start()
         else:
+            self.setText(full_text)
+            self.setAccessibleName(full_text)
             self.show()
             self.raise_()
         self._timer.start(duration)

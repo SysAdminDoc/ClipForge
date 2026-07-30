@@ -1,6 +1,7 @@
 """Application constants, paths, extension lists, themes, and built-in presets."""
 
 import json
+import os
 from pathlib import Path
 
 from . import APP_NAME, APP_VERSION
@@ -10,9 +11,12 @@ from . import APP_NAME, APP_VERSION
 # ---------------------------------------------------------------------------
 
 WINDOW_TITLE = f"{APP_NAME} v{APP_VERSION}"
-CONFIG_DIR = Path.home() / ".clipforge"
+CONFIG_DIR = Path(
+    os.environ.get("CLIPFORGE_CONFIG_DIR", Path.home() / ".clipforge")
+).expanduser()
 RECENT_FILE = CONFIG_DIR / "recent.json"
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
+STATE_FILE = CONFIG_DIR / "state.json"
 PRESETS_DIR = CONFIG_DIR / "presets"
 
 # ---------------------------------------------------------------------------
@@ -52,13 +56,17 @@ C_HIGH_CONTRAST = {
 
 
 def _load_theme():
-    """Load theme by reading settings JSON directly (avoids circular import)."""
+    """Load theme by reading the state store directly (avoids circular import)."""
     try:
-        settings_path = CONFIG_DIR / "settings.json"
-        if settings_path.exists():
-            s = json.loads(settings_path.read_text())
-            if s.get("high_contrast"):
-                return dict(C_HIGH_CONTRAST)
+        settings = {}
+        if STATE_FILE.exists():
+            state = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+            if state.get("schema_version") == 1:
+                settings = state.get("settings", {})
+        elif SETTINGS_FILE.exists():
+            settings = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+        if isinstance(settings, dict) and settings.get("high_contrast") is True:
+            return dict(C_HIGH_CONTRAST)
     except (OSError, json.JSONDecodeError, ValueError):
         pass
     return dict(C_MOCHA)

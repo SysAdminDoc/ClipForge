@@ -16,7 +16,14 @@ from PyQt6.QtCore import pyqtSignal
 from clipforge_utils import format_size, estimate_output_size
 
 from ..constants import C, BUILTIN_PRESETS
-from ..settings import load_user_presets, save_user_preset, delete_user_preset, export_presets, import_presets
+from ..settings import (
+    consume_persistence_notices,
+    delete_user_preset,
+    export_presets,
+    import_presets,
+    load_user_presets,
+    save_user_preset,
+)
 from ..tools import (
     FFMPEG,
     HW_ENCODERS,
@@ -251,7 +258,12 @@ class ConvertPanel(QWidget):
             self._refresh_presets()
             self.requestToast.emit(f"Preset '{saved_name}' saved", C["green"])
         else:
-            self.requestToast.emit("Failed to save preset", C["red"])
+            self._show_persistence_error("Failed to save preset", C["red"])
+
+    def _show_persistence_error(self, fallback, color):
+        notices = consume_persistence_notices()
+        message = notices[-1]["message"] if notices else fallback
+        self.requestToast.emit(message, color)
 
     def _export_presets(self):
         """Export all user presets (or selected) to a JSON file."""
@@ -267,7 +279,7 @@ class ConvertPanel(QWidget):
         if export_presets(list(user.keys()), out_path):
             self.requestToast.emit(f"Exported {len(user)} preset(s)", C["green"])
         else:
-            self.requestToast.emit("Export failed", C["red"])
+            self._show_persistence_error("Export failed", C["red"])
 
     def _import_presets(self):
         """Import presets from a JSON file."""
@@ -281,15 +293,20 @@ class ConvertPanel(QWidget):
             self._refresh_presets()
             self.requestToast.emit(f"Imported {len(imported)} preset(s)", C["green"])
         else:
-            self.requestToast.emit("No valid presets found in file", C["yellow"])
+            self._show_persistence_error(
+                "No valid presets found in file",
+                C["yellow"],
+            )
 
     def _delete_preset(self):
         text = self.cmb_preset_select.currentText()
         if text.startswith("[Custom] "):
             name = text.replace("[Custom] ", "")
-            delete_user_preset(name)
-            self._refresh_presets()
-            self.requestToast.emit(f"Preset '{name}' deleted", C["yellow"])
+            if delete_user_preset(name):
+                self._refresh_presets()
+                self.requestToast.emit(f"Preset '{name}' deleted", C["yellow"])
+            else:
+                self._show_persistence_error("Failed to delete preset", C["red"])
 
     def _reset_to_defaults(self):
         """Reset all conversion settings to defaults."""

@@ -184,7 +184,9 @@ def run_gui_smoke():
         "QTimer.singleShot(400,window.close);QTimer.singleShot(700,app.quit);"
         "raise SystemExit(app.exec())"
     )
-    run([sys.executable, "-c", code], timeout=30, env=env)
+    with tempfile.TemporaryDirectory(prefix="clipforge-gui-config-") as config:
+        env["CLIPFORGE_CONFIG_DIR"] = config
+        run([sys.executable, "-c", code], timeout=30, env=env)
 
 
 def remove_tree_with_retries(path, *, attempts=20):
@@ -247,9 +249,12 @@ def run_build_smoke():
             timeout=45,
         )
         require_valid(packaged_output)
+        packaged_env = os.environ.copy()
+        packaged_env["CLIPFORGE_CONFIG_DIR"] = str(temp_path / "packaged-config")
         process = subprocess.Popen(
             [str(executable), str(fixtures["audio_video"])],
             cwd=ROOT,
+            env=packaged_env,
         )
         try:
             time.sleep(4)

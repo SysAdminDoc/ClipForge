@@ -115,7 +115,7 @@ All-in-one video editor — Trim, Crop, Upscale, Interpolate, Convert, Filter, A
 - Embedded console with full FFmpeg output and **placeholder guidance**
 - Bounded severity-filtered console with redacted JSON diagnostics export
 - Enhanced progress tracking with ETA, speed, and file size
-- Settings persistence (window geometry, last directory, preferences)
+- Schema-versioned transactional settings, recents, and presets with atomic writes, backup recovery, corrupt-data quarantine, and legacy migration
 - Hardware encoder status display in sidebar
 - **Accessible controls** — screen reader labels, keyboard focus states
 - All panels wrapped in scroll areas for small screens
@@ -124,7 +124,7 @@ All-in-one video editor — Trim, Crop, Upscale, Interpolate, Convert, Filter, A
 - **Process tree cleanup** — cancelling kills child processes
 - **Owned temp directory cleanup** on exit without touching another running instance
 - **Atomic output safety** — validates staged media before replacing the chosen destination
-- 118-test suite covering utilities, process safety, generated media, probing, proxy/AI caching, supply-chain validation, diagnostics, and accessibility contracts
+- 124-test suite covering utilities, process safety, generated media, probing, proxy/AI caching, supply-chain validation, diagnostics, persistence, and accessibility contracts
 
 ### Web Editor
 

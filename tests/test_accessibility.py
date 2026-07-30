@@ -11,12 +11,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication
+from PyQt6.QtWidgets import QApplication, QWidget
 
 from clipforge import APP_VERSION
 from clipforge.app import apply_application_theme
 from clipforge.constants import C
-from clipforge.widgets import RangeSlider
+from clipforge.widgets import RangeSlider, Toast
 
 
 _QT_APP = QApplication.instance() or QApplication([])
@@ -58,6 +58,20 @@ def test_application_theme_can_switch_live():
     apply_application_theme(_QT_APP, False)
     assert C["base"] == "#1e1e2e"
     assert "#cdd6f4" in _QT_APP.styleSheet()
+
+
+def test_long_toasts_preserve_the_actionable_beginning():
+    parent = QWidget()
+    parent.resize(1280, 860)
+    toast = Toast(parent)
+    message = "Reset preferences after quarantining malformed data as state.corrupt.json"
+    toast.show_message(message)
+
+    assert toast.text().startswith("Reset preferences")
+    assert toast.text().endswith("...")
+    assert toast.toolTip() == message
+    assert toast.accessibleName() == message
+    parent.close()
 
 
 def test_browser_tabs_labels_live_regions_and_900px_contract():

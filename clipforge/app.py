@@ -23,7 +23,12 @@ from .constants import (
     VIDEO_EXTS,
 )
 from .theme import stylesheet_for
-from .settings import load_settings, save_settings, load_recent
+from .settings import (
+    consume_persistence_notices,
+    load_recent,
+    load_settings,
+    save_settings,
+)
 from .tools import FFMPEG, HW_ENCODERS, _confirm_overwrite
 from .diagnostics import DIAGNOSTICS, classify_severity
 from .widgets import Toast, FileInfoBar, VideoPlayer
@@ -69,6 +74,7 @@ class MainWindow(QMainWindow):
         self._setup_ui()
         self._check_deps()
         self._load_recent()
+        self._show_persistence_notices()
 
     def _setup_ui(self):
         central = QWidget()
@@ -370,9 +376,21 @@ class MainWindow(QMainWindow):
             btn.style().unpolish(btn)
             btn.style().polish(btn)
 
+    def _show_persistence_notices(self):
+        notices = consume_persistence_notices()
+        for notice in notices:
+            level = notice["level"].upper()
+            message = notice["message"]
+            self.console.append(f"[{level}] {message}\n")
+        if notices:
+            latest = notices[-1]
+            color = C["red"] if latest["level"] == "error" else C["yellow"]
+            self.toast.show_message(latest["message"], color, 8000)
+
     def _toggle_high_contrast(self, enabled):
         self._settings["high_contrast"] = bool(enabled)
-        save_settings(self._settings)
+        if not save_settings(self._settings):
+            self._show_persistence_notices()
         apply_application_theme(QApplication.instance(), enabled)
         self._check_deps()
         self.toast.show_message(
@@ -426,6 +444,7 @@ class MainWindow(QMainWindow):
         self.console.append(f"Loaded: {filepath}\n")
         self.status_bar.showMessage(f"Loaded: {Path(filepath).name}")
         self._load_recent()
+        self._show_persistence_notices()
 
     def _on_file_load_failed(self, filepath, message):
         name = Path(filepath).name if filepath else "media"
@@ -497,7 +516,13 @@ class MainWindow(QMainWindow):
         # Save window geometry
         self._settings["window_width"] = self.width()
         self._settings["window_height"] = self.height()
-        save_settings(self._settings)
+        if not save_settings(self._settings):
+            for notice in consume_persistence_notices():
+                DIAGNOSTICS.event(
+                    notice["level"],
+                    notice["message"],
+                    context={"component": "settings"},
+                )
         super().closeEvent(event)
 
 
