@@ -7,6 +7,7 @@ import json
 import shutil
 import tempfile
 import atexit
+import re
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -134,6 +135,50 @@ FFPROBE = find_tool("ffprobe")
 # Hardware encoder detection
 # ---------------------------------------------------------------------------
 
+NVDEC_FIX_COMMIT = "4c6217477fc64305055b37d9d1d0d76d30e37f97"
+
+
+def parse_ffmpeg_version(version_output):
+    """Return an FFmpeg release tuple, or None for an unrecognized build."""
+    match = re.search(
+        r"\bffmpeg version (?:n)?(\d+)\.(\d+)(?:\.(\d+))?",
+        str(version_output or ""),
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    return tuple(int(part or 0) for part in match.groups())
+
+
+def nvdec_decode_is_safe(version_output):
+    """Reject NVDEC releases affected by CVE-2026-64832.
+
+    Unknown builds fail closed. Git builds can opt in only when their version
+    banner carries the full upstream fix commit.
+    """
+    output = str(version_output or "")
+    if NVDEC_FIX_COMMIT in output.lower():
+        return True
+    version = parse_ffmpeg_version(output)
+    return version is not None and version > (8, 1, 2)
+
+
+def read_ffmpeg_version(ffmpeg_path=None):
+    path = ffmpeg_path or FFMPEG
+    if not path:
+        return ""
+    try:
+        result = subprocess.run(
+            [path, "-version"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+        )
+        return (result.stdout or result.stderr or "").splitlines()[0]
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+
 
 def detect_hw_encoders():
     """Detect available hardware encoders from FFmpeg."""
@@ -165,6 +210,22 @@ def detect_hw_encoders():
 
 
 HW_ENCODERS = detect_hw_encoders()
+FFMPEG_VERSION_OUTPUT = read_ffmpeg_version()
+CUDA_NVDEC_SAFE = nvdec_decode_is_safe(FFMPEG_VERSION_OUTPUT)
+
+
+def hardware_decode_args(video_encoder):
+    """Return a safe hardware-decode prefix for a selected encoder."""
+    encoder = str(video_encoder or "").lower()
+    if "nvenc" in encoder:
+        if CUDA_NVDEC_SAFE:
+            return ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
+        return []
+    if "qsv" in encoder:
+        return ["-hwaccel", "qsv"]
+    if "amf" in encoder:
+        return ["-hwaccel", "d3d11va"]
+    return []
 
 # ---------------------------------------------------------------------------
 # ffprobe cache & probing

@@ -17,7 +17,13 @@ from clipforge_utils import format_size, estimate_output_size
 
 from ..constants import C, BUILTIN_PRESETS
 from ..settings import load_user_presets, save_user_preset, delete_user_preset, export_presets, import_presets
-from ..tools import FFMPEG, HW_ENCODERS, _confirm_overwrite, stream_copy_issues
+from ..tools import (
+    FFMPEG,
+    HW_ENCODERS,
+    _confirm_overwrite,
+    hardware_decode_args,
+    stream_copy_issues,
+)
 from ..workers import FFmpegWorker
 
 
@@ -390,13 +396,7 @@ class ConvertPanel(QWidget):
 
         # Build command with optional hardware decode
         cmd = [FFMPEG, "-y"]
-        # Add hardware decode acceleration when a matching HW encoder is selected
-        if "nvenc" in vcodec:
-            cmd += ["-hwaccel", "cuda", "-hwaccel_output_format", "cuda"]
-        elif "qsv" in vcodec:
-            cmd += ["-hwaccel", "qsv"]
-        elif "amf" in vcodec:
-            cmd += ["-hwaccel", "d3d11va"]
+        cmd += hardware_decode_args(vcodec)
         cmd += ["-i", self._filepath]
 
         if container == "GIF":
