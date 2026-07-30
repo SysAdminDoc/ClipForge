@@ -20,6 +20,7 @@ from ..constants import C
 from ..tools import (
     FFMPEG, extract_frame,
     _confirm_overwrite, create_job_temp_dir, _unregister_temp_dir,
+    escape_ffmpeg_filter_value,
 )
 from ..workers import FFmpegWorker
 
@@ -33,6 +34,7 @@ class FiltersPanel(QWidget):
         self._filepath = None
         self._info = None
         self._worker = None
+        self._caption_tmpdir = None
         self._setup_ui()
 
     def _setup_ui(self):
@@ -441,10 +443,20 @@ class FiltersPanel(QWidget):
             return
         model = self.cmb_whisper_model.currentText().split(" (")[0]
         lang = self.cmb_whisper_lang.currentText()
-        out_dir = str(Path(out_path).parent)
+        target_path = Path(out_path)
+        try:
+            caption_tmpdir = Path(tempfile.mkdtemp(
+                prefix=".clipforge-caption-",
+                dir=target_path.parent,
+            ))
+        except OSError as exc:
+            self.requestToast.emit(f"Could not stage subtitles: {exc}", C["red"])
+            return
+        self._caption_tmpdir = caption_tmpdir
+        generated_path = caption_tmpdir / f"{src.stem}.srt"
         cmd = [self._whisper_path, self._filepath,
                "--model", model, "--output_format", "srt",
-               "--output_dir", out_dir]
+               "--output_dir", str(caption_tmpdir)]
         if lang != "auto":
             cmd += ["--language", lang]
         self.console.append(f"[Auto-Caption] Generating subtitles with Whisper ({model})...\n")
@@ -454,30 +466,35 @@ class FiltersPanel(QWidget):
         self._worker = FFmpegWorker(cmd, 0, parse_progress=False)
         self._worker.log_output.connect(self.console.append)
         self._worker.finished_signal.connect(
-            lambda ok, msg: self._on_caption_done(ok, msg, out_path))
+            lambda ok, msg: self._on_caption_done(
+                ok, msg, target_path, generated_path, caption_tmpdir
+            ))
         self._worker.start()
 
-    def _on_caption_done(self, ok, msg, out_path):
+    def _on_caption_done(self, ok, msg, out_path, generated_path, caption_tmpdir):
         self.progress.setRange(0, 100)
         self.btn_gen_srt.setEnabled(True)
-        if ok:
+        try:
+            if not ok:
+                self.requestToast.emit(f"Caption generation failed: {msg}", C["red"])
+                return
+            if not generated_path.is_file() or generated_path.stat().st_size <= 0:
+                self.requestToast.emit(
+                    "Caption generation failed: Whisper produced no subtitle file",
+                    C["red"],
+                )
+                return
+            os.replace(generated_path, out_path)
             self.progress.setValue(100)
-            out_dir = Path(out_path).parent
-            input_stem = Path(self._filepath).stem
-            whisper_generated = out_dir / f"{input_stem}.srt"
-            actual_path = out_path
-            if whisper_generated.exists() and str(whisper_generated) != out_path:
-                try:
-                    shutil.move(str(whisper_generated), out_path)
-                except OSError:
-                    actual_path = str(whisper_generated)
-            elif not Path(out_path).exists() and whisper_generated.exists():
-                actual_path = str(whisper_generated)
             self.requestToast.emit("Subtitles generated", C["green"])
-            self._sub_path = actual_path
-            self.lbl_sub_file.setText(Path(actual_path).name)
-        else:
-            self.requestToast.emit(f"Caption generation failed: {msg}", C["red"])
+            self._sub_path = str(out_path)
+            self.lbl_sub_file.setText(out_path.name)
+        except OSError as exc:
+            self.requestToast.emit(f"Caption generation failed: {exc}", C["red"])
+        finally:
+            shutil.rmtree(caption_tmpdir, ignore_errors=True)
+            if self._caption_tmpdir == caption_tmpdir:
+                self._caption_tmpdir = None
 
     def _build_filters(self):
         vf = []
@@ -507,11 +524,11 @@ class FiltersPanel(QWidget):
         if self.chk_sharpen.isChecked():
             vf.append("unsharp=5:5:1.0")
         if self._lut_path:
-            escaped = self._lut_path.replace("\\", "/").replace(":", "\\\\:")
-            vf.append(f"lut3d='{escaped}'")
+            escaped = escape_ffmpeg_filter_value(self._lut_path)
+            vf.append(f"lut3d=filename={escaped}")
         if self._sub_path:
-            escaped = self._sub_path.replace("\\", "/").replace(":", "\\\\:")
-            vf.append(f"subtitles='{escaped}'")
+            escaped = escape_ffmpeg_filter_value(self._sub_path)
+            vf.append(f"subtitles=filename={escaped}")
         if self.chk_normalize.isChecked():
             target_text = self.cmb_loudness_target.currentText()
             lufs_map = {

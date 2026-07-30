@@ -57,6 +57,24 @@ def write_concat_manifest(paths, manifest_path):
     Path(manifest_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def escape_ffmpeg_filter_value(value):
+    """Escape a literal value for FFmpeg's filtergraph parser."""
+    normalized = str(value).replace("\\", "/")
+    normalized = normalized.replace("\\", "\\\\").replace(":", "\\:")
+    # FFmpeg parses filtergraph and filter-option quoting separately, so a
+    # literal apostrophe needs three backslashes between adjacent quotes.
+    normalized = normalized.replace("'", r"'\\\''")
+    return f"'{normalized}'"
+
+
+def escape_ffmetadata_value(value):
+    """Escape a value written to an FFMETADATA file."""
+    escaped = str(value).replace("\\", "\\\\")
+    for char in ("=", ";", "#"):
+        escaped = escaped.replace(char, f"\\{char}")
+    return escaped.replace("\r", "").replace("\n", "\\\n")
+
+
 atexit.register(_cleanup_temp_dirs)
 
 # ---------------------------------------------------------------------------

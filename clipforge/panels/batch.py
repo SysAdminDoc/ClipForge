@@ -4,6 +4,8 @@ import sys
 import os
 import shutil
 import subprocess
+import string
+from datetime import date
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
@@ -20,6 +22,76 @@ from ..tools import FFMPEG, _confirm_overwrite, probe_video
 from ..workers import FFmpegWorker
 
 
+_BATCH_SUFFIXES = {
+    "Convert to MP4 (H.264)": ("_h264", ".mp4"),
+    "Convert to MKV (H.265)": ("_h265", ".mkv"),
+    "Convert to WebM (VP9)": ("_vp9", ".webm"),
+    "Downscale to 1080p": ("_1080p", None),
+    "Downscale to 720p": ("_720p", None),
+    "Extract Audio (MP3)": ("", ".mp3"),
+    "Extract Audio (AAC)": ("", ".aac"),
+    "Remove Audio": ("_noaudio", None),
+    "Lossless Trim (first 30s)": ("_30s", None),
+}
+_BATCH_TEMPLATE_FIELDS = {"name", "suffix", "ext", "date", "index"}
+_INVALID_FILENAME_CHARS = set('<>:"/\\|?*\0')
+
+
+def build_batch_output_path(
+    src_path,
+    operation,
+    output_dir=None,
+    template="{name}{suffix}{ext}",
+    index=0,
+    run_date=None,
+):
+    """Render and confine a batch output to one direct output-directory child."""
+    src = Path(src_path)
+    name_suffix, configured_ext = _BATCH_SUFFIXES.get(
+        operation, ("_out", None)
+    )
+    ext = configured_ext or src.suffix
+    template = str(template or "{name}{suffix}{ext}").strip()
+    formatter = string.Formatter()
+    for _literal, field_name, format_spec, conversion in formatter.parse(template):
+        if field_name is None:
+            continue
+        if (
+            field_name not in _BATCH_TEMPLATE_FIELDS
+            or format_spec
+            or conversion
+        ):
+            raise ValueError(
+                "Template fields must be one of {name}, {suffix}, {ext}, "
+                "{date}, or {index}, without conversions or format specifiers"
+            )
+    try:
+        filename = template.format(
+            name=src.stem,
+            suffix=name_suffix,
+            ext=ext,
+            date=(run_date or date.today()).isoformat(),
+            index=f"{index + 1:03d}",
+        )
+    except (KeyError, ValueError) as exc:
+        raise ValueError(f"Invalid output template: {exc}") from exc
+    if not filename.endswith(ext):
+        filename += ext
+    if (
+        not filename
+        or filename in {".", ".."}
+        or Path(filename).name != filename
+        or any(char in _INVALID_FILENAME_CHARS for char in filename)
+    ):
+        raise ValueError("Output template must produce a valid filename, not a path")
+
+    root = Path(output_dir).resolve() if output_dir else src.parent.resolve()
+    candidate = (root / filename).resolve()
+    if candidate.parent != root:
+        raise ValueError("Batch output escaped the selected output directory")
+    return str(candidate)
+
+
 class BatchPanel(QWidget):
     requestToast = pyqtSignal(str, str)
 
@@ -31,6 +103,11 @@ class BatchPanel(QWidget):
         self._current_idx = 0
         self._cancel_requested = False
         self._batch_overwrite = {}
+        self._batch_items = ()
+        self._batch_outputs = ()
+        self._batch_operation = None
+        self._batch_out_dir = None
+        self._batch_post_action = None
         self._setup_ui()
 
     def _setup_ui(self):
@@ -176,44 +253,54 @@ class BatchPanel(QWidget):
 
     def _update_name_preview(self):
         template = self.txt_name_template.text()
-        import datetime
-        preview = template.format(
-            name="example_video", suffix="_h264", ext=".mp4",
-            date=datetime.date.today().isoformat(), index="001"
+        try:
+            preview = Path(build_batch_output_path(
+                "example_video.mov",
+                "Convert to MP4 (H.264)",
+                ".",
+                template,
+            )).name
+            self.lbl_name_preview.setText(f"Preview: {preview}")
+            self.lbl_name_preview.setStyleSheet("")
+        except ValueError as exc:
+            self.lbl_name_preview.setText(f"Invalid template: {exc}")
+            self.lbl_name_preview.setStyleSheet(f"color: {C['red']};")
+
+    def _get_output_path(
+        self,
+        src_path,
+        operation,
+        *,
+        template=None,
+        index=None,
+        output_dir=None,
+    ):
+        return build_batch_output_path(
+            src_path,
+            operation,
+            self._out_dir if output_dir is None else output_dir,
+            self.txt_name_template.text() if template is None else template,
+            self._current_idx if index is None else index,
         )
-        self.lbl_name_preview.setText(f"Preview: {preview}")
 
-    def _get_output_path(self, src_path, operation):
-        src = Path(src_path)
-        suffix_map = {
-            "Convert to MP4 (H.264)": ("_h264", ".mp4"),
-            "Convert to MKV (H.265)": ("_h265", ".mkv"),
-            "Convert to WebM (VP9)": ("_vp9", ".webm"),
-            "Downscale to 1080p": ("_1080p", src.suffix),
-            "Downscale to 720p": ("_720p", src.suffix),
-            "Extract Audio (MP3)": ("", ".mp3"),
-            "Extract Audio (AAC)": ("", ".aac"),
-            "Remove Audio": ("_noaudio", src.suffix),
-            "Lossless Trim (first 30s)": ("_30s", src.suffix),
-        }
-        name_suffix, ext = suffix_map.get(operation, ("_out", src.suffix))
-        out_dir = Path(self._out_dir) if self._out_dir else src.parent
-
-        template = self.txt_name_template.text().strip()
-        if template and template != "{name}{suffix}{ext}":
-            import datetime
-            try:
-                fname = template.format(
-                    name=src.stem, suffix=name_suffix, ext=ext,
-                    date=datetime.date.today().isoformat(),
-                    index=f"{self._current_idx + 1:03d}"
-                )
-                if not fname.endswith(ext):
-                    fname += ext
-                return str(out_dir / fname)
-            except (KeyError, ValueError):
-                pass
-        return str(out_dir / f"{src.stem}{name_suffix}{ext}")
+    def _set_batch_running(self, running):
+        self.btn_start.setEnabled(not running)
+        self.btn_cancel.setVisible(running)
+        self.btn_cancel.setEnabled(running)
+        for widget in (
+            self.file_list,
+            self.btn_add,
+            self.btn_add_folder,
+            self.btn_clear,
+            self.btn_remove_sel,
+            self.cmb_operation,
+            self.txt_name_template,
+            self.chk_custom_dir,
+            self.btn_out_dir,
+        ):
+            widget.setEnabled(not running)
+        if not running:
+            self.btn_out_dir.setEnabled(self.chk_custom_dir.isChecked())
 
     def _build_cmd(self, src_path, out_path, operation):
         if not FFMPEG:
@@ -245,10 +332,24 @@ class BatchPanel(QWidget):
         if not self._items or not FFMPEG:
             return
         operation = self.cmb_operation.currentText()
+        batch_items = tuple(self._items)
+        template = self.txt_name_template.text()
+        output_dir = self._out_dir
         self._batch_overwrite = {}
         output_keys = set()
-        for source_path in self._items:
-            output_path = self._get_output_path(source_path, operation)
+        batch_outputs = []
+        for index, source_path in enumerate(batch_items):
+            try:
+                output_path = self._get_output_path(
+                    source_path,
+                    operation,
+                    template=template,
+                    index=index,
+                    output_dir=output_dir,
+                )
+            except ValueError as exc:
+                self.requestToast.emit(f"Invalid batch output: {exc}", C["red"])
+                return
             output_key = os.path.normcase(os.path.abspath(output_path))
             if output_key in output_keys:
                 self.requestToast.emit(
@@ -257,15 +358,16 @@ class BatchPanel(QWidget):
                 )
                 return
             output_keys.add(output_key)
+            batch_outputs.append(output_path)
             if not _confirm_overwrite(self, output_path, source_path):
                 return
             self._batch_overwrite[output_path] = os.path.exists(output_path)
-        out_dir = self._out_dir or (str(Path(self._items[0]).parent) if self._items else "")
+        out_dir = output_dir or (str(Path(batch_items[0]).parent) if batch_items else "")
         if out_dir:
             try:
                 usage = shutil.disk_usage(out_dir)
                 estimated_needed = 0
-                for p in self._items:
+                for p in batch_items:
                     if not os.path.exists(p):
                         continue
                     info = probe_video(p)
@@ -287,27 +389,33 @@ class BatchPanel(QWidget):
                 pass
         self._current_idx = 0
         self._cancel_requested = False
-        self.btn_start.setEnabled(False)
-        self.btn_cancel.setEnabled(True)
-        self.btn_cancel.setVisible(True)
+        self._batch_items = batch_items
+        self._batch_outputs = tuple(batch_outputs)
+        self._batch_operation = operation
+        self._batch_out_dir = output_dir
+        self._batch_post_action = self.cmb_post_action.currentText()
+        self._set_batch_running(True)
         self._process_next()
 
     def _process_next(self):
-        if self._current_idx >= len(self._items):
-            self.btn_start.setEnabled(True)
-            self.btn_cancel.setVisible(False)
-            self.lbl_batch_status.setText(f"Batch complete: {len(self._items)} files processed")
-            self.requestToast.emit(f"Batch complete: {len(self._items)} files", C["green"])
+        if self._current_idx >= len(self._batch_items):
+            self._set_batch_running(False)
+            self.lbl_batch_status.setText(
+                f"Batch complete: {len(self._batch_items)} files processed"
+            )
+            self.requestToast.emit(
+                f"Batch complete: {len(self._batch_items)} files", C["green"]
+            )
             self._post_completion()
             return
 
-        src = self._items[self._current_idx]
-        operation = self.cmb_operation.currentText()
-        out_path = self._get_output_path(src, operation)
+        src = self._batch_items[self._current_idx]
+        operation = self._batch_operation
+        out_path = self._batch_outputs[self._current_idx]
         cmd = self._build_cmd(src, out_path, operation)
 
         self.lbl_batch_status.setText(
-            f"Processing {self._current_idx + 1}/{len(self._items)}: {Path(src).name}"
+            f"Processing {self._current_idx + 1}/{len(self._batch_items)}: {Path(src).name}"
         )
         self.progress.setValue(0)
 
@@ -330,7 +438,7 @@ class BatchPanel(QWidget):
         self._worker.start()
 
     def _on_item_progress(self, pct):
-        total = len(self._items)
+        total = len(self._batch_items)
         overall = (self._current_idx / total + pct / 100 / total) * 100
         self.progress.setValue(int(overall))
 
@@ -338,13 +446,12 @@ class BatchPanel(QWidget):
         item = self.file_list.item(self._current_idx)
         if item:
             if ok:
-                item.setText(f"✓  {Path(self._items[self._current_idx]).name}")
+                item.setText(f"✓  {Path(self._batch_items[self._current_idx]).name}")
             else:
-                item.setText(f"✗  {Path(self._items[self._current_idx]).name}")
+                item.setText(f"✗  {Path(self._batch_items[self._current_idx]).name}")
                 self.console.append(f"[ERROR] {msg}\n")
         if self._cancel_requested:
-            self.btn_start.setEnabled(True)
-            self.btn_cancel.setVisible(False)
+            self._set_batch_running(False)
             self.lbl_batch_status.setText("Batch cancelled")
             self._cancel_requested = False
             return
@@ -359,9 +466,11 @@ class BatchPanel(QWidget):
             self.lbl_batch_status.setText("Cancelling current job...")
 
     def _post_completion(self):
-        action = self.cmb_post_action.currentText()
+        action = self._batch_post_action or self.cmb_post_action.currentText()
         if action == "Open output folder":
-            out_dir = self._out_dir or (str(Path(self._items[0]).parent) if self._items else "")
+            out_dir = self._batch_out_dir or (
+                str(Path(self._batch_items[0]).parent) if self._batch_items else ""
+            )
             if out_dir:
                 if sys.platform == "win32":
                     os.startfile(out_dir)

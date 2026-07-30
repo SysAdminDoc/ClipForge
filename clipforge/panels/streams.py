@@ -19,6 +19,7 @@ from ..constants import C
 from ..tools import (
     FFMPEG,
     _confirm_overwrite,
+    escape_ffmetadata_value,
     probe_video,
     stream_copy_issues,
 )
@@ -710,7 +711,7 @@ class StreamsPanel(QWidget):
             lines.append("TIMEBASE=1/1000")
             lines.append(f"START={int(start * 1000)}")
             lines.append(f"END={int(end * 1000)}")
-            lines.append(f"title={title}")
+            lines.append(f"title={escape_ffmetadata_value(title)}")
         return "\n".join(lines)
 
     def _do_mux_chapters(self):
