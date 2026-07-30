@@ -400,41 +400,81 @@ async function generateWaveform(file) {
 
 function renderMediaList() {
     const list = document.getElementById('mediaList');
+    list.replaceChildren();
     
     if (mediaItems.length === 0) {
-        list.innerHTML = `
-            <div style="text-align: center; padding: 40px 20px; color: var(--text-3);">
-                <div style="font-size: 20px; margin-bottom: 10px; opacity: 0.4;">⊕</div>
-                <div style="font-size: 11px; line-height: 1.5; color: var(--text-2);">No media yet<br><span style="color: var(--text-3);">Import files to start editing</span></div>
-            </div>
-        `;
+        const empty = document.createElement('div');
+        empty.style.cssText = 'text-align:center;padding:40px 20px;color:var(--text-3)';
+        const icon = document.createElement('div');
+        icon.style.cssText = 'font-size:20px;margin-bottom:10px;opacity:0.4';
+        icon.textContent = '⊕';
+        const message = document.createElement('div');
+        message.style.cssText = 'font-size:11px;line-height:1.5;color:var(--text-2)';
+        message.append('No media yet', document.createElement('br'));
+        const hint = document.createElement('span');
+        hint.style.color = 'var(--text-3)';
+        hint.textContent = 'Import files to start editing';
+        message.appendChild(hint);
+        empty.append(icon, message);
+        list.appendChild(empty);
         document.getElementById('relinkButton').hidden = true;
         scheduleProjectRecovery();
         return;
     }
     
-    list.innerHTML = mediaItems.map(media => `
-        <div class="media-item${media.missing ? ' missing' : ''}" data-id="${media.id}" draggable="${media.missing ? 'false' : 'true'}" ondblclick="${media.missing ? '' : `addToTimeline('${media.id}')`}">
-            <div class="media-thumb">
-                ${media.thumbnail ? 
-                    (media.type === 'video' ? `<img src="${media.thumbnail}">` : `<img src="${media.thumbnail}">`) :
-                    `<span class="media-thumb-icon">${media.missing ? '⚠' : (media.type === 'audio' ? '🎵' : '📷')}</span>`
-                }
-            </div>
-            <div class="media-info">
-                <div class="media-name">${escapeHtml(media.name)}</div>
-                <div class="media-meta">
-                    <span>${media.missing ? 'Missing — relink required' : escapeHtml(media.type)}</span>
-                    <span class="media-duration">${formatTimecode(media.duration)}</span>
-                </div>
-                ${media.type === 'video' && !media.missing ? `
-                    <button class="media-proxy-btn" onclick="event.stopPropagation(); generateBrowserProxy('${media.id}')" aria-label="${escapeHtml(browserProxyButtonLabel(media))}">
-                        ${escapeHtml(browserProxyButtonLabel(media))}
-                    </button>
-                ` : ''}
-            </div>
-        </div>
-    `).join('');
+    mediaItems.forEach(media => {
+        const item = document.createElement('div');
+        item.className = `media-item${media.missing ? ' missing' : ''}`;
+        item.dataset.id = String(media.id);
+        item.draggable = !media.missing;
+        if (!media.missing) {
+            item.addEventListener('dblclick', () => addToTimeline(media.id));
+        }
+
+        const thumb = document.createElement('div');
+        thumb.className = 'media-thumb';
+        if (media.thumbnail) {
+            const image = document.createElement('img');
+            image.src = media.thumbnail;
+            image.alt = '';
+            thumb.appendChild(image);
+        } else {
+            const icon = document.createElement('span');
+            icon.className = 'media-thumb-icon';
+            icon.textContent = media.missing ? '⚠' : (media.type === 'audio' ? '🎵' : '📷');
+            thumb.appendChild(icon);
+        }
+
+        const info = document.createElement('div');
+        info.className = 'media-info';
+        const name = document.createElement('div');
+        name.className = 'media-name';
+        name.textContent = media.name;
+        const meta = document.createElement('div');
+        meta.className = 'media-meta';
+        const type = document.createElement('span');
+        type.textContent = media.missing ? 'Missing — relink required' : media.type;
+        const mediaDuration = document.createElement('span');
+        mediaDuration.className = 'media-duration';
+        mediaDuration.textContent = formatTimecode(media.duration);
+        meta.append(type, mediaDuration);
+        info.append(name, meta);
+
+        if (media.type === 'video' && !media.missing) {
+            const proxyButton = document.createElement('button');
+            proxyButton.className = 'media-proxy-btn';
+            proxyButton.textContent = browserProxyButtonLabel(media);
+            proxyButton.setAttribute('aria-label', browserProxyButtonLabel(media));
+            proxyButton.addEventListener('click', event => {
+                event.stopPropagation();
+                generateBrowserProxy(media.id);
+            });
+            info.appendChild(proxyButton);
+        }
+
+        item.append(thumb, info);
+        list.appendChild(item);
+    });
     document.getElementById('relinkButton').hidden = !mediaItems.some(media => media.missing);
     scheduleProjectRecovery();
 }
@@ -748,15 +788,29 @@ function renderTimeline() {
             clipEl.style.background = `var(--track-music)`;
         }
         
-        clipEl.innerHTML = `
-            <div class="clip-header">${escapeHtml(clip.name)}</div>
-            <div class="clip-content">
-                ${clip.thumbnail && clip.type === 'video' ? `<img class="clip-thumbnail" src="${clip.thumbnail}">` : ''}
-                ${clip.waveform ? `<canvas class="waveform-canvas" data-clip="${clip.id}"></canvas>` : ''}
-            </div>
-            <div class="clip-handle left"></div>
-            <div class="clip-handle right"></div>
-        `;
+        const header = document.createElement('div');
+        header.className = 'clip-header';
+        header.textContent = clip.name;
+        const content = document.createElement('div');
+        content.className = 'clip-content';
+        if (clip.thumbnail && clip.type === 'video') {
+            const image = document.createElement('img');
+            image.className = 'clip-thumbnail';
+            image.src = clip.thumbnail;
+            image.alt = '';
+            content.appendChild(image);
+        }
+        if (clip.waveform) {
+            const canvas = document.createElement('canvas');
+            canvas.className = 'waveform-canvas';
+            canvas.dataset.clip = String(clip.id);
+            content.appendChild(canvas);
+        }
+        const leftHandle = document.createElement('div');
+        leftHandle.className = 'clip-handle left';
+        const rightHandle = document.createElement('div');
+        rightHandle.className = 'clip-handle right';
+        clipEl.append(header, content, leftHandle, rightHandle);
         
         track.appendChild(clipEl);
         
@@ -1957,8 +2011,26 @@ function normalizeProject(raw) {
         throw new Error('Project exceeds the browser editor safety limits');
     }
 
+    const canonicalIdMap = (items, prefix) => {
+        const ids = new Map();
+        items.forEach((item, index) => {
+            if (!item || typeof item !== 'object') {
+                throw new Error(`Project ${prefix} ${index + 1} must be an object`);
+            }
+            const sourceId = String(item.id ?? `${prefix}-source-${index + 1}`);
+            if (ids.has(sourceId)) {
+                throw new Error(`Project contains duplicate ${prefix} identifiers`);
+            }
+            ids.set(sourceId, `${prefix}-${index + 1}`);
+        });
+        return ids;
+    };
+    const mediaIdMap = canonicalIdMap(source.media, 'media');
+    const clipIdMap = canonicalIdMap(source.clips, 'clip');
+    const transitionIdMap = canonicalIdMap(source.transitions || [], 'transition');
+
     const media = source.media.map((item, index) => ({
-        id: item.id ?? `media-${index}`,
+        id: mediaIdMap.get(String(item.id ?? `media-source-${index + 1}`)),
         name: String(item.name || item.reference?.name || `Media ${index + 1}`).slice(0, 255),
         type: ['video', 'audio', 'image'].includes(item.type) ? item.type : 'video',
         duration: Math.max(0, finiteNumber(item.duration)),
@@ -1986,14 +2058,20 @@ function normalizeProject(raw) {
         waveform: null,
         missing: true,
     }));
-    const mediaIds = new Set(media.map(item => String(item.id)));
     const normalizedClips = source.clips.map((clip, index) => {
-        if (!mediaIds.has(String(clip.mediaId))) {
+        const mediaId = mediaIdMap.get(String(clip.mediaId));
+        if (!mediaId) {
             throw new Error(`Clip ${index + 1} references media that is not in the project`);
         }
+        const linkedTo = clip.linkedTo == null
+            ? null
+            : clipIdMap.get(String(clip.linkedTo));
+        if (clip.linkedTo != null && !linkedTo) {
+            throw new Error(`Clip ${index + 1} links to a clip that is not in the project`);
+        }
         return {
-            id: clip.id ?? `clip-${index}`,
-            mediaId: clip.mediaId,
+            id: clipIdMap.get(String(clip.id ?? `clip-source-${index + 1}`)),
+            mediaId,
             track: ['video', 'audio', 'music'].includes(clip.track) ? clip.track : 'video',
             startTime: Math.max(0, finiteNumber(clip.startTime)),
             duration: Math.max(0, finiteNumber(clip.duration)),
@@ -2001,7 +2079,7 @@ function normalizeProject(raw) {
             outPoint: Math.max(0, finiteNumber(clip.outPoint, finiteNumber(clip.duration))),
             name: String(clip.name || `Clip ${index + 1}`).slice(0, 255),
             type: ['video', 'audio', 'image'].includes(clip.type) ? clip.type : 'video',
-            linkedTo: clip.linkedTo ?? null,
+            linkedTo,
             opacity: finiteNumber(clip.opacity, 100),
             scale: finiteNumber(clip.scale, 100),
             rotation: finiteNumber(clip.rotation),
@@ -2021,7 +2099,7 @@ function normalizeProject(raw) {
         media,
         clips: normalizedClips,
         transitions: (source.transitions || []).map((transition, index) => ({
-            id: transition.id ?? `transition-${index}`,
+            id: transitionIdMap.get(String(transition.id ?? `transition-source-${index + 1}`)),
             time: Math.max(0, finiteNumber(transition.time)),
             duration: Math.max(0.01, finiteNumber(transition.duration, 1)),
             type: ['dissolve', 'fade', 'wipe', 'zoom'].includes(transition.type)

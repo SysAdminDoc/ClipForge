@@ -1,6 +1,11 @@
+import json
 import os
+import shutil
+import subprocess
 from html.parser import HTMLParser
 from pathlib import Path
+
+import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -125,3 +130,80 @@ def test_browser_project_and_export_contract_is_explicit():
     assert "Unlinked audio and music tracks are not yet mixed" in script
     assert "sanitizeDownloadName" in script
     assert "ffmpeg?.terminate()" in script
+
+
+def test_browser_project_import_remaps_untrusted_identifiers():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is required for the browser project security test")
+    root = Path(__file__).resolve().parents[1]
+    runner = r"""
+const fs = require('fs');
+const vm = require('vm');
+const context = {
+    window: { addEventListener() {} },
+    document: { addEventListener() {} },
+    console: { log() {}, error() {}, warn() {} },
+    setTimeout,
+    clearTimeout,
+};
+vm.createContext(context);
+vm.runInContext(fs.readFileSync('editor.js', 'utf8'), context);
+const hostile = "x');globalThis.projectImportExecuted=true;//";
+const project = context.normalizeProject({
+    schema: 'clipforge.project',
+    version: 1,
+    name: '<img src=x onerror=globalThis.projectImportExecuted=true>',
+    media: [{ id: hostile, name: '<svg onload=alert(1)>', type: 'video' }],
+    clips: [
+        { id: 'bad-one', mediaId: hostile, linkedTo: 'bad-two', name: '<b>first</b>' },
+        { id: 'bad-two', mediaId: hostile, linkedTo: 'bad-one', name: '<b>second</b>' },
+    ],
+    transitions: [{ id: '\" onmouseover=\"alert(1)', type: 'dissolve' }],
+});
+process.stdout.write(JSON.stringify({
+    mediaIds: project.media.map(item => item.id),
+    clipIds: project.clips.map(item => item.id),
+    mediaLinks: project.clips.map(item => item.mediaId),
+    clipLinks: project.clips.map(item => item.linkedTo),
+    transitionIds: project.transitions.map(item => item.id),
+    executed: Boolean(context.projectImportExecuted),
+}));
+"""
+    result = subprocess.run(
+        [node, "-e", runner],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    normalized = json.loads(result.stdout)
+    assert normalized == {
+        "mediaIds": ["media-1"],
+        "clipIds": ["clip-1", "clip-2"],
+        "mediaLinks": ["media-1", "media-1"],
+        "clipLinks": ["clip-2", "clip-1"],
+        "transitionIds": ["transition-1"],
+        "executed": False,
+    }
+
+
+def test_browser_project_values_are_rendered_as_data_not_markup():
+    root = Path(__file__).resolve().parents[1]
+    script = (root / "editor.js").read_text(encoding="utf-8")
+    media_renderer = script.split("function renderMediaList()", 1)[1].split(
+        "// ==================== TIMELINE CLIPS", 1
+    )[0]
+    timeline_renderer = script.split("function renderTimeline()", 1)[1].split(
+        "function drawWaveform", 1
+    )[0]
+
+    assert "innerHTML" not in media_renderer
+    assert "ondblclick" not in media_renderer
+    assert "onclick" not in media_renderer
+    assert "name.textContent = media.name" in media_renderer
+    assert "proxyButton.addEventListener('click'" in media_renderer
+    assert "clipEl.innerHTML" not in timeline_renderer
+    assert "header.textContent = clip.name" in timeline_renderer
+    assert "const canonicalIdMap" in script
