@@ -81,20 +81,23 @@ function withTimeout(promise, timeoutMs, label) {
 
 async function initFFmpeg() {
     await window.coiReady;
+    document.documentElement.dataset.crossOriginIsolated = String(
+        window.crossOriginIsolated
+    );
+    document.documentElement.dataset.browserRuntime = 'local';
 
-    let classWorkerURL = null;
     try {
         document.getElementById('loadingText').textContent = 'Loading FFmpeg modules...';
 
         const { FFmpeg } = await withTimeout(
-            import('https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/+esm'),
+            import('./vendor/ffmpeg/ffmpeg/index.js'),
             15000,
-            'FFmpeg module download',
+            'Local FFmpeg module load',
         );
-        const { toBlobURL, fetchFile } = await withTimeout(
-            import('https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/+esm'),
+        const { fetchFile } = await withTimeout(
+            import('./vendor/ffmpeg/util/index.js'),
             15000,
-            'FFmpeg utility download',
+            'Local FFmpeg utility load',
         );
 
         ffmpeg = new FFmpeg();
@@ -109,29 +112,20 @@ async function initFFmpeg() {
             console.log('[ffmpeg]', message);
         });
 
-        document.getElementById('loadingText').textContent = 'Downloading FFmpeg core (~31 MB)...';
+        document.getElementById('loadingText').textContent = 'Loading local FFmpeg core (~31 MB)...';
 
-        const ffmpegBase = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm';
-        const coreBase = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/esm';
-        // ffmpeg.wasm starts a wrapper worker before loading the core; wrap it in a
-        // same-origin blob so GitHub Pages can construct the worker from CDN code.
-        classWorkerURL = URL.createObjectURL(new Blob([
-            `import "${ffmpegBase}/worker.js";`
-        ], { type: 'text/javascript' }));
-        const coreURL = await withTimeout(
-            toBlobURL(`${coreBase}/ffmpeg-core.js`, 'text/javascript'),
-            60000,
-            'FFmpeg core download',
-        );
-        const wasmURL = await withTimeout(
-            toBlobURL(`${coreBase}/ffmpeg-core.wasm`, 'application/wasm'),
-            60000,
-            'FFmpeg WebAssembly download',
-        );
+        const coreURL = new URL(
+            './vendor/ffmpeg/core/ffmpeg-core.js',
+            window.location.href,
+        ).href;
+        const wasmURL = new URL(
+            './vendor/ffmpeg/core/ffmpeg-core.wasm',
+            window.location.href,
+        ).href;
 
         document.getElementById('loadingText').textContent = 'Initializing FFmpeg...';
         await withTimeout(
-            ffmpeg.load({ classWorkerURL, coreURL, wasmURL }),
+            ffmpeg.load({ coreURL, wasmURL }),
             30000,
             'FFmpeg initialization',
         );
@@ -146,22 +140,78 @@ async function initFFmpeg() {
         const errMsg = (e && (e.message || e.toString())) || 'Unknown error';
         console.error('FFmpeg load error:', e);
         document.getElementById('statusText').textContent = 'Engine unavailable';
-        document.getElementById('loadingOverlay').setAttribute('role', 'alert');
-        document.getElementById('loadingOverlay').innerHTML = `
-            <div style="text-align: center;">
-                <div style="font-size: 48px; margin-bottom: 16px;">⚠️</div>
-                <div style="font-size: 14px; margin-bottom: 16px; color: var(--text-1);">Failed to load FFmpeg engine</div>
-                <div style="font-size: 12px; margin-bottom: 16px; color: var(--text-2); max-width: 400px; word-break: break-word;">${escapeHtml(errMsg)}</div>
-                <button class="btn primary" onclick="location.reload()">Retry</button>
-            </div>
-        `;
-    } finally {
-        if (classWorkerURL) URL.revokeObjectURL(classWorkerURL);
+        const overlay = document.getElementById('loadingOverlay');
+        overlay.setAttribute('role', 'alert');
+        const content = document.createElement('div');
+        content.style.textAlign = 'center';
+        const icon = document.createElement('div');
+        icon.style.cssText = 'font-size:48px;margin-bottom:16px';
+        icon.textContent = '⚠️';
+        const title = document.createElement('div');
+        title.style.cssText = 'font-size:14px;margin-bottom:16px;color:var(--text-1)';
+        title.textContent = 'Failed to load FFmpeg engine';
+        const details = document.createElement('div');
+        details.style.cssText = 'font-size:12px;margin-bottom:16px;color:var(--text-2);max-width:400px;word-break:break-word';
+        details.textContent = errMsg;
+        const retry = document.createElement('button');
+        retry.className = 'btn primary';
+        retry.textContent = 'Retry';
+        retry.addEventListener('click', () => window.location.reload());
+        content.append(icon, title, details, retry);
+        overlay.replaceChildren(content);
     }
 }
 
 // ==================== EVENT LISTENERS ====================
 function setupEventListeners() {
+    const actions = {
+        'open-project': () => document.getElementById('projectFileInput').click(),
+        'show-edit-menu': event => showEditMenu(event),
+        'save-project': () => saveProject(),
+        'show-export': () => showExportModal(),
+        'import-media': () => document.getElementById('fileInput').click(),
+        'recover-project': () => recoverLastProject(),
+        'relink-media': () => document.getElementById('relinkFileInput').click(),
+        'quick-effect': (_event, control) => applyQuickEffect(control.dataset.effect),
+        'go-start': () => goToStart(),
+        'step-backward': () => stepBackward(),
+        'toggle-play': () => togglePlay(),
+        'step-forward': () => stepForward(),
+        'go-end': () => goToEnd(),
+        'toggle-mute': () => toggleMute(),
+        'set-tool': (_event, control) => setTool(control.dataset.tool),
+        'split-clip': () => splitClip(),
+        'delete-selected': () => deleteSelected(),
+        'add-transition': () => addTransition(),
+        'select-transition': (_event, control) => selectTransitionType(
+            control.dataset.transition
+        ),
+        'cut-clip': () => cutClip(),
+        'copy-clip': () => copyClip(),
+        'paste-clip': () => pasteClip(),
+        'unlink-audio': () => unlinkAudio(),
+        'hide-export': () => hideExportModal(),
+        'export-video': () => exportVideo(),
+        'cancel-export': () => cancelExport(),
+    };
+    document.addEventListener('click', event => {
+        const control = event.target.closest?.('[data-action]');
+        if (!control) return;
+        const handler = actions[control.dataset.action];
+        if (handler) handler(event, control);
+    });
+    document.addEventListener('input', event => {
+        const control = event.target.closest?.('[data-input-action]');
+        if (!control) return;
+        if (control.dataset.inputAction === 'preview-volume') {
+            setVolume(control.value);
+        } else if (control.dataset.inputAction === 'timeline-zoom') {
+            setZoom(control.value);
+        } else if (control.dataset.inputAction === 'clip-property') {
+            updateClipProperty(control.dataset.property, control.value);
+        }
+    });
+
     // File input
     document.getElementById('fileInput').addEventListener('change', handleFileInput);
     document.getElementById('projectFileInput').addEventListener('change', handleProjectFileInput);

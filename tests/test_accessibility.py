@@ -101,7 +101,8 @@ def test_browser_tabs_labels_live_regions_and_900px_contract():
     assert f'src="editor.js?v={APP_VERSION}" defer' in html
     assert "activatePanelTab" in script
     assert "withTimeout(" in script
-    assert "FFmpeg module download" in script
+    assert "Local FFmpeg module load" in script
+    assert "import('./vendor/ffmpeg/ffmpeg/index.js')" in script
     assert "setAttribute('aria-valuenow'" in script
 
 
@@ -130,6 +131,30 @@ def test_browser_project_and_export_contract_is_explicit():
     assert "Unlinked audio and music tracks are not yet mixed" in script
     assert "sanitizeDownloadName" in script
     assert "ffmpeg?.terminate()" in script
+
+
+def test_browser_csp_has_no_inline_handlers_or_remote_runtime():
+    root = Path(__file__).resolve().parents[1]
+    html = (root / "index.html").read_text(encoding="utf-8")
+    script = (root / "editor.js").read_text(encoding="utf-8")
+    parser = _ElementParser()
+    parser.feed(html)
+
+    assert not [
+        name
+        for _tag, attrs in parser.elements
+        for name in attrs
+        if name.lower().startswith("on")
+    ]
+    csp = next(
+        attrs["content"]
+        for tag, attrs in parser.elements
+        if tag == "meta" and attrs.get("http-equiv") == "Content-Security-Policy"
+    )
+    assert "script-src 'self' 'wasm-unsafe-eval'" in csp
+    assert "'unsafe-inline'" not in csp.split("script-src", 1)[1].split(";", 1)[0]
+    assert "https://" not in script
+    assert "http://" not in script
 
 
 def test_browser_project_import_remaps_untrusted_identifiers():

@@ -219,9 +219,12 @@ def main():
     run_media_gate()
     if not args.media_only:
         run([sys.executable, "scripts/sync_version.py", "--check"])
+        run([sys.executable, "scripts/verify_browser_runtime.py"])
         run([sys.executable, "-m", "pytest", "-q"])
         run([sys.executable, "-m", "compileall", "-q", "clipforge", "scripts", "tests"])
         run(["node", "--check", "editor.js"])
+        run(["node", "--check", "bootstrap.js"])
+        run(["node", "--check", "coi-serviceworker.js"])
         run_gui_smoke()
     if args.build:
         run_build_smoke()

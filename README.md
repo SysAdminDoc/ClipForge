@@ -7,7 +7,7 @@ All-in-one video editor — Trim, Crop, Upscale, Interpolate, Convert, Filter, A
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)
 ![Version](https://img.shields.io/badge/Version-0.5.1-orange)
 
-**Web Editor:** [sysadmindoc.github.io/ClipForge](https://sysadmindoc.github.io/ClipForge/) — browser-based timeline editor with ffmpeg.wasm 0.12, undo/redo, and multi-clip export.
+**Web Editor:** [sysadmindoc.github.io/ClipForge](https://sysadmindoc.github.io/ClipForge/) — browser-based timeline editor with a pinned, self-hosted FFmpeg WASM runtime, undo/redo, and multi-clip export.
 
 ## Features
 
@@ -136,7 +136,9 @@ Try it in the browser: **[sysadmindoc.github.io/ClipForge](https://sysadmindoc.g
 - Transitions (cross dissolve, fade, wipe, zoom)
 - Per-clip color correction and rotation
 - Audio waveform visualization
-- **ffmpeg.wasm 0.12** with multi-threaded core
+- **ffmpeg.wasm 0.12.15** with a pinned, self-hosted FFmpeg n5.1.10 core
+- Strict same-origin CSP with no executable runtime CDN dependency; the roughly 31 MB core is cached after first load for offline restarts
+- Runtime hashes, build provenance, dependency inventory, and license files under `vendor/ffmpeg/`
 - **Full undo/redo** (Ctrl+Z / Ctrl+Shift+Z, 50-deep history)
 - **Truthful multi-clip export** — contiguous video clips and embedded source audio are rendered; preflight blocks unsupported gaps, overlaps, transitions, unlinked audio/music, or unrendered effects instead of silently dropping them
 - Cancellable MP4, WebM, and GIF export with sanitized filenames, cleanup, and quality/resolution options

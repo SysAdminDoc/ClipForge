@@ -3,6 +3,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+from scripts.verify_browser_runtime import verify_inventory
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -15,6 +17,10 @@ def test_version_surfaces_are_synchronized():
         text=True,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_browser_runtime_inventory_and_policy_are_synchronized():
+    verify_inventory()
 
 
 def test_manifest_and_runtime_lock_agree():

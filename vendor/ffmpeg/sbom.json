@@ -1,0 +1,202 @@
+{
+  "schema": "clipforge.browser-runtime.sbom",
+  "schema_version": 1,
+  "generated_at": "2026-07-29",
+  "components": [
+    {
+      "name": "@ffmpeg/ffmpeg",
+      "version": "0.12.15",
+      "license": "MIT",
+      "source": "https://github.com/ffmpegwasm/ffmpeg.wasm",
+      "commit": "f876f907c7e9b9bf51d4ed0b913a855a63ae63fc",
+      "modified": "Default core URL points to ClipForge's local patched core."
+    },
+    {
+      "name": "@ffmpeg/util",
+      "version": "0.12.2",
+      "license": "MIT",
+      "source": "https://github.com/ffmpegwasm/ffmpeg.wasm",
+      "commit": "f876f907c7e9b9bf51d4ed0b913a855a63ae63fc"
+    },
+    {
+      "name": "FFmpeg",
+      "version": "n5.1.10",
+      "license": "GPL-2.0-or-later",
+      "source": "https://github.com/FFmpeg/FFmpeg",
+      "commit": "19feb712f5c1821d8a3fa1ad63c5bd2e3b9672eb",
+      "build": {
+        "ffmpeg_wasm_commit": "f876f907c7e9b9bf51d4ed0b913a855a63ae63fc",
+        "emscripten": "3.1.40",
+        "target": "single-thread",
+        "flags": "-O3 -msimd128"
+      }
+    },
+    {
+      "name": "x264",
+      "version": "4-cores@33cac6b77d5b9259c552156013a817ab23119612",
+      "license": "GPL-2.0-or-later",
+      "source": "https://github.com/ffmpegwasm/x264"
+    },
+    {
+      "name": "x265",
+      "version": "3.4@2bb5520e9596f361bf0ed81b3b8da0d7fd999069",
+      "license": "GPL-2.0-or-later",
+      "source": "https://github.com/ffmpegwasm/x265"
+    },
+    {
+      "name": "libvpx",
+      "version": "1.13.1",
+      "license": "BSD-3-Clause",
+      "source": "https://github.com/ffmpegwasm/libvpx"
+    },
+    {
+      "name": "LAME",
+      "version": "master@2badea1974ae36cb8312afe99cff1e6b3b5decee",
+      "license": "LGPL-2.0-or-later",
+      "source": "https://github.com/ffmpegwasm/lame"
+    },
+    {
+      "name": "libogg",
+      "version": "1.3.4",
+      "license": "BSD-3-Clause",
+      "source": "https://github.com/ffmpegwasm/Ogg"
+    },
+    {
+      "name": "libtheora",
+      "version": "1.1.1",
+      "license": "BSD-3-Clause",
+      "source": "https://github.com/ffmpegwasm/theora"
+    },
+    {
+      "name": "libvorbis",
+      "version": "1.3.3",
+      "license": "BSD-3-Clause",
+      "source": "https://github.com/ffmpegwasm/vorbis"
+    },
+    {
+      "name": "Opus",
+      "version": "1.3.1",
+      "license": "BSD-3-Clause",
+      "source": "https://github.com/ffmpegwasm/opus"
+    },
+    {
+      "name": "zlib",
+      "version": "1.2.11",
+      "license": "Zlib",
+      "source": "https://github.com/ffmpegwasm/zlib"
+    },
+    {
+      "name": "libwebp",
+      "version": "1.3.2",
+      "license": "BSD-3-Clause",
+      "source": "https://github.com/ffmpegwasm/libwebp"
+    },
+    {
+      "name": "FreeType",
+      "version": "2.10.4",
+      "license": "FTL OR GPL-2.0-only",
+      "source": "https://github.com/ffmpegwasm/freetype2"
+    },
+    {
+      "name": "FriBidi",
+      "version": "1.0.9",
+      "license": "LGPL-2.1-or-later",
+      "source": "https://github.com/fribidi/fribidi"
+    },
+    {
+      "name": "HarfBuzz",
+      "version": "5.2.0",
+      "license": "MIT",
+      "source": "https://github.com/harfbuzz/harfbuzz"
+    },
+    {
+      "name": "libass",
+      "version": "0.15.0",
+      "license": "ISC",
+      "source": "https://github.com/libass/libass"
+    },
+    {
+      "name": "zimg",
+      "version": "3.0.5",
+      "license": "WTFPL",
+      "source": "https://github.com/sekrit-twc/zimg"
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "vendor/ffmpeg/core/ffmpeg-core.js",
+      "size": 111804,
+      "sha256": "3dfee0a9a45d4914bf04f10b1a84605eb6bc3cd08ee4daea6cd5dce4a6ec5ad5"
+    },
+    {
+      "path": "vendor/ffmpeg/core/ffmpeg-core.wasm",
+      "size": 32272225,
+      "sha256": "00e315859cdf9a2278db2789ddcc6d57e4da9ea918c44140f9f0758321a00542"
+    },
+    {
+      "path": "vendor/ffmpeg/ffmpeg/classes.js",
+      "size": 9747,
+      "sha256": "7a829c898bdbc3a8806652a5502d9101178ce4e988a2c50b3abc1306ce4fc919"
+    },
+    {
+      "path": "vendor/ffmpeg/ffmpeg/const.js",
+      "size": 1011,
+      "sha256": "ca6c2f9743d4ed2ad99b844f7c31ab5b516b01f99a349883f4d3f1d9015ff631"
+    },
+    {
+      "path": "vendor/ffmpeg/ffmpeg/errors.js",
+      "size": 332,
+      "sha256": "619310d7ef5fe5fefa0a31927db862b7c291713cfef4d71753fa8aafd18f4db6"
+    },
+    {
+      "path": "vendor/ffmpeg/ffmpeg/index.js",
+      "size": 58,
+      "sha256": "cad19572420f7ead17272082d9582ebaed7f2856e19875542f83daf8d25d3b5d"
+    },
+    {
+      "path": "vendor/ffmpeg/ffmpeg/types.js",
+      "size": 295,
+      "sha256": "72f80e6fd44fcd18b55c9a0deb3bc70b9bb37480cf969045ca4521f5a11300f5"
+    },
+    {
+      "path": "vendor/ffmpeg/ffmpeg/utils.js",
+      "size": 138,
+      "sha256": "8c2e0e16445f8d3a0acbb812f2c60541a92c88ed0bf9ffe96c52e7fb6c8b1d72"
+    },
+    {
+      "path": "vendor/ffmpeg/ffmpeg/worker.js",
+      "size": 5085,
+      "sha256": "feff0ac937ea225e997e1fae997a74f8b8d572423a526da59eb56624b1f3cde7"
+    },
+    {
+      "path": "vendor/ffmpeg/LICENSE-core-GPL-2.0.txt",
+      "size": 18092,
+      "sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643"
+    },
+    {
+      "path": "vendor/ffmpeg/LICENSE-wrapper-MIT.txt",
+      "size": 1066,
+      "sha256": "3e123e29517d76504ffce77b3f8e2ccffd4712493f27694b0aba3e376676459f"
+    },
+    {
+      "path": "vendor/ffmpeg/util/const.js",
+      "size": 53,
+      "sha256": "f08f7b0bf73a3e74270343a6892a305a2c98039b1e586260d185ca0dfafd510c"
+    },
+    {
+      "path": "vendor/ffmpeg/util/errors.js",
+      "size": 175,
+      "sha256": "3658a446ec7df01b5406cdfbc6c9338466db0fc673b69eefe141ded8dda5a147"
+    },
+    {
+      "path": "vendor/ffmpeg/util/index.js",
+      "size": 4775,
+      "sha256": "0b33f10af6800c3ca00a4533963f66a8adc541269ec40e605b0336dc026880c0"
+    },
+    {
+      "path": "vendor/ffmpeg/util/types.js",
+      "size": 11,
+      "sha256": "8e609bb71c20b858c77f0e9f90bb1319db8477b13f9f965f1a1e18524bf50881"
+    }
+  ]
+}
