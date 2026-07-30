@@ -144,7 +144,7 @@ def test_browser_project_and_export_contract_is_explicit():
     assert "Transitions are visible in the editor but are not yet rendered" in script
     assert "Unlinked audio and music tracks are not yet mixed" in script
     assert "sanitizeDownloadName" in script
-    assert "ffmpeg?.terminate()" in script
+    assert "job.engine?.terminate()" in script
 
 
 def test_browser_csp_has_no_inline_handlers_or_remote_runtime():

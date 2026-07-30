@@ -20,6 +20,9 @@ let projectLoading = false;
 let exportInProgress = false;
 let exportCancelRequested = false;
 let browserProxyJob = null;
+let browserFfmpegJob = null;
+let lastBrowserFfmpegJob = null;
+let ffmpegInitPromise = null;
 const trackStates = {
     video: { visible: true, locked: false },
     audio: { muted: false, solo: false },
@@ -79,7 +82,268 @@ function withTimeout(promise, timeoutMs, label) {
     return Promise.race([promise, timeout]).finally(() => clearTimeout(timeoutId));
 }
 
-async function initFFmpeg() {
+class BrowserJobConflictError extends Error {}
+class BrowserJobCancelledError extends Error {}
+
+function browserJobLabel(type) {
+    return {
+        waveform: 'Waveform',
+        proxy: 'Proxy',
+        export: 'Export',
+    }[type] || 'Media job';
+}
+
+function browserJobId(type) {
+    const token = globalThis.crypto?.randomUUID?.().replaceAll('-', '')
+        || `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+    return `cf_${type}_${token}`;
+}
+
+function updateBrowserJobUi(job = browserFfmpegJob) {
+    const root = document.documentElement;
+    const statusDot = document.getElementById('statusDot');
+    const statusText = document.getElementById('statusText');
+    const cancelButton = document.getElementById('cancelJobButton');
+    const exportButton = document.getElementById('exportButton');
+    if (job) {
+        root.dataset.browserJobType = job.type;
+        root.dataset.browserJobState = job.state;
+        root.dataset.browserJobProgress = String(job.progress || 0);
+        statusDot?.classList.remove('ready');
+        if (statusText) {
+            const progress = job.state === 'running' && job.progress > 0
+                ? ` ${job.progress}%`
+                : '';
+            statusText.textContent = `${job.label}: ${job.state}${progress}`;
+        }
+        if (cancelButton) {
+            cancelButton.hidden = false;
+            cancelButton.disabled = job.cancelRequested;
+        }
+        if (exportButton) exportButton.disabled = true;
+        return;
+    }
+    root.dataset.browserJobType = '';
+    root.dataset.browserJobState = 'idle';
+    root.dataset.browserJobProgress = '0';
+    statusDot?.classList.toggle('ready', ffmpegLoaded);
+    if (statusText) statusText.textContent = ffmpegLoaded ? 'Ready' : 'Engine unavailable';
+    if (cancelButton) {
+        cancelButton.hidden = true;
+        cancelButton.disabled = false;
+    }
+    if (exportButton) exportButton.disabled = false;
+}
+
+function assertBrowserJobActive(job) {
+    if (
+        browserFfmpegJob !== job
+        || job.cancelRequested
+        || job.state === 'cancelling'
+    ) {
+        throw new BrowserJobCancelledError(`${job.label} cancelled`);
+    }
+}
+
+async function restartBrowserFfmpeg(job) {
+    ffmpegLoaded = false;
+    ffmpeg = job.engine;
+    document.getElementById('statusDot')?.classList.remove('ready');
+    const overlay = document.getElementById('loadingOverlay');
+    overlay?.classList.remove('hidden');
+    document.getElementById('loadingText').textContent =
+        `Restarting FFmpeg after ${job.label.toLowerCase()} cancellation...`;
+    const coreURL = new URL(
+        './vendor/ffmpeg/core/ffmpeg-core.js',
+        window.location.href,
+    ).href;
+    const wasmURL = new URL(
+        './vendor/ffmpeg/core/ffmpeg-core.wasm',
+        window.location.href,
+    ).href;
+    try {
+        await withTimeout(
+            job.engine.load({ coreURL, wasmURL }),
+            90000,
+            'FFmpeg cancellation recovery',
+        );
+        ffmpegLoaded = true;
+        overlay?.classList.add('hidden');
+        document.getElementById('statusText').textContent = 'Ready';
+        return true;
+    } catch (error) {
+        ffmpeg = null;
+        console.error('FFmpeg cancellation recovery failed:', error);
+        document.getElementById('statusText').textContent = 'Engine unavailable';
+        document.getElementById('loadingText').textContent =
+            `FFmpeg recovery failed: ${error.message}`;
+        console.error(`FFmpeg did not recover after ${job.label.toLowerCase()} cancellation`);
+        return false;
+    }
+}
+
+async function cancelBrowserFfmpegJob(expectedType = null) {
+    const job = browserFfmpegJob;
+    if (!job || (expectedType && job.type !== expectedType)) return false;
+    if (job.cancelRequested) return job.completion;
+    job.cancelRequested = true;
+    job.state = 'cancelling';
+    updateBrowserJobUi(job);
+    if (job.type === 'export') {
+        exportCancelRequested = true;
+        document.getElementById('loadingText').textContent = 'Cancelling export...';
+        document.getElementById('cancelExportButton').disabled = true;
+    }
+    try {
+        job.engine?.terminate();
+        job.terminated = true;
+    } catch (error) {
+        console.warn('FFmpeg termination failed:', error);
+    }
+    return job.completion;
+}
+
+async function runBrowserFfmpegJob(type, options, runner) {
+    if (browserFfmpegJob) {
+        throw new BrowserJobConflictError(
+            `${browserFfmpegJob.label} is already ${browserFfmpegJob.state}`,
+        );
+    }
+    if (!ffmpegLoaded || !ffmpeg) {
+        throw new Error('The FFmpeg engine is not ready');
+    }
+    let resolveCompletion;
+    const job = {
+        id: browserJobId(type),
+        type,
+        label: options?.label || browserJobLabel(type),
+        mediaId: options?.mediaId ?? null,
+        state: 'running',
+        progress: 0,
+        cancelRequested: false,
+        terminated: false,
+        files: new Set(),
+        startedAt: new Date().toISOString(),
+        engine: ffmpeg,
+        completion: new Promise(resolve => {
+            resolveCompletion = resolve;
+        }),
+    };
+    browserFfmpegJob = job;
+    if (type === 'proxy') browserProxyJob = job;
+    updateBrowserJobUi(job);
+
+    const api = {
+        job,
+        path(role, extension = '') {
+            const safeRole = String(role).replace(/[^a-z0-9_-]/gi, '_').slice(0, 40);
+            const safeExtension = /^\.[a-z0-9]{1,8}$/i.test(extension) ? extension.toLowerCase() : '';
+            const path = `${job.id}_${safeRole}${safeExtension}`;
+            job.files.add(path);
+            return path;
+        },
+        track(path) {
+            job.files.add(path);
+            return path;
+        },
+        async writeSource(path, file) {
+            assertBrowserJobActive(job);
+            const payload = await window.ffmpegFetchFile(file);
+            assertBrowserJobActive(job);
+            job.files.add(path);
+            await job.engine.writeFile(path, payload);
+            assertBrowserJobActive(job);
+        },
+        async writeFile(path, payload) {
+            assertBrowserJobActive(job);
+            job.files.add(path);
+            await job.engine.writeFile(path, payload);
+            assertBrowserJobActive(job);
+        },
+        async exec(args, label) {
+            assertBrowserJobActive(job);
+            job.stage = label;
+            job.progress = 0;
+            updateBrowserJobUi(job);
+            const exitCode = await job.engine.exec(args);
+            assertBrowserJobActive(job);
+            if (exitCode !== 0) {
+                throw new Error(`${label} failed with FFmpeg exit code ${exitCode}`);
+            }
+        },
+        async readFile(path) {
+            assertBrowserJobActive(job);
+            const data = await job.engine.readFile(path);
+            assertBrowserJobActive(job);
+            return data;
+        },
+        async deleteFile(path) {
+            if (!job.terminated) {
+                try { await job.engine.deleteFile(path); } catch (_) {}
+            }
+            job.files.delete(path);
+        },
+        assertActive() {
+            assertBrowserJobActive(job);
+        },
+    };
+
+    try {
+        const result = await runner(api);
+        assertBrowserJobActive(job);
+        job.state = 'succeeded';
+        return result;
+    } catch (error) {
+        if (job.cancelRequested || error instanceof BrowserJobCancelledError) {
+            job.state = 'cancelled';
+            throw new BrowserJobCancelledError(`${job.label} cancelled`);
+        }
+        job.state = 'failed';
+        job.error = error?.message || String(error);
+        throw error;
+    } finally {
+        if (!job.terminated && ffmpegLoaded && ffmpeg === job.engine) {
+            for (const path of [...job.files]) {
+                try { await job.engine.deleteFile(path); } catch (_) {}
+            }
+            job.files.clear();
+        }
+        if (job.cancelRequested) {
+            job.engineReusable = await restartBrowserFfmpeg(job);
+        }
+        job.finishedAt = new Date().toISOString();
+        lastBrowserFfmpegJob = {
+            id: job.id,
+            type: job.type,
+            label: job.label,
+            state: job.state,
+            progress: job.progress,
+            stage: job.stage || null,
+            error: job.error || null,
+            engineReusable: job.engineReusable ?? true,
+            startedAt: job.startedAt,
+            finishedAt: job.finishedAt,
+        };
+        window.clipforgeLastBrowserJob = { ...lastBrowserFfmpegJob };
+        browserFfmpegJob = null;
+        if (type === 'proxy') browserProxyJob = null;
+        resolveCompletion({ ...lastBrowserFfmpegJob });
+        updateBrowserJobUi(null);
+        renderExportPreflight();
+    }
+}
+
+async function initFFmpeg(options = {}) {
+    if (ffmpegInitPromise) return ffmpegInitPromise;
+    ffmpegInitPromise = initializeFFmpeg(options);
+    try {
+        return await ffmpegInitPromise;
+    } finally {
+        ffmpegInitPromise = null;
+    }
+}
+
+async function initializeFFmpeg({ successToast = true, timeoutMs = 30000 } = {}) {
     await window.coiReady;
     document.documentElement.dataset.crossOriginIsolated = String(
         window.crossOriginIsolated
@@ -104,9 +368,16 @@ async function initFFmpeg() {
         window.ffmpegFetchFile = fetchFile;
 
         ffmpeg.on("progress", ({ progress }) => {
-            const pct = Math.round((progress || 0) * 100);
+            const value = Number(progress);
+            const pct = Number.isFinite(value) && value >= 0 && value <= 1
+                ? Math.round(value * 100)
+                : (browserFfmpegJob?.progress || 0);
             document.getElementById('loadingProgress').style.width = pct + '%';
             document.getElementById('loadingProgressTrack').setAttribute('aria-valuenow', String(pct));
+            if (browserFfmpegJob) {
+                browserFfmpegJob.progress = pct;
+                updateBrowserJobUi(browserFfmpegJob);
+            }
         });
         ffmpeg.on("log", ({ message }) => {
             console.log('[ffmpeg]', message);
@@ -126,7 +397,7 @@ async function initFFmpeg() {
         document.getElementById('loadingText').textContent = 'Initializing FFmpeg...';
         await withTimeout(
             ffmpeg.load({ coreURL, wasmURL }),
-            30000,
+            timeoutMs,
             'FFmpeg initialization',
         );
 
@@ -135,8 +406,10 @@ async function initFFmpeg() {
         document.getElementById('statusDot').classList.add('ready');
         document.getElementById('statusText').textContent = 'Ready';
 
-        toast('success', 'ClipForge ready!');
+        if (successToast) toast('success', 'ClipForge ready!');
+        return true;
     } catch (e) {
+        ffmpegLoaded = false;
         const errMsg = (e && (e.message || e.toString())) || 'Unknown error';
         console.error('FFmpeg load error:', e);
         document.getElementById('statusText').textContent = 'Engine unavailable';
@@ -159,6 +432,7 @@ async function initFFmpeg() {
         retry.addEventListener('click', () => window.location.reload());
         content.append(icon, title, details, retry);
         overlay.replaceChildren(content);
+        return false;
     }
 }
 
@@ -193,6 +467,7 @@ function setupEventListeners() {
         'hide-export': () => hideExportModal(),
         'export-video': () => exportVideo(),
         'cancel-export': () => cancelExport(),
+        'cancel-job': () => cancelBrowserFfmpegJob(),
     };
     document.addEventListener('click', event => {
         const control = event.target.closest?.('[data-action]');
@@ -600,39 +875,56 @@ function addToTimeline(mediaId) {
 
 async function generateVideoWaveform(media) {
     if (!ffmpegLoaded) return null;
-    
+
     try {
-        // Extract audio from video for waveform
-        const inputName = 'input_wf' + media.file.name.substring(media.file.name.lastIndexOf('.'));
-        await ffmpeg.writeFile(inputName, await window.ffmpegFetchFile(media.file));
+        return await runBrowserFfmpegJob(
+            'waveform',
+            { label: `Waveform: ${media.name}`, mediaId: media.id },
+            async job => {
+                const extension =
+                    media.file.name.match(/\.[A-Za-z0-9]{1,8}$/)?.[0] || '.bin';
+                const inputName = job.path('input', extension);
+                const outputName = job.path('audio', '.raw');
+                await job.writeSource(inputName, media.file);
+                await job.exec(
+                    [
+                        '-i', inputName,
+                        '-ac', '1',
+                        '-ar', '8000',
+                        '-f', 'f32le',
+                        '-acodec', 'pcm_f32le',
+                        outputName,
+                    ],
+                    'Extracting waveform',
+                );
 
-        await ffmpeg.exec(['-i', inputName, '-ac', '1', '-ar', '8000', '-f', 'f32le', '-acodec', 'pcm_f32le', 'audio.raw']);
+                const audioData = await job.readFile(outputName);
+                const floatArray = new Float32Array(audioData.buffer);
+                const samples = 200;
+                const blockSize = Math.max(1, Math.floor(floatArray.length / samples));
+                const waveformData = [];
 
-        const audioData = await ffmpeg.readFile('audio.raw');
-        const floatArray = new Float32Array(audioData.buffer);
-
-        const samples = 200;
-        const blockSize = Math.floor(floatArray.length / samples);
-        const waveformData = [];
-
-        for (let i = 0; i < samples; i++) {
-            let sum = 0;
-            for (let j = 0; j < blockSize; j++) {
-                const idx = i * blockSize + j;
-                if (idx < floatArray.length) {
-                    sum += Math.abs(floatArray[idx]);
+                for (let i = 0; i < samples; i++) {
+                    let sum = 0;
+                    for (let j = 0; j < blockSize; j++) {
+                        const idx = i * blockSize + j;
+                        if (idx < floatArray.length) {
+                            sum += Math.abs(floatArray[idx]);
+                        }
+                    }
+                    waveformData.push(sum / blockSize);
                 }
-            }
-            waveformData.push(sum / blockSize);
-        }
 
-        const max = Math.max(...waveformData);
-
-        await ffmpeg.deleteFile(inputName);
-        await ffmpeg.deleteFile('audio.raw');
-        
-        return waveformData.map(v => max > 0 ? v / max : 0);
+                const max = Math.max(...waveformData);
+                return waveformData.map(value => max > 0 ? value / max : 0);
+            },
+        );
     } catch (e) {
+        if (e instanceof BrowserJobConflictError) {
+            console.info(`Waveform deferred: ${e.message}`);
+            return null;
+        }
+        if (e instanceof BrowserJobCancelledError) return null;
         console.warn('Video waveform extraction failed:', e);
         return null;
     }
@@ -702,7 +994,7 @@ async function pruneBrowserProxyCache() {
 async function generateBrowserProxy(mediaId) {
     const media = mediaItems.find(item => item.id == mediaId);
     if (!media?.file || media.type !== 'video') return;
-    if (media.proxyUrl && !browserProxyJob) {
+    if (media.proxyUrl && !browserFfmpegJob) {
         media.proxyActive = !media.proxyActive;
         clips.filter(clip => clip.mediaId == media.id).forEach(clip => {
             clip.url = media.proxyActive ? media.proxyUrl : media.url;
@@ -714,18 +1006,16 @@ async function generateBrowserProxy(mediaId) {
         toast('info', media.proxyActive ? 'Proxy selected for preview' : 'Original selected for preview');
         return;
     }
-    if (browserProxyJob) {
-        if (browserProxyJob.mediaId != media.id) {
-            toast('info', 'Finish or cancel the active proxy before starting another');
-            return;
+    if (browserFfmpegJob) {
+        if (browserFfmpegJob.type === 'proxy' && browserFfmpegJob.mediaId == media.id) {
+            cancelBrowserFfmpegJob('proxy');
+            renderMediaList();
+        } else {
+            toast(
+                'info',
+                `${browserFfmpegJob.label} is active; finish or cancel it first`,
+            );
         }
-        browserProxyJob.cancelRequested = true;
-        try { ffmpeg?.terminate(); } catch (_) {}
-        renderMediaList();
-        return;
-    }
-    if (exportInProgress) {
-        toast('error', 'Wait for export to finish before generating a proxy');
         return;
     }
     if (!ffmpegLoaded) {
@@ -733,61 +1023,58 @@ async function generateBrowserProxy(mediaId) {
         return;
     }
 
-    const job = { mediaId: media.id, cancelRequested: false };
-    browserProxyJob = job;
-    renderMediaList();
-    const runId = `proxy_${Date.now().toString(36)}`;
-    const extension = media.file.name.match(/\.[A-Za-z0-9]{1,8}$/)?.[0]?.toLowerCase() || '.bin';
-    const inputName = `${runId}_input${extension}`;
-    const outputName = `${runId}.mp4`;
     try {
-        await ffmpeg.writeFile(inputName, await window.ffmpegFetchFile(media.file));
-        const exitCode = await ffmpeg.exec([
-            '-i', inputName,
-            '-map', '0:v:0', '-map', '0:a?',
-            '-vf', 'scale=w=min(1280\\,iw):h=-2',
-            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '28', '-pix_fmt', 'yuv420p',
-            '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart',
-            '-y', outputName,
-        ]);
-        if (job.cancelRequested) throw new Error('Proxy cancelled');
-        if (exitCode !== 0) throw new Error(`Proxy encode failed with FFmpeg exit code ${exitCode}`);
-        const data = await ffmpeg.readFile(outputName);
-        const blob = new Blob([data.buffer], { type: 'video/mp4' });
-        const payload = {
-            key: browserProxyKey(media.file),
-            profile: BROWSER_PROXY_PROFILE,
-            blob,
-            size: blob.size,
-            createdAt: Date.now(),
-        };
-        await browserProxyStore('put', payload.key, payload);
-        applyBrowserProxy(media, payload);
-        await pruneBrowserProxyCache();
-        if (previewVideo?.src === media.url) loadPreview(media.proxyUrl);
+        await runBrowserFfmpegJob(
+            'proxy',
+            { label: `Proxy: ${media.name}`, mediaId: media.id },
+            async job => {
+                renderMediaList();
+                const extension =
+                    media.file.name.match(/\.[A-Za-z0-9]{1,8}$/)?.[0] || '.bin';
+                const inputName = job.path('input', extension);
+                const outputName = job.path('output', '.mp4');
+                await job.writeSource(inputName, media.file);
+                await job.exec(
+                    [
+                        '-i', inputName,
+                        '-map', '0:v:0', '-map', '0:a?',
+                        '-vf', 'scale=w=min(1280\\,iw):h=-2',
+                        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '28',
+                        '-pix_fmt', 'yuv420p',
+                        '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart',
+                        '-y', outputName,
+                    ],
+                    'Encoding proxy',
+                );
+                const data = await job.readFile(outputName);
+                const blob = new Blob([data.buffer], { type: 'video/mp4' });
+                const payload = {
+                    key: browserProxyKey(media.file),
+                    profile: BROWSER_PROXY_PROFILE,
+                    blob,
+                    size: blob.size,
+                    createdAt: Date.now(),
+                };
+                job.assertActive();
+                await browserProxyStore('put', payload.key, payload);
+                job.assertActive();
+                await pruneBrowserProxyCache();
+                job.assertActive();
+                applyBrowserProxy(media, payload);
+                if (previewVideo?.src === media.url) loadPreview(media.proxyUrl);
+            },
+        );
         toast('success', 'Proxy cached and selected for preview; export still uses the original');
     } catch (error) {
-        if (!job.cancelRequested) {
+        if (error instanceof BrowserJobCancelledError) {
+            toast('info', 'Proxy cancelled; FFmpeg is ready for the next job');
+        } else {
             console.error('Browser proxy error:', error);
             toast('error', `Proxy failed: ${error.message}`);
         }
     } finally {
-        if (!job.cancelRequested) {
-            try { await ffmpeg.deleteFile(inputName); } catch (_) {}
-            try { await ffmpeg.deleteFile(outputName); } catch (_) {}
-        }
-        browserProxyJob = null;
         renderMediaList();
         renderTimeline();
-        if (job.cancelRequested) {
-            ffmpegLoaded = false;
-            ffmpeg = null;
-            document.getElementById('statusDot').classList.remove('ready');
-            document.getElementById('statusText').textContent = 'Restarting engine';
-            document.getElementById('loadingOverlay').classList.remove('hidden');
-            document.getElementById('loadingText').textContent = 'Restarting FFmpeg after proxy cancellation...';
-            setTimeout(() => initFFmpeg(), 0);
-        }
     }
 }
 
@@ -1664,6 +1951,12 @@ function buildExportPreflight() {
         .sort((a, b) => a.startTime - b.startTime);
 
     if (!ffmpegLoaded) reasons.push('The FFmpeg engine is not ready.');
+    if (browserFfmpegJob && browserFfmpegJob.type !== 'export') {
+        reasons.push(
+            `${browserFfmpegJob.label} is ${browserFfmpegJob.state}; `
+            + 'finish or cancel it before exporting.',
+        );
+    }
     if (videoClips.length === 0) reasons.push('At least one video clip is required.');
     if (videoClips.some(clip => clip.type !== 'video')) {
         reasons.push('Image timeline clips are not supported by browser export.');
@@ -1760,23 +2053,13 @@ function renderExportPreflight() {
     return result;
 }
 
-async function runFfmpeg(args, label) {
-    if (exportCancelRequested) throw new Error('Export cancelled');
-    const exitCode = await ffmpeg.exec(args);
-    if (exportCancelRequested) throw new Error('Export cancelled');
-    if (exitCode !== 0) throw new Error(`${label} failed with FFmpeg exit code ${exitCode}`);
+async function runFfmpeg(job, args, label) {
+    await job.exec(args, label);
 }
 
 function cancelExport() {
     if (!exportInProgress || exportCancelRequested) return;
-    exportCancelRequested = true;
-    document.getElementById('loadingText').textContent = 'Cancelling export...';
-    document.getElementById('cancelExportButton').disabled = true;
-    try {
-        ffmpeg?.terminate();
-    } catch (error) {
-        console.warn('FFmpeg termination failed:', error);
-    }
+    cancelBrowserFfmpegJob('export');
 }
 
 async function exportVideo() {
@@ -1795,162 +2078,161 @@ async function exportVideo() {
     cancelButton.disabled = false;
     exportInProgress = true;
     exportCancelRequested = false;
-    const cleanupFiles = new Set();
-    const runId = `cf_${Date.now().toString(36)}`;
 
     try {
-        const format = document.getElementById('exportFormat').value;
-        const resolution = document.getElementById('exportResolution').value;
-        const quality = document.getElementById('exportQuality').value;
-        const filename = (
-            sanitizeDownloadName(document.getElementById('exportFilename').value)
-                .replace(/\.(mp4|webm|gif)$/i, '')
-            || 'clipforge-export'
-        );
-        document.getElementById('exportFilename').value = filename;
-        const videoClips = preflight.videoClips;
+        await runBrowserFfmpegJob(
+            'export',
+            { label: 'Export' },
+            async job => {
+                const format = document.getElementById('exportFormat').value;
+                const resolution = document.getElementById('exportResolution').value;
+                const quality = document.getElementById('exportQuality').value;
+                const filename = (
+                    sanitizeDownloadName(document.getElementById('exportFilename').value)
+                        .replace(/\.(mp4|webm|gif)$/i, '')
+                    || 'clipforge-export'
+                );
+                document.getElementById('exportFilename').value = filename;
+                const videoClips = preflight.videoClips;
+                const segmentFiles = [];
 
-        const segmentFiles = [];
+                for (let i = 0; i < videoClips.length; i++) {
+                    const clip = videoClips[i];
+                    const media = mediaItems.find(item => item.id === clip.mediaId);
+                    if (!media?.file) {
+                        throw new Error(`Source is missing for ${clip.name}`);
+                    }
+                    document.getElementById('loadingText').textContent =
+                        `Processing clip ${i + 1}/${videoClips.length}...`;
+                    const extension =
+                        media.file.name.match(/\.[A-Za-z0-9]{1,8}$/)?.[0] || '.bin';
+                    const inputName = job.path(`input_${i}`, extension);
+                    const segmentName = job.path(`segment_${i}`, '.mp4');
+                    await job.writeSource(inputName, media.file);
 
-        for (let i = 0; i < videoClips.length; i++) {
-            const clip = videoClips[i];
-            const media = mediaItems.find(m => m.id === clip.mediaId);
-            if (!media?.file) throw new Error(`Source is missing for ${clip.name}`);
+                    const args = [];
+                    if (clip.inPoint > 0) args.push('-ss', String(clip.inPoint));
+                    args.push('-i', inputName);
+                    args.push('-t', String(clip.duration));
+                    args.push('-map', '0:v:0', '-map', '0:a?');
 
-            document.getElementById('loadingText').textContent =
-                `Processing clip ${i + 1}/${videoClips.length}...`;
+                    const filters = [];
+                    if (resolution && resolution !== 'original') {
+                        const [width, height] = resolution.split(':');
+                        filters.push(
+                            `scale=${width}:${height}:force_original_aspect_ratio=decrease,`
+                            + `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2`,
+                        );
+                    }
+                    if (clip.brightness || clip.contrast || clip.saturation) {
+                        filters.push(
+                            `eq=brightness=${clip.brightness / 100}:`
+                            + `contrast=${1 + clip.contrast / 100}:`
+                            + `saturation=${1 + clip.saturation / 100}`,
+                        );
+                    }
+                    if (clip.rotation) {
+                        filters.push(`rotate=${clip.rotation}*PI/180`);
+                    }
+                    if (filters.length > 0) args.push('-vf', filters.join(','));
 
-            const extensionMatch = media.file.name.match(/\.[A-Za-z0-9]{1,8}$/);
-            const inputName = `${runId}_input_${i}${extensionMatch ? extensionMatch[0].toLowerCase() : '.bin'}`;
-            const segName = `${runId}_seg_${i}.mp4`;
-            await ffmpeg.writeFile(inputName, await window.ffmpegFetchFile(media.file));
-            cleanupFiles.add(inputName);
-            cleanupFiles.add(segName);
-
-            const args = [];
-            if (clip.inPoint > 0) args.push('-ss', String(clip.inPoint));
-            args.push('-i', inputName);
-            args.push('-t', String(clip.duration));
-            args.push('-map', '0:v:0', '-map', '0:a?');
-
-            const vf = [];
-            if (resolution && resolution !== 'original') {
-                const [w, h] = resolution.split(':');
-                vf.push(`scale=${w}:${h}:force_original_aspect_ratio=decrease,pad=${w}:${h}:(ow-iw)/2:(oh-ih)/2`);
-            }
-            if (clip.brightness || clip.contrast || clip.saturation) {
-                const br = clip.brightness / 100;
-                const ct = 1 + clip.contrast / 100;
-                const st = 1 + clip.saturation / 100;
-                vf.push(`eq=brightness=${br}:contrast=${ct}:saturation=${st}`);
-            }
-            if (clip.rotation) {
-                vf.push(`rotate=${clip.rotation}*PI/180`);
-            }
-            if (vf.length > 0) args.push('-vf', vf.join(','));
-
-            args.push('-c:v', 'libx264', '-crf', quality, '-preset', 'fast', '-pix_fmt', 'yuv420p');
-            args.push('-c:a', 'aac', '-b:a', '192k');
-            args.push('-y', segName);
-
-            await runFfmpeg(args, `Clip ${i + 1}`);
-            await ffmpeg.deleteFile(inputName);
-            cleanupFiles.delete(inputName);
-            segmentFiles.push(segName);
-        }
-
-        let finalOutput;
-        const outputName = `${runId}_output.${format}`;
-        cleanupFiles.add(outputName);
-
-        if (segmentFiles.length === 1) {
-            if (format === 'mp4') {
-                finalOutput = segmentFiles[0];
-                cleanupFiles.delete(outputName);
-            } else {
-                const args = ['-i', segmentFiles[0]];
-                if (format === 'webm') {
-                    args.push('-c:v', 'libvpx-vp9', '-crf', quality, '-b:v', '0', '-c:a', 'libopus');
-                } else if (format === 'gif') {
-                    args.push('-vf', 'fps=15,scale=480:-1:flags=lanczos', '-loop', '0');
+                    args.push(
+                        '-c:v', 'libx264',
+                        '-crf', quality,
+                        '-preset', 'fast',
+                        '-pix_fmt', 'yuv420p',
+                        '-c:a', 'aac',
+                        '-b:a', '192k',
+                        '-y', segmentName,
+                    );
+                    await runFfmpeg(job, args, `Clip ${i + 1}`);
+                    await job.deleteFile(inputName);
+                    segmentFiles.push(segmentName);
                 }
-                args.push('-y', outputName);
-                await runFfmpeg(args, 'Final format conversion');
-                await ffmpeg.deleteFile(segmentFiles[0]);
-                cleanupFiles.delete(segmentFiles[0]);
-                finalOutput = outputName;
-            }
-        } else {
-            const concatList = segmentFiles.map(f => `file '${f}'`).join('\n');
-            const encoder = new TextEncoder();
-            const concatName = `${runId}_concat.txt`;
-            await ffmpeg.writeFile(concatName, encoder.encode(concatList));
-            cleanupFiles.add(concatName);
 
-            document.getElementById('loadingText').textContent = 'Joining clips...';
-            const joinArgs = ['-f', 'concat', '-safe', '0', '-i', concatName];
-            if (format === 'mp4') {
-                joinArgs.push('-c', 'copy', '-movflags', '+faststart');
-            } else if (format === 'webm') {
-                joinArgs.push('-c:v', 'libvpx-vp9', '-crf', quality, '-b:v', '0', '-c:a', 'libopus');
-            } else if (format === 'gif') {
-                joinArgs.push('-vf', 'fps=15,scale=480:-1:flags=lanczos', '-loop', '0');
-            } else {
-                joinArgs.push('-c', 'copy');
-            }
-            joinArgs.push('-y', outputName);
-            await runFfmpeg(joinArgs, 'Timeline join');
+                let finalOutput;
+                if (segmentFiles.length === 1 && format === 'mp4') {
+                    finalOutput = segmentFiles[0];
+                } else if (segmentFiles.length === 1) {
+                    const outputName = job.path('output', `.${format}`);
+                    const args = ['-i', segmentFiles[0]];
+                    if (format === 'webm') {
+                        args.push(
+                            '-c:v', 'libvpx-vp9', '-crf', quality, '-b:v', '0',
+                            '-c:a', 'libopus',
+                        );
+                    } else {
+                        args.push(
+                            '-vf', 'fps=15,scale=480:-1:flags=lanczos',
+                            '-loop', '0',
+                        );
+                    }
+                    args.push('-y', outputName);
+                    await runFfmpeg(job, args, 'Final format conversion');
+                    await job.deleteFile(segmentFiles[0]);
+                    finalOutput = outputName;
+                } else {
+                    const outputName = job.path('output', `.${format}`);
+                    const concatName = job.path('concat', '.txt');
+                    const concatList = segmentFiles
+                        .map(path => `file '${path}'`)
+                        .join('\n');
+                    await job.writeFile(
+                        concatName,
+                        new TextEncoder().encode(concatList),
+                    );
+                    document.getElementById('loadingText').textContent = 'Joining clips...';
+                    const args = ['-f', 'concat', '-safe', '0', '-i', concatName];
+                    if (format === 'mp4') {
+                        args.push('-c', 'copy', '-movflags', '+faststart');
+                    } else if (format === 'webm') {
+                        args.push(
+                            '-c:v', 'libvpx-vp9', '-crf', quality, '-b:v', '0',
+                            '-c:a', 'libopus',
+                        );
+                    } else {
+                        args.push(
+                            '-vf', 'fps=15,scale=480:-1:flags=lanczos',
+                            '-loop', '0',
+                        );
+                    }
+                    args.push('-y', outputName);
+                    await runFfmpeg(job, args, 'Timeline join');
+                    for (const path of segmentFiles) await job.deleteFile(path);
+                    await job.deleteFile(concatName);
+                    finalOutput = outputName;
+                }
 
-            for (const f of segmentFiles) {
-                try { await ffmpeg.deleteFile(f); } catch (_) {}
-                cleanupFiles.delete(f);
-            }
-            try { await ffmpeg.deleteFile(concatName); } catch (_) {}
-            cleanupFiles.delete(concatName);
-            finalOutput = outputName;
-        }
-
-        const data = await ffmpeg.readFile(finalOutput);
-        const mimeType = format === 'gif' ? 'image/gif' : `video/${format}`;
-        const blob = new Blob([data.buffer], { type: mimeType });
-
-        const a = document.createElement('a');
-        const blobUrl = URL.createObjectURL(blob);
-        a.href = blobUrl;
-        a.download = `${filename}.${format}`;
-        a.click();
-        setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
-
-        try { await ffmpeg.deleteFile(finalOutput); } catch (_) {}
-        cleanupFiles.delete(finalOutput);
-
-        toast('success', `Exported ${videoClips.length} clip(s) successfully!`);
+                const data = await job.readFile(finalOutput);
+                const mimeType = format === 'gif' ? 'image/gif' : `video/${format}`;
+                const blob = new Blob([data.buffer], { type: mimeType });
+                const anchor = document.createElement('a');
+                const blobUrl = URL.createObjectURL(blob);
+                anchor.href = blobUrl;
+                anchor.download = `${filename}.${format}`;
+                anchor.click();
+                setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+                await job.deleteFile(finalOutput);
+                toast(
+                    'success',
+                    `Exported ${videoClips.length} clip(s) successfully!`,
+                );
+            },
+        );
     } catch (e) {
         console.error('Export error:', e);
         toast(
-            exportCancelRequested ? 'info' : 'error',
-            exportCancelRequested ? 'Export cancelled; the engine is restarting' : `Export failed: ${e.message}`,
+            e instanceof BrowserJobCancelledError ? 'info' : 'error',
+            e instanceof BrowserJobCancelledError
+                ? 'Export cancelled; FFmpeg is ready for the next job'
+                : `Export failed: ${e.message}`,
         );
     } finally {
-        if (ffmpegLoaded && !exportCancelRequested) {
-            for (const path of cleanupFiles) {
-                try { await ffmpeg.deleteFile(path); } catch (_) {}
-            }
-        }
         cancelButton.hidden = true;
         cancelButton.disabled = false;
         exportInProgress = false;
-        if (exportCancelRequested) {
-            ffmpegLoaded = false;
-            ffmpeg = null;
-            document.getElementById('statusDot').classList.remove('ready');
-            document.getElementById('statusText').textContent = 'Restarting engine';
-            document.getElementById('loadingText').textContent = 'Restarting FFmpeg...';
-            exportCancelRequested = false;
-            setTimeout(() => initFFmpeg(), 0);
-        } else {
-            overlay.classList.add('hidden');
-        }
+        exportCancelRequested = false;
+        if (ffmpegLoaded) overlay.classList.add('hidden');
     }
 }
 
@@ -2445,7 +2727,7 @@ function toast(type, message) {
 }
 
 // ==================== MODULE EXPORTS ====================
-// Expose functions to inline onclick/oninput handlers in index.html
+// Expose stable browser-test and event-delegation entry points.
 Object.assign(window, {
     addToTimeline, togglePlay, goToStart, goToEnd, stepForward, stepBackward,
     setTool, setZoom, splitClip, deleteSelected, copyClip, cutClip, pasteClip,
@@ -2453,4 +2735,17 @@ Object.assign(window, {
     setVolume, toggleMute, showExportModal, hideExportModal, exportVideo,
     cancelExport, saveProject, recoverLastProject, showEditMenu,
     generateBrowserProxy, updateClipProperty, applyQuickEffect,
+    cancelBrowserFfmpegJob,
+    getBrowserFfmpegJobState: () => ({
+        active: browserFfmpegJob ? {
+            id: browserFfmpegJob.id,
+            type: browserFfmpegJob.type,
+            state: browserFfmpegJob.state,
+            progress: browserFfmpegJob.progress,
+            cancelRequested: browserFfmpegJob.cancelRequested,
+        } : null,
+        last: lastBrowserFfmpegJob ? { ...lastBrowserFfmpegJob } : null,
+        engineReady: ffmpegLoaded,
+    }),
+    clipforgeCancelBrowserJob: cancelBrowserFfmpegJob,
 });

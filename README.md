@@ -124,7 +124,7 @@ All-in-one video editor — Trim, Crop, Upscale, Interpolate, Convert, Filter, A
 - **Process tree cleanup** — cancelling kills child processes
 - **Owned temp directory cleanup** on exit without touching another running instance
 - **Atomic output safety** — validates staged media before replacing the chosen destination
-- 124-test suite covering utilities, process safety, generated media, probing, proxy/AI caching, supply-chain validation, diagnostics, persistence, and accessibility contracts
+- 127-test suite covering utilities, process safety, generated media, probing, proxy/AI caching, supply-chain validation, diagnostics, persistence, browser jobs, and accessibility contracts
 
 ### Web Editor
 
@@ -142,6 +142,7 @@ Try it in the browser: **[sysadmindoc.github.io/ClipForge](https://sysadmindoc.g
 - **Full undo/redo** (Ctrl+Z / Ctrl+Shift+Z, 50-deep history)
 - **Truthful multi-clip export** — contiguous video clips and embedded source audio are rendered; preflight blocks unsupported gaps, overlaps, transitions, unlinked audio/music, or unrendered effects instead of silently dropping them
 - Cancellable MP4, WebM, and GIF export with sanitized filenames, cleanup, and quality/resolution options
+- Serialized waveform, proxy, and export jobs with collision-proof virtual paths, shared progress/cancel state, guaranteed cleanup, and reusable-engine recovery
 - Versioned `.clipforge` project save/load with legacy migration, IndexedDB crash recovery, and explicit local-media relinking
 - IndexedDB-backed 720p browser proxies with visible estimates, cancellation, original/proxy switching, ten-entry pruning, and project relink restoration
 - Keyboard shortcuts: V (select), C (razor), S (split), Space (play/pause), J/K/L (transport)
