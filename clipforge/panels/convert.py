@@ -3,6 +3,7 @@
 import sys
 import os
 import shlex
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -27,7 +28,9 @@ from ..settings import (
 from ..tools import (
     FFMPEG,
     HW_ENCODERS,
+    _unregister_temp_dir,
     _confirm_overwrite,
+    create_job_temp_dir,
     hardware_decode_args,
     stream_copy_issues,
 )
@@ -109,6 +112,16 @@ class ConvertPanel(QWidget):
         self.lbl_quality_hint = QLabel("Visually lossless")
         self.lbl_quality_hint.setProperty("class", "dimLabel")
         ql.addWidget(self.lbl_quality_hint)
+        ql.addWidget(QLabel("Rate control:"))
+        self.cmb_rate_control = QComboBox()
+        self.cmb_rate_control.addItems(["Constant Quality", "Target Bitrate"])
+        ql.addWidget(self.cmb_rate_control)
+        self.spn_video_bitrate = QSpinBox()
+        self.spn_video_bitrate.setRange(100, 200_000)
+        self.spn_video_bitrate.setValue(5_000)
+        self.spn_video_bitrate.setSuffix(" kbps")
+        self.spn_video_bitrate.setToolTip("Average target video bitrate")
+        ql.addWidget(self.spn_video_bitrate)
         self.chk_two_pass = QCheckBox("Two-pass")
         self.chk_two_pass.setToolTip("Better quality at target bitrate (slower)")
         ql.addWidget(self.chk_two_pass)
@@ -176,8 +189,12 @@ class ConvertPanel(QWidget):
                        self.cmb_resolution, self.cmb_fps]:
             widget.currentTextChanged.connect(self._update_cmd_preview)
         self.cmb_vcodec.currentTextChanged.connect(self._on_vcodec_changed)
+        self.cmb_rate_control.currentTextChanged.connect(self._on_rate_control_changed)
         self.spn_crf.valueChanged.connect(self._update_cmd_preview)
+        self.spn_video_bitrate.valueChanged.connect(self._update_cmd_preview)
+        self.spn_video_bitrate.valueChanged.connect(self._update_estimate)
         self.spn_speed.valueChanged.connect(self._update_cmd_preview)
+        self._update_rate_control_state()
 
         self.progress = QProgressBar()
         layout.addWidget(self.progress)
@@ -237,6 +254,10 @@ class ConvertPanel(QWidget):
         self.cmb_resolution.setCurrentText(data.get("resolution", "Original"))
         self.cmb_fps.setCurrentText(data.get("fps", "Original"))
         self.spn_speed.setValue(data.get("speed", 1.0))
+        self.cmb_rate_control.setCurrentText(
+            data.get("rate_control", "Constant Quality")
+        )
+        self.spn_video_bitrate.setValue(int(data.get("video_bitrate", 5000)))
 
     def _save_current_as_preset(self):
         from PyQt6.QtWidgets import QInputDialog
@@ -252,6 +273,8 @@ class ConvertPanel(QWidget):
             "resolution": self.cmb_resolution.currentText(),
             "fps": self.cmb_fps.currentText(),
             "speed": self.spn_speed.value(),
+            "rate_control": self.cmb_rate_control.currentText(),
+            "video_bitrate": self.spn_video_bitrate.value(),
         }
         saved_name = save_user_preset(name.strip(), data)
         if saved_name:
@@ -318,6 +341,8 @@ class ConvertPanel(QWidget):
         self.cmb_resolution.setCurrentText("Original")
         self.cmb_fps.setCurrentText("Original")
         self.spn_speed.setValue(1.0)
+        self.cmb_rate_control.setCurrentText("Constant Quality")
+        self.spn_video_bitrate.setValue(5_000)
         self.chk_two_pass.setChecked(False)
         self.cmb_preset_select.setCurrentIndex(0)
         self.requestToast.emit("Settings reset to defaults", C["blue"])
@@ -328,6 +353,7 @@ class ConvertPanel(QWidget):
             self.cmb_acodec.setCurrentText("Opus")
         elif container == "GIF":
             self.cmb_acodec.setCurrentText("None (remove audio)")
+        self._update_rate_control_state()
 
     def _on_vcodec_changed(self, vcodec_text):
         is_av1 = "AV1" in vcodec_text or "svtav1" in vcodec_text.lower()
@@ -335,7 +361,64 @@ class ConvertPanel(QWidget):
         max_crf = 63 if (is_av1 or is_vp9) else 51
         if self.spn_crf.maximum() != max_crf:
             self.spn_crf.setRange(0, max_crf)
+        self._update_rate_control_state()
         self._update_estimate()
+
+    def _on_rate_control_changed(self):
+        self._update_rate_control_state()
+        self._update_estimate()
+        self._update_cmd_preview()
+
+    def _selected_video_encoder(self):
+        mapping = {
+            "H.264 (libx264)": "libx264",
+            "H.265 (libx265)": "libx265",
+            "VP9": "libvpx-vp9",
+            "AV1 (libaom)": "libaom-av1",
+            "SVT-AV1 (libsvtav1)": "libsvtav1",
+            "Copy (no re-encode)": "copy",
+        }
+        mapping.update(HW_ENCODERS)
+        return mapping.get(self.cmb_vcodec.currentText(), "libx264")
+
+    def _two_pass_supported(self):
+        encoder = self._selected_video_encoder()
+        container = self.cmb_container.currentText()
+        compatible = {
+            "libx264": {"MP4", "MKV", "MOV", "AVI"},
+            "libvpx-vp9": {"WebM", "MKV"},
+            "libaom-av1": {"MP4", "MKV", "WebM"},
+        }
+        return (
+            self.cmb_rate_control.currentText() == "Target Bitrate"
+            and container in compatible.get(encoder, set())
+        )
+
+    def _update_rate_control_state(self):
+        target = self.cmb_rate_control.currentText() == "Target Bitrate"
+        encoder = self._selected_video_encoder()
+        rate_control_available = (
+            encoder != "copy" and self.cmb_container.currentText() != "GIF"
+        )
+        self.cmb_rate_control.setEnabled(rate_control_available)
+        if not rate_control_available:
+            self.cmb_rate_control.setCurrentText("Constant Quality")
+            target = False
+        self.spn_video_bitrate.setEnabled(target and rate_control_available)
+        self.spn_crf.setEnabled(not target and encoder != "copy")
+        supported = self._two_pass_supported()
+        self.chk_two_pass.setEnabled(supported)
+        if not supported:
+            self.chk_two_pass.setChecked(False)
+        if target and not supported:
+            self.chk_two_pass.setToolTip(
+                "Two-pass is unavailable for this encoder/container; "
+                "target bitrate still uses one pass"
+            )
+        else:
+            self.chk_two_pass.setToolTip(
+                "Better quality at target bitrate (slower)"
+            )
 
     def load_file(self, filepath, info):
         self._filepath = filepath
@@ -359,7 +442,20 @@ class ConvertPanel(QWidget):
                 h = int(res.split("x")[1].split(" ")[0])
             except (ValueError, IndexError):
                 pass
-        est = estimate_output_size(dur, crf, w, h)
+        if self.cmb_rate_control.currentText() == "Target Bitrate":
+            audio_kbps = (
+                0
+                if self.cmb_acodec.currentText() == "None (remove audio)"
+                else 192
+            )
+            est = int(
+                max(float(dur), 0)
+                * (self.spn_video_bitrate.value() + audio_kbps)
+                * 1000
+                / 8
+            )
+        else:
+            est = estimate_output_size(dur, crf, w, h)
         vcodec_text = self.cmb_vcodec.currentText()
         is_av1 = "AV1" in vcodec_text or "svtav1" in vcodec_text.lower()
         is_vp9 = "VP9" in vcodec_text
@@ -390,7 +486,11 @@ class ConvertPanel(QWidget):
         elif is_vp9:
             equiv_h264 = max(0, int(crf * 51 / 63))
             hint += f"  (~ H.264 CRF {equiv_h264})"
-        self.lbl_quality_hint.setText(hint)
+        self.lbl_quality_hint.setText(
+            "Average bitrate target"
+            if self.cmb_rate_control.currentText() == "Target Bitrate"
+            else hint
+        )
         self.lbl_estimate.setText(f"Estimated output: ~{format_size(est)}")
 
     def _build_cmd(self, out_path=None):
@@ -398,18 +498,11 @@ class ConvertPanel(QWidget):
         if not self._filepath or not FFMPEG:
             return []
         target = out_path or "<output>"
-        vcodec_map = {
-            "H.264 (libx264)": "libx264", "H.265 (libx265)": "libx265",
-            "VP9": "libvpx-vp9", "AV1 (libaom)": "libaom-av1",
-            "SVT-AV1 (libsvtav1)": "libsvtav1", "Copy (no re-encode)": "copy",
-        }
-        # Add HW encoder mappings
-        for label, enc_name in HW_ENCODERS.items():
-            vcodec_map[label] = enc_name
-
-        vcodec_text = self.cmb_vcodec.currentText()
-        vcodec = vcodec_map.get(vcodec_text, "libx264")
+        vcodec = self._selected_video_encoder()
         container = self.cmb_container.currentText()
+        target_bitrate = (
+            self.cmb_rate_control.currentText() == "Target Bitrate"
+        )
 
         # Build command with optional hardware decode
         cmd = [FFMPEG, "-y"]
@@ -439,7 +532,11 @@ class ConvertPanel(QWidget):
                 vcodec = "libx264"
             if vcodec != "copy":
                 cmd += ["-c:v", vcodec]
-                if vcodec in ("libx264", "libx265"):
+                if target_bitrate:
+                    cmd += ["-b:v", f"{self.spn_video_bitrate.value()}k"]
+                    if vcodec in ("libx264", "libx265"):
+                        cmd += ["-preset", self.cmb_enc_preset.currentText()]
+                elif vcodec in ("libx264", "libx265"):
                     cmd += ["-crf", str(self.spn_crf.value()), "-preset", self.cmb_enc_preset.currentText()]
                 elif vcodec == "libsvtav1":
                     cmd += ["-crf", str(self.spn_crf.value())]
@@ -624,6 +721,11 @@ class ConvertPanel(QWidget):
             )
         if copied_streams:
             issues.extend(stream_copy_issues(container, copied_streams))
+        if self.chk_two_pass.isChecked() and not self._two_pass_supported():
+            issues.append(
+                "Two-pass requires Target Bitrate with a supported software "
+                "encoder/container combination."
+            )
         return issues
 
     def _do_convert(self):
@@ -651,7 +753,7 @@ class ConvertPanel(QWidget):
         self.progress.setValue(0)
         self.btn_convert.setEnabled(False)
 
-        if self.chk_two_pass.isChecked() and container != "GIF":
+        if self.chk_two_pass.isChecked():
             self._do_two_pass(out_path, duration, overwrite)
         else:
             cmd = self._build_cmd(out_path)
@@ -669,26 +771,24 @@ class ConvertPanel(QWidget):
 
     def _do_two_pass(self, out_path, duration, overwrite):
         """Execute two-pass encoding for higher quality."""
-        import tempfile
-        passlog = os.path.join(tempfile.gettempdir(), "clipforge_2pass")
-        self._two_pass_log = passlog
+        if not self._two_pass_supported():
+            self._on_done(
+                False,
+                "Two-pass is not supported by these rate-control settings",
+                out_path,
+            )
+            return
+        workspace = create_job_temp_dir("two-pass")
+        self._two_pass_workspace = Path(workspace)
+        passlog = self._two_pass_workspace / "ffmpeg-pass"
+        self._two_pass_log = os.fspath(passlog)
 
         # Build the base command but split into pass1 and pass2
         cmd_base = self._build_cmd(out_path)
         if not cmd_base:
             self.btn_convert.setEnabled(True)
+            self._cleanup_passlog()
             return
-
-        # Find the output and codec parts to construct pass commands
-        vcodec_text = self.cmb_vcodec.currentText()
-        vcodec_map = {
-            "H.264 (libx264)": "libx264", "H.265 (libx265)": "libx265",
-            "VP9": "libvpx-vp9", "AV1 (libaom)": "libaom-av1",
-            "SVT-AV1 (libsvtav1)": "libsvtav1", "Copy (no re-encode)": "copy",
-        }
-        for label, enc_name in HW_ENCODERS.items():
-            vcodec_map[label] = enc_name
-        vcodec = vcodec_map.get(vcodec_text, "libx264")
 
         # Pass 1: analyze
         cmd1 = cmd_base[:-1]  # remove output path
@@ -739,14 +839,13 @@ class ConvertPanel(QWidget):
         self._on_done(ok, msg, self._two_pass_out)
 
     def _cleanup_passlog(self):
-        """Remove two-pass log files."""
-        if hasattr(self, '_two_pass_log'):
-            import glob
-            for f in glob.glob(f"{self._two_pass_log}*"):
-                try:
-                    os.unlink(f)
-                except OSError:
-                    pass
+        """Remove only this panel's registered two-pass workspace."""
+        workspace = getattr(self, "_two_pass_workspace", None)
+        if workspace:
+            shutil.rmtree(workspace, ignore_errors=True)
+            _unregister_temp_dir(workspace)
+            self._two_pass_workspace = None
+        self._two_pass_log = None
 
     def _on_done(self, ok, msg, out_path):
         self.btn_convert.setEnabled(True)
