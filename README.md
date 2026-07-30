@@ -124,7 +124,7 @@ All-in-one video editor — Trim, Crop, Upscale, Interpolate, Convert, Filter, A
 - **Process tree cleanup** — cancelling kills child processes
 - **Owned temp directory cleanup** on exit without touching another running instance
 - **Atomic output safety** — validates staged media before replacing the chosen destination
-- 127-test suite covering utilities, process safety, generated media, probing, proxy/AI caching, supply-chain validation, diagnostics, persistence, browser jobs, and accessibility contracts
+- 132-test suite covering utilities, process safety, semantic media validation, generated media, probing, proxy/AI caching, supply-chain validation, diagnostics, persistence, browser jobs, and accessibility contracts
 
 ### Web Editor
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import queue
 import signal
@@ -30,6 +31,65 @@ class ProcessOutcome:
     stdout_truncated: bool = False
     stderr_truncated: bool = False
     full_log_path: str | None = None
+
+
+@dataclass(frozen=True)
+class OutputValidationContract:
+    """Semantic requirements that must hold before an output is committed."""
+
+    expected_duration: float | None = None
+    duration_tolerance: float = 1.0
+    stream_counts: tuple[tuple[str, int, int | None], ...] = ()
+    allowed_formats: tuple[str, ...] = ()
+    allowed_codecs: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    required_sidecars: tuple[str, ...] = ()
+
+
+_OUTPUT_FORMAT_POLICIES = {
+    ".mp4": ("mov", "mp4", "m4a", "3gp", "3g2", "mj2"),
+    ".m4v": ("mov", "mp4", "m4a", "3gp", "3g2", "mj2"),
+    ".mov": ("mov", "mp4", "m4a", "3gp", "3g2", "mj2"),
+    ".mkv": ("matroska", "webm"),
+    ".webm": ("matroska", "webm"),
+    ".avi": ("avi",),
+    ".gif": ("gif",),
+    ".wav": ("wav",),
+    ".mp3": ("mp3",),
+    ".flac": ("flac",),
+    ".ogg": ("ogg",),
+    ".opus": ("ogg",),
+    ".aac": ("aac",),
+    ".jpg": ("image2",),
+    ".jpeg": ("image2",),
+    ".png": ("image2",),
+    ".webp": ("webp", "image2"),
+}
+
+_AUDIO_ONLY_SUFFIXES = {".wav", ".mp3", ".flac", ".ogg", ".opus", ".aac"}
+_IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp"}
+
+
+def default_output_contract(
+    output_path: str | os.PathLike[str],
+    *,
+    expected_duration: float = 0,
+) -> OutputValidationContract:
+    """Declare conservative semantic checks for a normal generated output."""
+    suffix = Path(output_path).suffix.lower()
+    if suffix in _AUDIO_ONLY_SUFFIXES:
+        streams = (("audio", 1, 1),)
+    elif suffix in _IMAGE_SUFFIXES:
+        streams = (("video", 1, 1),)
+    else:
+        streams = (("video", 1, None),)
+    duration = float(expected_duration or 0)
+    return OutputValidationContract(
+        expected_duration=duration if duration > 0 else None,
+        duration_tolerance=max(1.0, duration * 0.03),
+        stream_counts=streams,
+        allowed_formats=_OUTPUT_FORMAT_POLICIES.get(suffix, ()),
+        required_sidecars=(),
+    )
 
 
 class _TextTail:
@@ -265,6 +325,7 @@ def validate_output(
     output_path: str | os.PathLike[str],
     *,
     ffprobe_path: str | None = None,
+    contract: OutputValidationContract | None = None,
 ) -> tuple[bool, str]:
     path = Path(output_path)
     try:
@@ -272,7 +333,17 @@ def validate_output(
             return False, "Output file was not created or is empty"
     except OSError as exc:
         return False, f"Could not inspect output: {exc}"
+    if contract:
+        for sidecar in contract.required_sidecars:
+            sidecar_path = Path(sidecar)
+            try:
+                if not sidecar_path.is_file() or sidecar_path.stat().st_size <= 0:
+                    return False, f"Required sidecar was not created: {sidecar_path.name}"
+            except OSError as exc:
+                return False, f"Could not inspect sidecar {sidecar_path.name}: {exc}"
     if not ffprobe_path:
+        if contract:
+            return False, "FFprobe is required for semantic output validation"
         return True, ""
     try:
         result = subprocess.run(
@@ -280,10 +351,10 @@ def validate_output(
                 ffprobe_path,
                 "-v",
                 "error",
-                "-show_entries",
-                "format=format_name",
-                "-of",
-                "default=nw=1:nk=1",
+                "-print_format",
+                "json",
+                "-show_format",
+                "-show_streams",
                 str(path),
             ],
             capture_output=True,
@@ -295,4 +366,66 @@ def validate_output(
         return False, f"Could not validate output: {exc}"
     if result.returncode != 0 or not result.stdout.strip():
         return False, "Output could not be parsed by ffprobe"
+    try:
+        probe = json.loads(result.stdout)
+    except (TypeError, json.JSONDecodeError):
+        return False, "Output metadata returned by ffprobe was invalid"
+    if not probe.get("format") or not probe.get("streams"):
+        return False, "Output contains no readable media streams"
+    if not contract:
+        return True, ""
+
+    format_names = {
+        name.strip().lower()
+        for name in str(probe["format"].get("format_name", "")).split(",")
+        if name.strip()
+    }
+    allowed_formats = {name.lower() for name in contract.allowed_formats}
+    if allowed_formats and not format_names.intersection(allowed_formats):
+        actual = ", ".join(sorted(format_names)) or "unknown"
+        return False, f"Output container {actual} violates the declared format policy"
+
+    if contract.expected_duration is not None:
+        try:
+            actual_duration = float(probe["format"].get("duration") or 0)
+        except (TypeError, ValueError):
+            actual_duration = 0
+        delta = abs(actual_duration - contract.expected_duration)
+        if actual_duration <= 0 or delta > contract.duration_tolerance:
+            return (
+                False,
+                "Output duration "
+                f"{actual_duration:.3f}s differs from expected "
+                f"{contract.expected_duration:.3f}s by more than "
+                f"{contract.duration_tolerance:.3f}s",
+            )
+
+    streams = probe.get("streams", [])
+    for stream_type, minimum, maximum in contract.stream_counts:
+        count = sum(1 for stream in streams if stream.get("codec_type") == stream_type)
+        if count < minimum or (maximum is not None and count > maximum):
+            expected = (
+                str(minimum)
+                if maximum == minimum
+                else f"{minimum}..{maximum if maximum is not None else 'many'}"
+            )
+            return (
+                False,
+                f"Output has {count} {stream_type} stream(s); expected {expected}",
+            )
+
+    for stream_type, codecs in contract.allowed_codecs:
+        allowed = {codec.lower() for codec in codecs}
+        offenders = sorted({
+            str(stream.get("codec_name") or "unknown")
+            for stream in streams
+            if stream.get("codec_type") == stream_type
+            and str(stream.get("codec_name") or "unknown").lower() not in allowed
+        })
+        if offenders:
+            return (
+                False,
+                f"Output {stream_type} codec(s) {', '.join(offenders)} "
+                "violate the declared codec policy",
+            )
     return True, ""

@@ -26,7 +26,9 @@ from .tools import (
     create_job_temp_dir, _unregister_temp_dir,
 )
 from .processes import (
+    OutputValidationContract,
     command_with_staging_output,
+    default_output_contract,
     run_managed_process,
     staging_output_path,
     terminate_process_tree,
@@ -122,6 +124,7 @@ class FFmpegWorker(QThread):
         output_path=None,
         overwrite=False,
         timeout=None,
+        output_contract=None,
     ):
         super().__init__(parent)
         self.cmd = [str(part) for part in cmd]
@@ -130,6 +133,11 @@ class FFmpegWorker(QThread):
         self.output_path = output_path
         self.overwrite = overwrite
         self.timeout = timeout or max(3600, float(duration or 0) * 20)
+        self.output_contract = output_contract or (
+            default_output_contract(output_path, expected_duration=duration)
+            if output_path
+            else None
+        )
         self._cancel_event = threading.Event()
         self._start_time = 0
         self._progress_values = {}
@@ -222,7 +230,11 @@ class FFmpegWorker(QThread):
                 self.finished_signal.emit(False, "Process timed out")
             elif outcome.returncode == 0:
                 if final_path:
-                    valid, reason = validate_output(staged_path, ffprobe_path=FFPROBE)
+                    valid, reason = validate_output(
+                        staged_path,
+                        ffprobe_path=FFPROBE,
+                        contract=self.output_contract,
+                    )
                     DIAGNOSTICS.update(
                         diagnostic_id,
                         output_valid=valid,
@@ -577,6 +589,66 @@ class ThumbnailWorker(QThread):
 # ---------------------------------------------------------------------------
 
 
+def _ai_output_contract(output_path, source_info):
+    suffix = Path(output_path).suffix.lower()
+    if suffix not in {".mp4", ".m4v", ".mov", ".mkv"}:
+        raise ValueError("AI video output must use MP4, MOV, M4V, or MKV")
+    audio_count = sum(
+        1
+        for stream in source_info.get("streams", [])
+        if stream.get("codec_type") == "audio"
+    )
+    duration = float(source_info.get("duration") or 0)
+    formats = (
+        ("matroska", "webm")
+        if suffix == ".mkv"
+        else ("mov", "mp4", "m4a", "3gp", "3g2", "mj2")
+    )
+    return OutputValidationContract(
+        expected_duration=duration if duration > 0 else None,
+        duration_tolerance=max(1.0, duration * 0.03),
+        stream_counts=(("video", 1, 1), ("audio", audio_count, audio_count)),
+        allowed_formats=formats,
+        allowed_codecs=(("video", ("h264",)), ("audio", ("aac",))),
+        required_sidecars=(),
+    )
+
+
+def _ai_reassembly_command(frame_pattern, source_path, output_path, fps):
+    """Map every source audio stream and explicitly transcode it for portability."""
+    return [
+        FFMPEG,
+        "-y",
+        "-framerate",
+        str(fps),
+        "-i",
+        str(frame_pattern),
+        "-i",
+        str(source_path),
+        "-map",
+        "0:v:0",
+        "-map",
+        "1:a?",
+        "-map_metadata",
+        "1",
+        "-map_chapters",
+        "1",
+        "-c:v",
+        "libx264",
+        "-crf",
+        "18",
+        "-preset",
+        "medium",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        str(output_path),
+    ]
+
+
 class UpscaleWorker(QThread):
     progress = pyqtSignal(float)
     log_output = pyqtSignal(str)
@@ -733,25 +805,12 @@ class UpscaleWorker(QThread):
             self.progress.emit(80)
 
             self.log_output.emit("[3/3] Reassembling video...\n")
-            audio_path = os.path.join(tmpdir, "audio.aac")
-            audio_result = run_managed_process(
-                [FFMPEG, "-y", "-i", self.input_path, "-vn", "-acodec", "copy", audio_path],
-                cancel_event=self._cancel_event,
-                timeout=600,
+            cmd_re = _ai_reassembly_command(
+                os.path.join(upscaled_dir, "frame_%06d.png"),
+                self.input_path,
+                staged_output,
+                fps,
             )
-            has_audio = (
-                audio_result.returncode == 0
-                and os.path.exists(audio_path)
-                and os.path.getsize(audio_path) > 0
-            )
-            cmd_re = [FFMPEG, "-y", "-framerate", str(fps),
-                      "-i", os.path.join(upscaled_dir, "frame_%06d.png")]
-            if has_audio:
-                cmd_re += ["-i", audio_path]
-            cmd_re += ["-c:v", "libx264", "-crf", "18", "-preset", "medium", "-pix_fmt", "yuv420p"]
-            if has_audio:
-                cmd_re += ["-c:a", "aac", "-b:a", "192k", "-shortest"]
-            cmd_re.append(str(staged_output))
             reassemble_result = run_managed_process(
                 cmd_re,
                 cancel_event=self._cancel_event,
@@ -763,7 +822,11 @@ class UpscaleWorker(QThread):
             if reassemble_result.returncode != 0:
                 self.finished_signal.emit(False, "Video reassembly failed")
                 return
-            valid, reason = validate_output(staged_output, ffprobe_path=FFPROBE)
+            valid, reason = validate_output(
+                staged_output,
+                ffprobe_path=FFPROBE,
+                contract=_ai_output_contract(staged_output, info),
+            )
             DIAGNOSTICS.update(
                 diagnostic_id,
                 output_valid=valid,
@@ -945,31 +1008,17 @@ class InterpolateWorker(QThread):
             self.progress.emit(80)
 
             self.log_output.emit("[3/3] Reassembling video...\n")
-            audio_path = os.path.join(tmpdir, "audio.aac")
-            audio_result = run_managed_process(
-                [FFMPEG, "-y", "-i", self.input_path, "-vn", "-acodec", "copy", audio_path],
-                cancel_event=self._cancel_event,
-                timeout=600,
-            )
-            has_audio = (
-                audio_result.returncode == 0
-                and os.path.exists(audio_path)
-                and os.path.getsize(audio_path) > 0
-            )
-
             interp_frames = sorted(Path(interp_dir).glob("*.png"))
             if not interp_frames:
                 interp_frames = sorted(Path(interp_dir).glob("*.jpg"))
             ext = interp_frames[0].suffix if interp_frames else ".png"
 
-            cmd_re = [FFMPEG, "-y", "-framerate", str(new_fps),
-                      "-i", os.path.join(interp_dir, f"%06d{ext}")]
-            if has_audio:
-                cmd_re += ["-i", audio_path]
-            cmd_re += ["-c:v", "libx264", "-crf", "18", "-preset", "medium", "-pix_fmt", "yuv420p"]
-            if has_audio:
-                cmd_re += ["-c:a", "aac", "-b:a", "192k", "-shortest"]
-            cmd_re.append(str(staged_output))
+            cmd_re = _ai_reassembly_command(
+                os.path.join(interp_dir, f"%06d{ext}"),
+                self.input_path,
+                staged_output,
+                new_fps,
+            )
             reassemble_result = run_managed_process(
                 cmd_re,
                 cancel_event=self._cancel_event,
@@ -981,7 +1030,11 @@ class InterpolateWorker(QThread):
             if reassemble_result.returncode != 0:
                 self.finished_signal.emit(False, "Video reassembly failed")
                 return
-            valid, reason = validate_output(staged_output, ffprobe_path=FFPROBE)
+            valid, reason = validate_output(
+                staged_output,
+                ffprobe_path=FFPROBE,
+                contract=_ai_output_contract(staged_output, info),
+            )
             DIAGNOSTICS.update(
                 diagnostic_id,
                 output_valid=valid,
