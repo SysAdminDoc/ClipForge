@@ -14,6 +14,7 @@ from clipforge_utils import format_size
 from ..constants import C
 from ..tools import FFMPEG, _confirm_overwrite, probe_media, stream_copy_issues
 from ..workers import FFmpegWorker
+from ..widgets import FlowLayout
 
 
 class AudioPanel(QWidget):
@@ -38,7 +39,7 @@ class AudioPanel(QWidget):
         self.lbl_audio_info = QLabel("Open a video to see audio details")
         self.lbl_audio_info.setProperty("class", "dimLabel")
         il.addWidget(self.lbl_audio_info)
-        stream_row = QHBoxLayout()
+        stream_row = FlowLayout()
         stream_row.addWidget(QLabel("Source stream:"))
         self.cmb_audio_stream = QComboBox()
         stream_row.addWidget(self.cmb_audio_stream, 1)
@@ -52,7 +53,7 @@ class AudioPanel(QWidget):
         layout.addWidget(info_grp)
 
         ext_grp = QGroupBox("Extract Audio")
-        el = QHBoxLayout(ext_grp)
+        el = FlowLayout(ext_grp)
         el.addWidget(QLabel("Format:"))
         self.cmb_extract_fmt = QComboBox()
         self.cmb_extract_fmt.addItems(["MP3", "AAC", "WAV", "FLAC", "OGG", "Original (copy)"])
@@ -67,7 +68,7 @@ class AudioPanel(QWidget):
 
         rep_grp = QGroupBox("Replace Audio")
         rl = QVBoxLayout(rep_grp)
-        rep_row = QHBoxLayout()
+        rep_row = FlowLayout()
         self.lbl_replace_file = QLabel("No replacement audio selected")
         self.lbl_replace_file.setProperty("class", "dimLabel")
         self.btn_browse_audio = QPushButton("Browse Audio")
@@ -80,7 +81,7 @@ class AudioPanel(QWidget):
         rep_row.addWidget(self.btn_browse_audio)
         rl.addLayout(rep_row)
 
-        rep_opts = QHBoxLayout()
+        rep_opts = FlowLayout()
         self.chk_keep_original = QCheckBox("Mix with original audio")
         rep_opts.addWidget(self.chk_keep_original)
         rep_opts.addStretch()
@@ -93,7 +94,7 @@ class AudioPanel(QWidget):
         layout.addWidget(rep_grp)
 
         rem_grp = QGroupBox("Remove Audio")
-        rm_l = QHBoxLayout(rem_grp)
+        rm_l = FlowLayout(rem_grp)
         rm_l.addWidget(QLabel("Strip all audio tracks from video"))
         rm_l.addStretch()
         self.btn_remove = QPushButton("Remove Audio")
@@ -103,7 +104,7 @@ class AudioPanel(QWidget):
         rm_l.addWidget(self.btn_remove)
         layout.addWidget(rem_grp)
 
-        btn_row = QHBoxLayout()
+        btn_row = FlowLayout()
         self.btn_reset_defaults = QPushButton("Reset to Defaults")
         self.btn_reset_defaults.setToolTip("Reset audio panel to defaults")
         self.btn_reset_defaults.clicked.connect(self._reset_to_defaults)

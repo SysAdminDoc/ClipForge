@@ -24,6 +24,7 @@ from ..tools import (
     stream_copy_issues,
 )
 from ..workers import FFmpegWorker, QualityMetricsWorker
+from ..widgets import FlowLayout
 
 
 class StreamsPanel(QWidget):
@@ -62,7 +63,7 @@ class StreamsPanel(QWidget):
         # Quality comparison
         quality_grp = QGroupBox("Quality Comparison")
         quality_layout = QVBoxLayout(quality_grp)
-        quality_file_row = QHBoxLayout()
+        quality_file_row = FlowLayout()
         quality_file_row.addWidget(QLabel("Encoded file:"))
         self.lbl_quality_file = QLabel("No comparison file selected")
         self.lbl_quality_file.setProperty("class", "dimLabel")
@@ -72,7 +73,7 @@ class StreamsPanel(QWidget):
         quality_file_row.addWidget(self.btn_browse_quality)
         quality_layout.addLayout(quality_file_row)
 
-        sync_row = QHBoxLayout()
+        sync_row = FlowLayout()
         sync_row.addWidget(QLabel("Encoded offset (seconds):"))
         self.spn_quality_offset = QDoubleSpinBox()
         self.spn_quality_offset.setRange(-30.0, 30.0)
@@ -95,11 +96,12 @@ class StreamsPanel(QWidget):
         self.txt_quality_results.setPlaceholderText("Compare the open reference video with an encoded output.")
         quality_layout.addWidget(self.txt_quality_results)
 
-        quality_btn_row = QHBoxLayout()
+        quality_btn_row = FlowLayout()
         self.lbl_quality_hint = QLabel(
             "Compares the shorter aligned duration; encoded frames scale to the reference"
         )
         self.lbl_quality_hint.setProperty("class", "dimLabel")
+        self.lbl_quality_hint.setWordWrap(True)
         quality_btn_row.addWidget(self.lbl_quality_hint)
         quality_btn_row.addStretch()
         self.btn_export_quality = QPushButton("Export Report")
@@ -129,7 +131,7 @@ class StreamsPanel(QWidget):
 
         # Remux
         remux_grp = QGroupBox("Remux / Extract")
-        rl = QHBoxLayout(remux_grp)
+        rl = FlowLayout(remux_grp)
         rl.addWidget(QLabel("Container:"))
         self.cmb_remux_container = QComboBox()
         self.cmb_remux_container.addItems(["MP4", "MKV", "MOV", "WebM"])
@@ -144,8 +146,10 @@ class StreamsPanel(QWidget):
 
         # Snapshot
         snap_grp = QGroupBox("Frame Export")
-        sl = QHBoxLayout(snap_grp)
-        sl.addWidget(QLabel("Export current frame at full resolution"))
+        sl = FlowLayout(snap_grp)
+        frame_export_hint = QLabel("Export current frame at full resolution")
+        frame_export_hint.setWordWrap(True)
+        sl.addWidget(frame_export_hint)
         self.btn_snapshot = QPushButton("Snapshot (PNG)")
         self.btn_snapshot.setObjectName("primaryBtn")
         self.btn_snapshot.setEnabled(False)
@@ -157,7 +161,7 @@ class StreamsPanel(QWidget):
         # Contact sheet / thumbnail grid
         cs_grp = QGroupBox("Contact Sheet Generator")
         cs_layout = QVBoxLayout(cs_grp)
-        cs_opts = QHBoxLayout()
+        cs_opts = FlowLayout()
         cs_opts.addWidget(QLabel("Columns:"))
         self.spn_cs_cols = QSpinBox()
         self.spn_cs_cols.setRange(1, 10)
@@ -174,9 +178,10 @@ class StreamsPanel(QWidget):
         cs_opts.addWidget(self.cmb_cs_format)
         cs_opts.addStretch()
         cs_layout.addLayout(cs_opts)
-        cs_btn_row = QHBoxLayout()
+        cs_btn_row = FlowLayout()
         self.lbl_cs_info = QLabel("Generates an NxM grid of evenly-spaced thumbnails")
         self.lbl_cs_info.setProperty("class", "dimLabel")
+        self.lbl_cs_info.setWordWrap(True)
         cs_btn_row.addWidget(self.lbl_cs_info)
         cs_btn_row.addStretch()
         self.btn_contact_sheet = QPushButton("Generate Contact Sheet")
@@ -190,7 +195,7 @@ class StreamsPanel(QWidget):
         # Chapter file
         chap_grp = QGroupBox("Chapter Metadata")
         chap_layout = QVBoxLayout(chap_grp)
-        chap_info = QHBoxLayout()
+        chap_info = FlowLayout()
         self.lbl_chapter_file = QLabel("No chapter file selected")
         self.lbl_chapter_file.setProperty("class", "dimLabel")
         self.btn_browse_chapters = QPushButton("Browse chapters.txt")
@@ -202,7 +207,7 @@ class StreamsPanel(QWidget):
         chap_info.addWidget(self.lbl_chapter_file, 1)
         chap_info.addWidget(self.btn_browse_chapters)
         chap_layout.addLayout(chap_info)
-        chap_btn_row = QHBoxLayout()
+        chap_btn_row = FlowLayout()
         chap_btn_row.addStretch()
         self.btn_mux_chapters = QPushButton("Mux Chapters into Video")
         self.btn_mux_chapters.setObjectName("primaryBtn")

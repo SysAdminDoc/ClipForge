@@ -23,6 +23,7 @@ from ..tools import (
     escape_ffmpeg_filter_value,
 )
 from ..workers import FFmpegWorker
+from ..widgets import FlowLayout
 
 
 class FiltersPanel(QWidget):
@@ -56,6 +57,7 @@ class FiltersPanel(QWidget):
             slider = QSlider(Qt.Orientation.Horizontal)
             slider.setRange(mn, mx)
             slider.setValue(default)
+            slider.setAccessibleName(f"{name} adjustment")
             cl.addWidget(slider, row, 1)
             val_label = QLabel(str(default))
             val_label.setFixedWidth(40)
@@ -72,7 +74,7 @@ class FiltersPanel(QWidget):
         proc_grp = QGroupBox("Processing")
         pl = QVBoxLayout(proc_grp)
 
-        row1 = QHBoxLayout()
+        row1 = FlowLayout()
         self.chk_stabilize = QCheckBox("Video Stabilization (vidstab)")
         self.chk_denoise = QCheckBox("Noise Reduction (nlmeans)")
         self.chk_sharpen = QCheckBox("Sharpen (unsharp)")
@@ -81,7 +83,7 @@ class FiltersPanel(QWidget):
         row1.addWidget(self.chk_denoise)
         pl.addLayout(row1)
 
-        row2 = QHBoxLayout()
+        row2 = FlowLayout()
         row2.addWidget(self.chk_sharpen)
         row2.addWidget(self.chk_deinterlace)
         pl.addLayout(row2)
@@ -89,7 +91,7 @@ class FiltersPanel(QWidget):
 
         # Subtitle burn-in
         sub_grp = QGroupBox("Subtitle Burn-in")
-        sl = QHBoxLayout(sub_grp)
+        sl = FlowLayout(sub_grp)
         self.lbl_sub_file = QLabel("No subtitle selected")
         self.lbl_sub_file.setProperty("class", "dimLabel")
         self.btn_browse_sub = QPushButton("Browse .srt/.ass")
@@ -101,7 +103,7 @@ class FiltersPanel(QWidget):
 
         caption_grp = QGroupBox("Auto-Caption (Whisper)")
         cap_layout = QVBoxLayout(caption_grp)
-        cap_row = QHBoxLayout()
+        cap_row = FlowLayout()
         self.cmb_whisper_model = QComboBox()
         self.cmb_whisper_model.addItems([
             "tiny (~75 MB)", "base (~150 MB)", "small (~500 MB)",
@@ -116,7 +118,7 @@ class FiltersPanel(QWidget):
         cap_row.addWidget(self.cmb_whisper_lang)
         cap_row.addStretch()
         cap_layout.addLayout(cap_row)
-        cap_btn_row = QHBoxLayout()
+        cap_btn_row = FlowLayout()
         self.btn_gen_srt = QPushButton("Generate .srt")
         self.btn_gen_srt.setObjectName("primaryBtn")
         self.btn_gen_srt.setEnabled(False)
@@ -137,7 +139,7 @@ class FiltersPanel(QWidget):
 
         # LUT
         lut_grp = QGroupBox("LUT Color Grading")
-        ll = QHBoxLayout(lut_grp)
+        ll = FlowLayout(lut_grp)
         self.lbl_lut_file = QLabel("No LUT selected")
         self.lbl_lut_file.setProperty("class", "dimLabel")
         self.btn_browse_lut = QPushButton("Browse .cube")
@@ -148,7 +150,7 @@ class FiltersPanel(QWidget):
         self._lut_path = None
 
         audio_grp = QGroupBox("Audio Normalization")
-        al = QHBoxLayout(audio_grp)
+        al = FlowLayout(audio_grp)
         self.chk_normalize = QCheckBox("Loudness normalize")
         al.addWidget(self.chk_normalize)
         al.addWidget(QLabel("Target:"))
@@ -166,7 +168,7 @@ class FiltersPanel(QWidget):
 
         silence_grp = QGroupBox("Silence Detection")
         sil_layout = QVBoxLayout(silence_grp)
-        sil_opts = QHBoxLayout()
+        sil_opts = FlowLayout()
         sil_opts.addWidget(QLabel("Threshold:"))
         self.spn_silence_db = QSpinBox()
         self.spn_silence_db.setRange(-60, -10)
@@ -185,7 +187,7 @@ class FiltersPanel(QWidget):
         self.lbl_silence_result = QLabel("No scan yet")
         self.lbl_silence_result.setProperty("class", "dimLabel")
         sil_layout.addWidget(self.lbl_silence_result)
-        sil_btn_row = QHBoxLayout()
+        sil_btn_row = FlowLayout()
         self.btn_detect_silence = QPushButton("Detect Silence")
         self.btn_detect_silence.setEnabled(False)
         self.btn_detect_silence.clicked.connect(self._do_detect_silence)
@@ -226,7 +228,7 @@ class FiltersPanel(QWidget):
         self.lbl_progress_detail.setObjectName("progressDetail")
         layout.addWidget(self.lbl_progress_detail)
 
-        btn_row = QHBoxLayout()
+        btn_row = FlowLayout()
         self.btn_reset_defaults = QPushButton("Reset to Defaults")
         self.btn_reset_defaults.setToolTip("Reset all filter settings to defaults")
         self.btn_reset_defaults.clicked.connect(self._reset_to_defaults)

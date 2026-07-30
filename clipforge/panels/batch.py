@@ -20,6 +20,7 @@ from clipforge_utils import format_size, estimate_output_size
 from ..constants import C, VIDEO_EXTS
 from ..tools import FFMPEG, _confirm_overwrite, probe_video
 from ..workers import FFmpegWorker
+from ..widgets import FlowLayout
 
 
 _BATCH_SUFFIXES = {
@@ -117,13 +118,14 @@ class BatchPanel(QWidget):
         grp = QGroupBox("File Queue (drag & drop or browse)")
         gl = QVBoxLayout(grp)
         self.file_list = QListWidget()
+        self.file_list.setAccessibleName("Batch file queue")
         self.file_list.setMinimumHeight(140)
         self.file_list.setAcceptDrops(True)
         self.file_list.setDragDropMode(QAbstractItemView.DragDropMode.DropOnly)
         self.file_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         gl.addWidget(self.file_list)
 
-        btn_row = QHBoxLayout()
+        btn_row = FlowLayout()
         self.btn_add = QPushButton("Add Files")
         self.btn_add.clicked.connect(self._add_files)
         self.btn_add_folder = QPushButton("Add Folder")
@@ -141,7 +143,7 @@ class BatchPanel(QWidget):
         layout.addWidget(grp)
 
         op_grp = QGroupBox("Batch Operation")
-        ol = QHBoxLayout(op_grp)
+        ol = FlowLayout(op_grp)
         ol.addWidget(QLabel("Operation:"))
         self.cmb_operation = QComboBox()
         self.cmb_operation.addItems([
@@ -155,7 +157,7 @@ class BatchPanel(QWidget):
 
         # Output naming template
         name_grp = QGroupBox("Output Naming")
-        nl = QHBoxLayout(name_grp)
+        nl = FlowLayout(name_grp)
         nl.addWidget(QLabel("Template:"))
         self.txt_name_template = QLineEdit("{name}{suffix}{ext}")
         self.txt_name_template.setToolTip("Variables: {name}, {suffix}, {ext}, {date}, {index}")
@@ -167,7 +169,7 @@ class BatchPanel(QWidget):
         layout.addWidget(name_grp)
 
         out_grp = QGroupBox("Output")
-        outl = QHBoxLayout(out_grp)
+        outl = FlowLayout(out_grp)
         self.lbl_out_dir = QLabel("Same as source (with suffix)")
         self.lbl_out_dir.setProperty("class", "dimLabel")
         self.chk_custom_dir = QCheckBox("Custom output directory:")
@@ -182,7 +184,7 @@ class BatchPanel(QWidget):
 
         # Post-completion
         post_grp = QGroupBox("After Completion")
-        post_l = QHBoxLayout(post_grp)
+        post_l = FlowLayout(post_grp)
         self.cmb_post_action = QComboBox()
         self.cmb_post_action.addItems(["Do nothing", "Open output folder", "Play notification sound"])
         post_l.addWidget(QLabel("Action:"))
@@ -196,7 +198,7 @@ class BatchPanel(QWidget):
         self.progress = QProgressBar()
         layout.addWidget(self.progress)
 
-        action_row = QHBoxLayout()
+        action_row = FlowLayout()
         self.btn_cancel = QPushButton("Cancel")
         self.btn_cancel.setObjectName("dangerBtn")
         self.btn_cancel.setVisible(False)

@@ -14,7 +14,7 @@ from clipforge_utils import format_size
 from ..constants import C
 from ..tools import FFMPEG, _confirm_overwrite, extract_frame
 from ..workers import FFmpegWorker
-from ..widgets import CropView
+from ..widgets import CropView, FlowLayout
 
 
 class CropPanel(QWidget):
@@ -33,10 +33,11 @@ class CropPanel(QWidget):
         layout.setSpacing(12)
         self.crop_view = CropView()
         self.crop_view.setMinimumHeight(240)
+        self.crop_view.setAccessibleName("Crop preview and selection")
         layout.addWidget(self.crop_view)
 
         grp = QGroupBox("Crop Region")
-        gl = QHBoxLayout(grp)
+        gl = FlowLayout(grp)
         for label, attr in [("X:", "spn_x"), ("Y:", "spn_y"), ("W:", "spn_w"), ("H:", "spn_h")]:
             gl.addWidget(QLabel(label))
             spn = QSpinBox()
@@ -52,7 +53,7 @@ class CropPanel(QWidget):
         layout.addWidget(grp)
 
         rf_grp = QGroupBox("Rotate / Flip")
-        rf_layout = QHBoxLayout(rf_grp)
+        rf_layout = FlowLayout(rf_grp)
         self.cmb_rotate = QComboBox()
         self.cmb_rotate.addItems(["No Rotation", "90 CW", "90 CCW", "180"])
         rf_layout.addWidget(QLabel("Rotate:"))
@@ -69,7 +70,7 @@ class CropPanel(QWidget):
         self.lbl_progress_detail = QLabel("")
         self.lbl_progress_detail.setObjectName("progressDetail")
         layout.addWidget(self.lbl_progress_detail)
-        btn_row = QHBoxLayout()
+        btn_row = FlowLayout()
         self.btn_reset_defaults = QPushButton("Reset to Defaults")
         self.btn_reset_defaults.setToolTip("Reset crop region and rotation to defaults")
         self.btn_reset_defaults.clicked.connect(self._reset_to_defaults)

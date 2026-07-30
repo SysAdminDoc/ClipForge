@@ -6,10 +6,12 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QSlider,
     QComboBox, QFileDialog, QGraphicsView, QGraphicsScene, QProgressBar,
-    QStackedWidget,
+    QStackedWidget, QLayout, QSpacerItem, QSizePolicy,
+    QAbstractSpinBox, QLineEdit, QTextEdit,
 )
 from PyQt6.QtCore import (
-    Qt, QUrl, QTimer, QPointF, QPropertyAnimation, QEasingCurve, QRect,
+    Qt, QUrl, QTimer, QPoint, QPointF, QPropertyAnimation, QEasingCurve, QRect,
+    QSize,
     pyqtSignal,
 )
 from PyQt6.QtGui import (
@@ -28,6 +30,146 @@ from .settings import add_recent
 from .workers import FFmpegWorker, ThumbnailWorker
 from .proxy import ProxyCache
 from .mpv_backend import MpvWidget, probe_mpv
+
+
+# ---------------------------------------------------------------------------
+# Responsive layout and accessibility
+# ---------------------------------------------------------------------------
+
+
+class FlowLayout(QLayout):
+    """A compact row that wraps controls instead of forcing horizontal scroll."""
+
+    def __init__(self, parent=None, margin=-1, horizontal_spacing=6, vertical_spacing=6):
+        super().__init__(parent)
+        if margin >= 0:
+            self.setContentsMargins(margin, margin, margin, margin)
+        self._items = []
+        self._horizontal_spacing = horizontal_spacing
+        self._vertical_spacing = vertical_spacing
+
+    def addItem(self, item):
+        self._items.append(item)
+
+    def addWidget(self, widget, _stretch=0, alignment=Qt.AlignmentFlag(0)):
+        super().addWidget(widget)
+        if alignment:
+            self.setAlignment(widget, alignment)
+
+    def addStretch(self, _stretch=0):
+        self.addItem(
+            QSpacerItem(
+                0,
+                0,
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Minimum,
+            )
+        )
+
+    def count(self):
+        return len(self._items)
+
+    def itemAt(self, index):
+        return self._items[index] if 0 <= index < len(self._items) else None
+
+    def takeAt(self, index):
+        return self._items.pop(index) if 0 <= index < len(self._items) else None
+
+    def expandingDirections(self):
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return self._do_layout(QRect(0, 0, width, 0), True)
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        self._do_layout(rect, False)
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def minimumSize(self):
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        margins = self.contentsMargins()
+        size += QSize(
+            margins.left() + margins.right(),
+            margins.top() + margins.bottom(),
+        )
+        return size
+
+    def _do_layout(self, rect, test_only):
+        margins = self.contentsMargins()
+        available = rect.adjusted(
+            margins.left(),
+            margins.top(),
+            -margins.right(),
+            -margins.bottom(),
+        )
+        x = available.x()
+        y = available.y()
+        line_height = 0
+        horizontal = max(0, self._horizontal_spacing)
+        vertical = max(0, self._vertical_spacing)
+
+        for item in self._items:
+            hint = item.sizeHint()
+            if hint.isEmpty():
+                continue
+            next_x = x + hint.width() + horizontal
+            if x > available.x() and next_x - horizontal > available.right() + 1:
+                x = available.x()
+                y += line_height + vertical
+                next_x = x + hint.width() + horizontal
+                line_height = 0
+            if not test_only:
+                item.setGeometry(QRect(QPoint(x, y), hint))
+            x = next_x
+            line_height = max(line_height, hint.height())
+        return y + line_height - rect.y() + margins.bottom()
+
+
+def ensure_accessible_control_names(owner):
+    """Name owner controls from stable attributes when no explicit name exists."""
+
+    control_types = (
+        QComboBox,
+        QAbstractSpinBox,
+        QSlider,
+        QLineEdit,
+        QTextEdit,
+        QProgressBar,
+    )
+    prefixes = (
+        "cmb_",
+        "spn_",
+        "txt_",
+        "chk_",
+        "btn_",
+        "lbl_",
+    )
+    suffixes = {
+        "fmt": "format",
+        "cmd": "command",
+        "cs": "contact sheet",
+        "db": "decibels",
+        "dur": "duration",
+    }
+    for attribute, control in vars(owner).items():
+        if not isinstance(control, control_types) or control.accessibleName().strip():
+            continue
+        name = attribute
+        for prefix in prefixes:
+            if name.startswith(prefix):
+                name = name[len(prefix):]
+                break
+        words = [suffixes.get(word, word) for word in name.split("_") if word]
+        if words:
+            control.setAccessibleName(" ".join(words).capitalize())
 
 
 # ---------------------------------------------------------------------------
@@ -452,9 +594,13 @@ class VideoPlayer(QWidget):
         # Controls bar
         controls = QWidget()
         controls.setObjectName("playerControls")
-        cl = QHBoxLayout(controls)
+        cl = QVBoxLayout(controls)
         cl.setContentsMargins(8, 4, 8, 4)
         cl.setSpacing(4)
+        transport_row = QHBoxLayout()
+        transport_row.setSpacing(4)
+        seek_row = QHBoxLayout()
+        seek_row.setSpacing(6)
 
         # Frame step back
         self.btn_frame_back = QPushButton("<<")
@@ -463,12 +609,12 @@ class VideoPlayer(QWidget):
         self.btn_frame_back.setAccessibleName("Previous frame")
         self.btn_frame_back.setFixedWidth(36)
         self.btn_frame_back.clicked.connect(self._frame_back)
-        cl.addWidget(self.btn_frame_back)
+        transport_row.addWidget(self.btn_frame_back)
 
         self.btn_play = QPushButton("Play")
         self.btn_play.setFixedWidth(52)
         self.btn_play.clicked.connect(self._toggle_play)
-        cl.addWidget(self.btn_play)
+        transport_row.addWidget(self.btn_play)
 
         # Frame step forward
         self.btn_frame_fwd = QPushButton(">>")
@@ -477,25 +623,28 @@ class VideoPlayer(QWidget):
         self.btn_frame_fwd.setAccessibleName("Next frame")
         self.btn_frame_fwd.setFixedWidth(36)
         self.btn_frame_fwd.clicked.connect(self._frame_forward)
-        cl.addWidget(self.btn_frame_fwd)
+        transport_row.addWidget(self.btn_frame_fwd)
 
         self.lbl_time = QLabel("0:00 / 0:00")
         self.lbl_time.setProperty("class", "dimLabel")
         self.lbl_time.setFixedWidth(120)
-        cl.addWidget(self.lbl_time)
+        transport_row.addWidget(self.lbl_time)
+        transport_row.addStretch()
 
         self.seek_slider = QSlider(Qt.Orientation.Horizontal)
         self.seek_slider.setRange(0, 10000)
+        self.seek_slider.setAccessibleName("Preview position")
         self.seek_slider.sliderMoved.connect(self._seek)
-        cl.addWidget(self.seek_slider, 1)
+        seek_row.addWidget(self.seek_slider, 1)
 
         # Playback speed
         self.cmb_speed = QComboBox()
         self.cmb_speed.addItems(["0.25x", "0.5x", "1x", "1.5x", "2x", "4x"])
         self.cmb_speed.setCurrentText("1x")
         self.cmb_speed.setFixedWidth(65)
+        self.cmb_speed.setAccessibleName("Playback speed")
         self.cmb_speed.currentTextChanged.connect(self._on_speed_change)
-        cl.addWidget(self.cmb_speed)
+        seek_row.addWidget(self.cmb_speed)
 
         # A-B loop
         self.btn_ab_loop = QPushButton("A-B")
@@ -504,29 +653,36 @@ class VideoPlayer(QWidget):
         self.btn_ab_loop.setFixedWidth(36)
         self.btn_ab_loop.setCheckable(True)
         self.btn_ab_loop.clicked.connect(self._toggle_ab_loop)
-        cl.addWidget(self.btn_ab_loop)
+        seek_row.addWidget(self.btn_ab_loop)
         self._loop_a = -1
         self._loop_b = -1
         self._loop_active = False
 
         self.lbl_vol = QLabel("Vol:")
         self.lbl_vol.setProperty("class", "dimLabel")
-        cl.addWidget(self.lbl_vol)
+        seek_row.addWidget(self.lbl_vol)
 
         self.vol_slider = QSlider(Qt.Orientation.Horizontal)
         self.vol_slider.setRange(0, 100)
         self.vol_slider.setValue(70)
         self.vol_slider.setFixedWidth(80)
+        self.vol_slider.setAccessibleName("Preview volume")
         self.vol_slider.valueChanged.connect(self._on_volume_change)
-        cl.addWidget(self.vol_slider)
+        seek_row.addWidget(self.vol_slider)
 
+        cl.addLayout(transport_row)
+        cl.addLayout(seek_row)
         layout.addWidget(controls)
 
         proxy_controls = QWidget()
-        proxy_layout = QHBoxLayout(proxy_controls)
+        proxy_layout = QVBoxLayout(proxy_controls)
         proxy_layout.setContentsMargins(8, 0, 8, 0)
-        proxy_layout.setSpacing(6)
-        proxy_layout.addWidget(QLabel("Player:"))
+        proxy_layout.setSpacing(4)
+        backend_row = QHBoxLayout()
+        backend_row.setSpacing(6)
+        proxy_action_row = QHBoxLayout()
+        proxy_action_row.setSpacing(6)
+        backend_row.addWidget(QLabel("Player:"))
         self.cmb_player_backend = QComboBox()
         self.cmb_player_backend.addItem("Qt Multimedia", "qt")
         if self._mpv_widget:
@@ -542,27 +698,32 @@ class VideoPlayer(QWidget):
         self.cmb_player_backend.setAccessibleName("Preview player backend")
         self.cmb_player_backend.setMaximumWidth(220)
         self.cmb_player_backend.currentIndexChanged.connect(self._change_player_backend)
-        proxy_layout.addWidget(self.cmb_player_backend)
+        backend_row.addWidget(self.cmb_player_backend)
+        backend_row.addStretch()
         self.lbl_proxy_status = QLabel("Preview: original source")
         self.lbl_proxy_status.setProperty("class", "dimLabel")
         self.lbl_proxy_status.setAccessibleName("Proxy preview status")
-        proxy_layout.addWidget(self.lbl_proxy_status, 1)
+        self.lbl_proxy_status.setWordWrap(True)
         self.proxy_progress = QProgressBar()
         self.proxy_progress.setRange(0, 100)
         self.proxy_progress.setFixedWidth(110)
         self.proxy_progress.setAccessibleName("Proxy generation progress")
         self.proxy_progress.hide()
-        proxy_layout.addWidget(self.proxy_progress)
+        proxy_action_row.addStretch()
+        proxy_action_row.addWidget(self.proxy_progress)
         self.btn_create_proxy = QPushButton("Create Proxy")
         self.btn_create_proxy.setAccessibleName("Create or cancel preview proxy")
         self.btn_create_proxy.clicked.connect(self._create_or_cancel_proxy)
         self.btn_create_proxy.setEnabled(False)
-        proxy_layout.addWidget(self.btn_create_proxy)
+        proxy_action_row.addWidget(self.btn_create_proxy)
         self.btn_toggle_proxy = QPushButton("Use Proxy")
         self.btn_toggle_proxy.setAccessibleName("Switch between proxy and original preview")
         self.btn_toggle_proxy.clicked.connect(self._toggle_proxy)
         self.btn_toggle_proxy.setEnabled(False)
-        proxy_layout.addWidget(self.btn_toggle_proxy)
+        proxy_action_row.addWidget(self.btn_toggle_proxy)
+        proxy_layout.addLayout(backend_row)
+        proxy_layout.addWidget(self.lbl_proxy_status)
+        proxy_layout.addLayout(proxy_action_row)
         layout.addWidget(proxy_controls)
 
         # Timecode display

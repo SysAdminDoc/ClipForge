@@ -25,7 +25,7 @@ from ..tools import (
     _unregister_temp_dir,
 )
 from ..workers import FFmpegWorker
-from ..widgets import RangeSlider
+from ..widgets import FlowLayout, RangeSlider
 
 
 class TrimPanel(QWidget):
@@ -50,7 +50,7 @@ class TrimPanel(QWidget):
         self.range_slider.rangeChanged.connect(self._on_range_changed)
         gl.addWidget(self.range_slider)
 
-        numeric_row = QHBoxLayout()
+        numeric_row = FlowLayout()
         numeric_row.addWidget(QLabel("Start (seconds):"))
         self.spn_trim_start = QDoubleSpinBox()
         self.spn_trim_start.setDecimals(3)
@@ -68,7 +68,7 @@ class TrimPanel(QWidget):
         numeric_row.addStretch()
         gl.addLayout(numeric_row)
 
-        times_row = QHBoxLayout()
+        times_row = FlowLayout()
         self.lbl_start = QLabel("Start: 00:00:00.000")
         self.lbl_end = QLabel("End: 00:00:00.000")
         self.lbl_duration = QLabel("Duration: 00:00:00.000")
@@ -80,7 +80,7 @@ class TrimPanel(QWidget):
         times_row.addWidget(self.lbl_end)
         gl.addLayout(times_row)
 
-        marker_row = QHBoxLayout()
+        marker_row = FlowLayout()
         self.btn_set_in = QPushButton("Set In (current)")
         self.btn_set_in.clicked.connect(self._set_in_from_player)
         self.btn_set_out = QPushButton("Set Out (current)")
@@ -93,7 +93,7 @@ class TrimPanel(QWidget):
 
         opts = QGroupBox("Cut Mode")
         ol = QVBoxLayout(opts)
-        mode_row = QHBoxLayout()
+        mode_row = FlowLayout()
         self.chk_lossless = QCheckBox("Lossless (keyframe-aligned, fastest)")
         self.chk_lossless.setChecked(True)
         self.chk_lossless.toggled.connect(self._on_mode_changed)
@@ -105,7 +105,7 @@ class TrimPanel(QWidget):
         mode_row.addWidget(self.chk_smart)
         mode_row.addWidget(self.chk_reencode)
         ol.addLayout(mode_row)
-        fmt_row = QHBoxLayout()
+        fmt_row = FlowLayout()
         self.cmb_format = QComboBox()
         self.cmb_format.addItems(["Same as source", "MP4", "MKV", "MOV", "WebM"])
         fmt_row.addWidget(QLabel("Format:"))
@@ -117,7 +117,7 @@ class TrimPanel(QWidget):
         # Split / subclip extraction
         split_grp = QGroupBox("Split / Subclip Extraction")
         spl = QVBoxLayout(split_grp)
-        split_row = QHBoxLayout()
+        split_row = FlowLayout()
         split_row.addWidget(QLabel("Split every:"))
         self.spn_split_interval = QSpinBox()
         self.spn_split_interval.setRange(1, 3600)
@@ -143,7 +143,7 @@ class TrimPanel(QWidget):
         self.lbl_progress_detail = QLabel("")
         self.lbl_progress_detail.setObjectName("progressDetail")
         layout.addWidget(self.lbl_progress_detail)
-        btn_row = QHBoxLayout()
+        btn_row = FlowLayout()
         self.btn_reset_defaults = QPushButton("Reset to Defaults")
         self.btn_reset_defaults.setToolTip("Reset trim range and mode to defaults")
         self.btn_reset_defaults.clicked.connect(self._reset_to_defaults)

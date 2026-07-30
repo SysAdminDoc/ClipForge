@@ -20,6 +20,7 @@ from ..tools import (
     find_span,
 )
 from ..workers import UpscaleWorker, InterpolateWorker
+from ..widgets import FlowLayout
 from ..ai_tools import (
     AIFrameCache,
     AIToolInstallWorker,
@@ -46,7 +47,7 @@ class UpscalePanel(QWidget):
 
         grp = QGroupBox("AI Upscale")
         gl = QVBoxLayout(grp)
-        engine_row = QHBoxLayout()
+        engine_row = FlowLayout()
         engine_row.addWidget(QLabel("Engine:"))
         self.cmb_engine = QComboBox()
         self.cmb_engine.addItems(["Real-ESRGAN (quality)", "SPAN (fast)"])
@@ -59,7 +60,7 @@ class UpscalePanel(QWidget):
         engine_row.addWidget(self.cmb_scale)
         engine_row.addStretch()
         gl.addLayout(engine_row)
-        model_row = QHBoxLayout()
+        model_row = FlowLayout()
         model_row.addWidget(QLabel("Model:"))
         self.cmb_model = QComboBox()
         self.cmb_model.addItems(["realesrgan-x4plus", "realesrgan-x4plus-anime", "realesr-animevideov3"])
@@ -72,7 +73,7 @@ class UpscalePanel(QWidget):
         layout.addWidget(grp)
 
         interp_grp = QGroupBox("Frame Interpolation (RIFE)")
-        il = QHBoxLayout(interp_grp)
+        il = FlowLayout(interp_grp)
         il.addWidget(QLabel("Multiplier:"))
         self.cmb_interp = QComboBox()
         self.cmb_interp.addItems(["2x (double fps)", "4x (quadruple fps)", "8x"])
@@ -122,7 +123,7 @@ class UpscalePanel(QWidget):
         self.progress = QProgressBar()
         layout.addWidget(self.progress)
 
-        btn_row = QHBoxLayout()
+        btn_row = FlowLayout()
         self.btn_cancel = QPushButton("Cancel")
         self.btn_cancel.setObjectName("dangerBtn")
         self.btn_cancel.setVisible(False)

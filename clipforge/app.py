@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QStackedWidget, QTextEdit, QSplitter,
     QListWidget, QListWidgetItem, QScrollArea, QStatusBar,
-    QComboBox, QFileDialog,
+    QComboBox, QFileDialog, QSizePolicy,
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QPalette, QDragEnterEvent, QDropEvent
@@ -31,7 +31,12 @@ from .settings import (
 )
 from .tools import FFMPEG, HW_ENCODERS, _confirm_overwrite
 from .diagnostics import DIAGNOSTICS, classify_severity
-from .widgets import Toast, FileInfoBar, VideoPlayer
+from .widgets import (
+    Toast,
+    FileInfoBar,
+    VideoPlayer,
+    ensure_accessible_control_names,
+)
 from .panels.trim import TrimPanel
 from .panels.crop import CropPanel
 from .panels.upscale import UpscalePanel
@@ -131,6 +136,7 @@ class MainWindow(QMainWindow):
         sb_layout.addWidget(recent_label)
 
         self.recent_list = QListWidget()
+        self.recent_list.setAccessibleName("Recent files")
         self.recent_list.setMaximumHeight(150)
         self.recent_list.setStyleSheet(f"font-size: 11px; border: none; background: {C['mantle']};")
         self.recent_list.itemDoubleClicked.connect(self._on_recent_clicked)
@@ -192,6 +198,7 @@ class MainWindow(QMainWindow):
 
         # Video player
         self.player = VideoPlayer()
+        self.player.setMinimumWidth(360)
         self.player.playbackError.connect(self._on_playback_error)
         top_splitter.addWidget(self.player)
 
@@ -259,6 +266,7 @@ class MainWindow(QMainWindow):
         self.player.proxyStatus.connect(self._on_proxy_status)
 
         self.stack = QStackedWidget()
+        self.stack.setMinimumWidth(440)
         self.trim_panel = TrimPanel(self.console, self.player)
         self.crop_panel = CropPanel(self.console)
         self.upscale_panel = UpscalePanel(self.console)
@@ -279,20 +287,33 @@ class MainWindow(QMainWindow):
             self.batch_panel,
         ]
         for panel in self._panels:
+            panel.setSizePolicy(
+                QSizePolicy.Policy.Expanding,
+                QSizePolicy.Policy.Preferred,
+            )
+            ensure_accessible_control_names(panel)
             scroll = QScrollArea()
             scroll.setWidget(panel)
             scroll.setWidgetResizable(True)
             scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+            scroll.setHorizontalScrollBarPolicy(
+                Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+            )
             self.stack.addWidget(scroll)
 
         top_splitter.addWidget(self.stack)
         top_splitter.setStretchFactor(0, 2)
         top_splitter.setStretchFactor(1, 3)
+        top_splitter.setCollapsible(0, False)
+        top_splitter.setCollapsible(1, False)
+        top_splitter.setSizes([480, 520])
+        self.top_splitter = top_splitter
 
         main_splitter.addWidget(top_splitter)
         main_splitter.addWidget(console_container)
         main_splitter.setStretchFactor(0, 4)
         main_splitter.setStretchFactor(1, 1)
+        self.main_splitter = main_splitter
 
         content_layout.addWidget(main_splitter)
         main_layout.addWidget(content, 1)
@@ -308,6 +329,8 @@ class MainWindow(QMainWindow):
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
         self.status_bar.showMessage(f"Ready  •  v{APP_VERSION}")
+        ensure_accessible_control_names(self.player)
+        ensure_accessible_control_names(self)
 
         # Default to Trim panel
         self._switch_panel(0)

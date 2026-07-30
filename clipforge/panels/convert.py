@@ -35,6 +35,7 @@ from ..tools import (
     stream_copy_issues,
 )
 from ..workers import FFmpegWorker
+from ..widgets import FlowLayout
 
 
 class ConvertPanel(QWidget):
@@ -55,7 +56,7 @@ class ConvertPanel(QWidget):
 
         # Preset bar
         preset_grp = QGroupBox("Presets")
-        pl = QHBoxLayout(preset_grp)
+        pl = FlowLayout(preset_grp)
         pl.addWidget(QLabel("Quick:"))
         self.cmb_preset_select = QComboBox()
         self._refresh_presets()
@@ -78,7 +79,7 @@ class ConvertPanel(QWidget):
         layout.addWidget(preset_grp)
 
         fmt_grp = QGroupBox("Output Format")
-        fl = QHBoxLayout(fmt_grp)
+        fl = FlowLayout(fmt_grp)
         fl.addWidget(QLabel("Container:"))
         self.cmb_container = QComboBox()
         self.cmb_container.addItems(["MP4", "MKV", "WebM", "MOV", "AVI", "GIF"])
@@ -95,7 +96,7 @@ class ConvertPanel(QWidget):
         layout.addWidget(fmt_grp)
 
         q_grp = QGroupBox("Quality")
-        ql = QHBoxLayout(q_grp)
+        ql = FlowLayout(q_grp)
         ql.addWidget(QLabel("Preset:"))
         self.cmb_enc_preset = QComboBox()
         self.cmb_enc_preset.addItems(["ultrafast", "superfast", "veryfast", "faster", "fast",
@@ -128,7 +129,7 @@ class ConvertPanel(QWidget):
         layout.addWidget(q_grp)
 
         res_grp = QGroupBox("Resolution & Speed")
-        rl = QHBoxLayout(res_grp)
+        rl = FlowLayout(res_grp)
         self.cmb_resolution = QComboBox()
         self.cmb_resolution.addItems(["Original", "3840x2160 (4K)", "2560x1440 (2K)",
                                        "1920x1080 (1080p)", "1280x720 (720p)",
@@ -162,7 +163,7 @@ class ConvertPanel(QWidget):
         self.txt_cmd_preview.setReadOnly(False)
         self.txt_cmd_preview.setMaximumHeight(60)
         cmd_layout.addWidget(self.txt_cmd_preview)
-        cmd_btn_row = QHBoxLayout()
+        cmd_btn_row = FlowLayout()
         btn_copy_cmd = QPushButton("Copy")
         btn_copy_cmd.clicked.connect(self._copy_cmd)
         self.btn_gen_script = QPushButton("Save Script")
@@ -201,7 +202,7 @@ class ConvertPanel(QWidget):
         self.lbl_progress_detail = QLabel("")
         self.lbl_progress_detail.setObjectName("progressDetail")
         layout.addWidget(self.lbl_progress_detail)
-        btn_row = QHBoxLayout()
+        btn_row = FlowLayout()
         self.btn_reset_defaults = QPushButton("Reset to Defaults")
         self.btn_reset_defaults.setToolTip("Reset all conversion settings to their defaults")
         self.btn_reset_defaults.clicked.connect(self._reset_to_defaults)

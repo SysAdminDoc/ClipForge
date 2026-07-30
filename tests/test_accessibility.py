@@ -12,10 +12,20 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtTest import QTest
-from PyQt6.QtWidgets import QApplication, QWidget
+from PyQt6.QtWidgets import (
+    QApplication,
+    QAbstractButton,
+    QAbstractSpinBox,
+    QComboBox,
+    QLineEdit,
+    QProgressBar,
+    QSlider,
+    QTextEdit,
+    QWidget,
+)
 
 from clipforge import APP_VERSION
-from clipforge.app import apply_application_theme
+from clipforge.app import MainWindow, apply_application_theme
 from clipforge.constants import C
 from clipforge.widgets import RangeSlider, Toast
 
@@ -99,6 +109,131 @@ def test_long_toasts_preserve_the_actionable_beginning():
     assert toast.toolTip() == message
     assert toast.accessibleName() == message
     parent.close()
+
+
+def test_desktop_panels_fit_1280_by_860_in_both_themes(monkeypatch):
+    monkeypatch.setattr("clipforge.app.load_settings", lambda: {})
+    monkeypatch.setattr(MainWindow, "_check_deps", lambda self: None)
+    monkeypatch.setattr(MainWindow, "_load_recent", lambda self: None)
+    monkeypatch.setattr(MainWindow, "_show_persistence_notices", lambda self: None)
+    window = MainWindow()
+    window.resize(1280, 860)
+    window.show()
+    _QT_APP.processEvents()
+
+    try:
+        for high_contrast in (False, True):
+            apply_application_theme(_QT_APP, high_contrast)
+            _QT_APP.processEvents()
+            assert min(window.top_splitter.sizes()) >= 440
+
+            for index, panel in enumerate(window._panels):
+                window._switch_panel(index)
+                _QT_APP.processEvents()
+                scroll = window.stack.currentWidget()
+                viewport = scroll.viewport()
+
+                assert scroll.horizontalScrollBar().maximum() == 0
+                assert panel.width() <= viewport.width()
+                for control in panel.findChildren(
+                    (
+                        QAbstractButton,
+                        QAbstractSpinBox,
+                        QComboBox,
+                        QLineEdit,
+                        QSlider,
+                        QTextEdit,
+                    )
+                ):
+                    if not control.isVisibleTo(panel):
+                        continue
+                    top_left = control.mapTo(viewport, control.rect().topLeft())
+                    bottom_right = control.mapTo(
+                        viewport,
+                        control.rect().bottomRight(),
+                    )
+                    assert 0 <= top_left.x()
+                    assert bottom_right.x() < viewport.width()
+
+                focusable = [
+                    control
+                    for control in panel.findChildren(QWidget)
+                    if control.focusPolicy() != Qt.FocusPolicy.NoFocus
+                    and control.isVisibleTo(panel)
+                    and not control.objectName().startswith("qt_")
+                ]
+                visual_order = sorted(
+                    focusable,
+                    key=lambda control: (
+                        control.mapTo(
+                            panel,
+                            control.rect().topLeft(),
+                        ).y(),
+                        control.mapTo(
+                            panel,
+                            control.rect().topLeft(),
+                        ).x(),
+                    ),
+                )
+                focus_order = []
+                current = visual_order[0]
+                seen = set()
+                while current not in seen:
+                    if current in focusable:
+                        focus_order.append(current)
+                        seen.add(current)
+                    current = current.nextInFocusChain()
+                assert focus_order == visual_order
+
+            for control in window.player.findChildren(
+                (QAbstractButton, QComboBox, QProgressBar, QSlider)
+            ):
+                if not control.isVisibleTo(window.player):
+                    continue
+                top_left = control.mapTo(
+                    window.player,
+                    control.rect().topLeft(),
+                )
+                bottom_right = control.mapTo(
+                    window.player,
+                    control.rect().bottomRight(),
+                )
+                assert 0 <= top_left.x()
+                assert bottom_right.x() < window.player.width()
+    finally:
+        window.hide()
+        window.deleteLater()
+        _QT_APP.processEvents()
+
+
+def test_desktop_named_controls_expose_accessible_values(monkeypatch):
+    monkeypatch.setattr("clipforge.app.load_settings", lambda: {})
+    monkeypatch.setattr(MainWindow, "_check_deps", lambda self: None)
+    monkeypatch.setattr(MainWindow, "_load_recent", lambda self: None)
+    monkeypatch.setattr(MainWindow, "_show_persistence_notices", lambda self: None)
+    window = MainWindow()
+    try:
+        owners = [window, window.player, *window._panels]
+        control_types = (
+            QAbstractSpinBox,
+            QComboBox,
+            QLineEdit,
+            QProgressBar,
+            QSlider,
+            QTextEdit,
+        )
+        for owner in owners:
+            for attribute, control in vars(owner).items():
+                if isinstance(control, control_types):
+                    assert control.accessibleName().strip(), (
+                        type(owner).__name__,
+                        attribute,
+                    )
+                    if hasattr(control, "value"):
+                        assert control.value() is not None
+    finally:
+        window.deleteLater()
+        _QT_APP.processEvents()
 
 
 def test_browser_tabs_labels_live_regions_and_900px_contract():
