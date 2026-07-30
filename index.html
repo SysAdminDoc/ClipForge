@@ -156,6 +156,7 @@
             flex: 1;
             display: flex;
             overflow: hidden;
+            min-height: 0;
         }
         
         /* Left Panel - Media Browser */
@@ -967,7 +968,7 @@
             .status-badge { padding: 5px 8px; }
             .preview-controls .timecode { min-width: 92px; padding: 6px 8px; }
             .volume-slider { width: 64px; }
-            .timeline-section { height: 250px; }
+            .timeline-section { height: 320px; }
             .property-label { width: 64px; }
         }
         @keyframes modalIn { from { transform: scale(0.96) translateY(8px); opacity: 0; } }
@@ -1099,6 +1100,7 @@
                 <div class="recovery-bar" id="recoveryBar" hidden>
                     <span id="recoveryText">A recoverable browser project is available.</span>
                     <button class="btn btn-sm" data-action="recover-project">Recover</button>
+                    <button class="btn btn-sm" data-action="discard-recovery">Discard</button>
                 </div>
                 <div class="recovery-bar" id="relinkBar">
                     <span>Project files store media references, not media bytes. Relink moved or reopened local sources here.</span>

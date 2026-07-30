@@ -13,10 +13,14 @@ const PROJECT_DB_NAME = 'clipforge-recovery';
 const PROJECT_STORE_NAME = 'projects';
 const PROJECT_RECOVERY_KEY = 'current';
 const BROWSER_PROXY_PROFILE = 1;
+const MEDIA_METADATA_TIMEOUT_MS =
+    Number(globalThis.CLIPFORGE_METADATA_TIMEOUT_MS) || 10000;
 let recoveryDbPromise = null;
 let recoverySaveTimer = null;
 let recoverySnapshot = null;
+let recoveryWarningShown = false;
 let projectLoading = false;
+let projectDirty = false;
 let exportInProgress = false;
 let exportCancelRequested = false;
 let browserProxyJob = null;
@@ -48,12 +52,21 @@ const redoStack = [];
 const MAX_UNDO = 50;
 
 function pushUndo() {
+    setProjectDirty(true);
     undoStack.push({
         clips: clips.map(c => ({ ...c })),
         transitions: transitions.map(t => ({ ...t })),
     });
     if (undoStack.length > MAX_UNDO) undoStack.shift();
     redoStack.length = 0;
+}
+
+function setProjectDirty(dirty) {
+    projectDirty = Boolean(dirty);
+    document.documentElement.dataset.projectDirty = String(projectDirty);
+    const projectName = document.querySelector('.project-name')?.textContent?.trim()
+        || 'Untitled Project';
+    document.title = `${projectDirty ? '* ' : ''}${projectName} — ClipForge`;
 }
 
 // Audio context for waveforms
@@ -71,6 +84,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupEventListeners();
     renderRuler();
     initProjectRecovery();
+    window.clipforgeEditorReady = true;
     await initFFmpeg();
 });
 
@@ -445,6 +459,7 @@ function setupEventListeners() {
         'show-export': () => showExportModal(),
         'import-media': () => document.getElementById('fileInput').click(),
         'recover-project': () => recoverLastProject(),
+        'discard-recovery': () => discardRecoveryProject(),
         'relink-media': () => document.getElementById('relinkFileInput').click(),
         'quick-effect': (_event, control) => applyQuickEffect(control.dataset.effect),
         'go-start': () => goToStart(),
@@ -575,6 +590,31 @@ function activatePanelTab(tab) {
 }
 
 function handleKeyboard(e) {
+    const exportModal = document.getElementById('exportModal');
+    if (!exportModal.classList.contains('hidden')) {
+        if (e.key === 'Escape') {
+            e.preventDefault();
+            hideExportModal();
+            return;
+        }
+        if (e.key === 'Tab') {
+            const focusable = [...exportModal.querySelectorAll(
+                'button:not([disabled]), select:not([disabled]), input:not([disabled])',
+            )];
+            if (focusable.length > 0) {
+                const first = focusable[0];
+                const last = focusable[focusable.length - 1];
+                if (e.shiftKey && document.activeElement === first) {
+                    e.preventDefault();
+                    last.focus();
+                } else if (!e.shiftKey && document.activeElement === last) {
+                    e.preventDefault();
+                    first.focus();
+                }
+            }
+        }
+        return;
+    }
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
     
     const key = e.key.toLowerCase();
@@ -613,6 +653,7 @@ function handleFileInput(e) {
 }
 
 async function handleFileDrop(files) {
+    let imported = 0;
     for (const file of files) {
         const type = getMediaType(file);
         if (!type) continue;
@@ -630,17 +671,28 @@ async function handleFileDrop(files) {
         
         // Get duration and generate thumbnail/waveform
         if (type === 'video' || type === 'audio') {
-            await loadMediaMetadata(media);
+            try {
+                await withTimeout(
+                    loadMediaMetadata(media),
+                    MEDIA_METADATA_TIMEOUT_MS,
+                    `Metadata import for ${file.name}`,
+                );
+            } catch (error) {
+                URL.revokeObjectURL(media.url);
+                toast('error', `Could not import ${file.name}: ${error.message}`);
+                continue;
+            }
         } else if (type === 'image') {
             media.duration = 5; // Default 5 seconds for images
             media.thumbnail = media.url;
         }
         
         mediaItems.push(media);
+        imported += 1;
     }
     
     renderMediaList();
-    toast('success', `Imported ${files.length} file(s)`);
+    if (imported > 0) toast('success', `Imported ${imported} file(s)`);
 }
 
 function getMediaType(file) {
@@ -657,7 +709,7 @@ function getMediaType(file) {
 }
 
 async function loadMediaMetadata(media) {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
         const element = media.type === 'video' ? document.createElement('video') : document.createElement('audio');
         element.src = media.url;
         element.preload = 'metadata';
@@ -692,7 +744,7 @@ async function loadMediaMetadata(media) {
         
         element.onerror = () => {
             console.error('Failed to load media:', media.name);
-            resolve();
+            reject(new Error('the browser could not decode its metadata'));
         };
     });
 }
@@ -2452,14 +2504,75 @@ function releaseMediaUrls() {
     });
 }
 
-function applyProjectSnapshot(raw, sourceLabel = 'project') {
+function confirmProjectReplacement(sourceLabel) {
+    if (!projectDirty || (mediaItems.length === 0 && clips.length === 0)) {
+        return true;
+    }
+    return window.confirm(
+        `Replace the current unsaved project with ${sourceLabel}? `
+        + 'Unsaved timeline changes will be discarded.',
+    );
+}
+
+async function prepareProjectTransition(sourceLabel) {
+    if (!confirmProjectReplacement(sourceLabel)) return false;
+    if (browserFfmpegJob) {
+        toast('info', `Cancelling ${browserFfmpegJob.label.toLowerCase()} before switching projects`);
+        await cancelBrowserFfmpegJob();
+    }
+    clearTimeout(recoverySaveTimer);
+    recoverySaveTimer = null;
+    return true;
+}
+
+function resetProjectRuntimeState() {
+    if (playbackInterval) {
+        clearInterval(playbackInterval);
+        playbackInterval = null;
+    }
+    isPlaying = false;
+    currentTime = 0;
+    duration = 0;
+    timelineOffset = 0;
+    draggingClip = null;
+    draggingHandle = null;
+    isDraggingPlayhead = false;
+    selectedClips = [];
+    clipboard = null;
+    undoStack.length = 0;
+    redoStack.length = 0;
+    currentTool = 'select';
+    exportCancelRequested = false;
+    if (previewVideo) {
+        previewVideo.pause();
+        previewVideo.removeAttribute('src');
+        previewVideo.load();
+        previewVideo.style.display = 'none';
+    }
+    document.getElementById('previewPlaceholder').style.display = 'flex';
+    previewCtx?.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+    document.getElementById('playBtn').textContent = '▶';
+    document.getElementById('currentTime').textContent = '00:00:00:00';
+    document.getElementById('contextMenu').style.display = 'none';
+    const exportModal = document.getElementById('exportModal');
+    exportModal.classList.add('hidden');
+    exportModal.setAttribute('aria-hidden', 'true');
+    setTool('select');
+}
+
+async function applyProjectSnapshot(
+    raw,
+    sourceLabel = 'project',
+    { recovered = false } = {},
+) {
     const project = normalizeProject(raw);
+    if (!await prepareProjectTransition(sourceLabel)) return null;
     projectLoading = true;
     releaseMediaUrls();
+    resetProjectRuntimeState();
     mediaItems = project.media;
     clips = project.clips;
     transitions = project.transitions;
-    selectedClips = [];
     pixelsPerSecond = project.timeline.pixelsPerSecond;
     Object.keys(trackStates).forEach(track => {
         const incoming = project.timeline.trackStates?.[track] || {};
@@ -2468,13 +2581,19 @@ function applyProjectSnapshot(raw, sourceLabel = 'project') {
             trackStates[track][key] = key in incoming ? Boolean(incoming[key]) : defaultValue;
         });
     });
+    document.querySelectorAll('[data-track-control]').forEach(button => {
+        const value = trackStates[button.dataset.track]?.[button.dataset.trackControl];
+        button.classList.toggle('active', Boolean(value));
+        button.setAttribute('aria-pressed', String(Boolean(value)));
+    });
     document.querySelector('.project-name').textContent = project.name;
     updateDuration();
     renderMediaList();
     renderTimeline();
     clearClipPropertiesPanel();
     projectLoading = false;
-    scheduleProjectRecovery();
+    setProjectDirty(recovered);
+    scheduleProjectRecovery({ markDirty: false });
     toast('success', `Loaded ${sourceLabel}; relink ${mediaItems.length} local source file(s)`);
     return project;
 }
@@ -2486,7 +2605,7 @@ async function handleProjectFileInput(event) {
     try {
         if (file.size > 5 * 1024 * 1024) throw new Error('Project file exceeds the 5 MB safety limit');
         const raw = JSON.parse(await file.text());
-        applyProjectSnapshot(raw, file.name);
+        await applyProjectSnapshot(raw, file.name);
     } catch (error) {
         toast('error', `Could not open project: ${error.message}`);
     }
@@ -2557,9 +2676,14 @@ async function recoveryStore(mode, value) {
     return new Promise((resolve, reject) => {
         const transaction = db.transaction(PROJECT_STORE_NAME, mode === 'get' ? 'readonly' : 'readwrite');
         const store = transaction.objectStore(PROJECT_STORE_NAME);
-        const request = mode === 'get'
-            ? store.get(PROJECT_RECOVERY_KEY)
-            : store.put(value, PROJECT_RECOVERY_KEY);
+        let request;
+        if (mode === 'get') request = store.get(PROJECT_RECOVERY_KEY);
+        else if (mode === 'put') request = store.put(value, PROJECT_RECOVERY_KEY);
+        else if (mode === 'delete') request = store.delete(PROJECT_RECOVERY_KEY);
+        else {
+            reject(new Error(`Unsupported recovery storage operation: ${mode}`));
+            return;
+        }
         request.onsuccess = () => resolve(request.result);
         request.onerror = () => reject(request.error || new Error('Recovery storage operation failed'));
     });
@@ -2584,16 +2708,25 @@ async function browserProxyStore(mode, key = null, value = null) {
     });
 }
 
-function scheduleProjectRecovery() {
+function scheduleProjectRecovery({ markDirty = true } = {}) {
     if (projectLoading || (mediaItems.length === 0 && clips.length === 0)) return;
+    if (markDirty) setProjectDirty(true);
     clearTimeout(recoverySaveTimer);
     recoverySaveTimer = setTimeout(async () => {
         try {
             const snapshot = serializeProject();
             await recoveryStore('put', snapshot);
             recoverySnapshot = snapshot;
+            recoveryWarningShown = false;
         } catch (error) {
             console.warn('Project recovery save failed:', error);
+            if (!recoveryWarningShown) {
+                recoveryWarningShown = true;
+                toast(
+                    'warning',
+                    'Browser storage could not save recovery data; export the project file now.',
+                );
+            }
         }
     }, 400);
 }
@@ -2611,13 +2744,28 @@ async function initProjectRecovery() {
     }
 }
 
-function recoverLastProject() {
+async function recoverLastProject() {
     if (!recoverySnapshot) {
         toast('error', 'No recoverable project is available');
         return;
     }
-    applyProjectSnapshot(recoverySnapshot, 'browser recovery');
-    document.getElementById('recoveryBar').hidden = true;
+    const project = await applyProjectSnapshot(
+        recoverySnapshot,
+        'browser recovery',
+        { recovered: true },
+    );
+    if (project) document.getElementById('recoveryBar').hidden = true;
+}
+
+async function discardRecoveryProject() {
+    try {
+        await recoveryStore('delete');
+        recoverySnapshot = null;
+        document.getElementById('recoveryBar').hidden = true;
+        toast('info', 'Recovery snapshot discarded');
+    } catch (error) {
+        toast('error', `Could not discard recovery snapshot: ${error.message}`);
+    }
 }
 
 function saveProject() {
@@ -2630,7 +2778,8 @@ function saveProject() {
     a.download = `${sanitizeDownloadName(project.name)}.clipforge`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
-    scheduleProjectRecovery();
+    setProjectDirty(false);
+    scheduleProjectRecovery({ markDirty: false });
     toast('success', 'Project saved');
 }
 
@@ -2733,7 +2882,8 @@ Object.assign(window, {
     setTool, setZoom, splitClip, deleteSelected, copyClip, cutClip, pasteClip,
     selectAllClips, addTransition, selectTransitionType, unlinkAudio,
     setVolume, toggleMute, showExportModal, hideExportModal, exportVideo,
-    cancelExport, saveProject, recoverLastProject, showEditMenu,
+    cancelExport, saveProject, recoverLastProject, discardRecoveryProject,
+    applyProjectSnapshot, showEditMenu,
     generateBrowserProxy, updateClipProperty, applyQuickEffect,
     cancelBrowserFfmpegJob,
     getBrowserFfmpegJobState: () => ({

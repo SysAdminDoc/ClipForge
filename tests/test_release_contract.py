@@ -36,7 +36,12 @@ def test_manifest_and_runtime_lock_agree():
 def test_all_dependency_environments_are_complete_hash_locks():
     expected = {
         "requirements.lock": ("pyqt6==",),
-        "requirements-dev.lock": ("pyqt6==", "pytest==", "pyinstaller=="),
+        "requirements-dev.lock": (
+            "pyqt6==",
+            "pytest==",
+            "pyinstaller==",
+            "playwright==",
+        ),
         "requirements-mpv.lock": ("pyqt6==", "mpv=="),
     }
     for filename, packages in expected.items():
