@@ -104,10 +104,11 @@ def sync(version: str) -> None:
         '"""Single source of truth for ClipForge\'s application version."""\n\n'
         f'APP_VERSION = "{version}"\n',
         encoding="utf-8",
+        newline="\n",
     )
     WINDOWS_VERSION_FILE.parent.mkdir(parents=True, exist_ok=True)
     for path, content in expected_surfaces(version).items():
-        path.write_text(content, encoding="utf-8")
+        path.write_text(content, encoding="utf-8", newline="\n")
 
 
 def check(version: str) -> list[str]:

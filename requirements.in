@@ -1,0 +1,2 @@
+# Direct runtime dependencies. Regenerate with scripts/lock_requirements.py.
+PyQt6>=6.7,<7

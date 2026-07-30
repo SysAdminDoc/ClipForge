@@ -7,7 +7,7 @@ name = "clipforge-video"
 dynamic = ["version"]
 description = "Local-first PyQt6 video editor powered by FFmpeg"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "SysAdminDoc" }]
 dependencies = [

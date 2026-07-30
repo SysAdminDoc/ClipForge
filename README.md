@@ -1,11 +1,11 @@
-# ClipForge v0.5.1
+# ClipForge v0.5.2
 
 All-in-one video editor — Trim, Crop, Upscale, Interpolate, Convert, Filter, Audio, Streams, Batch — one tool, zero hassle.
 
-![Python](https://img.shields.io/badge/Python-3.10+-blue?logo=python)
+![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python)
 ![License](https://img.shields.io/badge/License-MIT-green)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)
-![Version](https://img.shields.io/badge/Version-0.5.1-orange)
+![Version](https://img.shields.io/badge/Version-0.5.2-orange)
 
 **Web Editor:** [sysadmindoc.github.io/ClipForge](https://sysadmindoc.github.io/ClipForge/) — browser-based timeline editor with a pinned, self-hosted FFmpeg WASM runtime, undo/redo, and multi-clip export.
 
@@ -124,7 +124,7 @@ All-in-one video editor — Trim, Crop, Upscale, Interpolate, Convert, Filter, A
 - **Process tree cleanup** — cancelling kills child processes
 - **Owned temp directory cleanup** on exit without touching another running instance
 - **Atomic output safety** — validates staged media before replacing the chosen destination
-- 93-test suite covering utilities, process safety, generated media, probing, proxy/AI caching, supply-chain validation, diagnostics, and accessibility contracts
+- 118-test suite covering utilities, process safety, generated media, probing, proxy/AI caching, supply-chain validation, diagnostics, and accessibility contracts
 
 ### Web Editor
 
@@ -148,7 +148,7 @@ Try it in the browser: **[sysadmindoc.github.io/ClipForge](https://sysadmindoc.g
 
 ## Requirements
 
-- **Python 3.10+**
+- **Python 3.11+**
 - **FFmpeg** (required for all operations)
   ```
   winget install ffmpeg        # Windows
@@ -167,7 +167,7 @@ Try it in the browser: **[sysadmindoc.github.io/ClipForge](https://sysadmindoc.g
 - **Whisper** (optional, for auto-captions)
   - `pip install openai-whisper`
 - **libmpv** (optional, experimental preview backend)
-  - Install the wrapper with `python -m pip install ".[mpv]"`, then install libmpv separately
+  - Install the wrapper with `python -m pip install --require-hashes -r requirements-mpv.lock`, then install libmpv separately
   - On Windows, place `mpv-2.dll`/`libmpv-2.dll` beside ClipForge or set `CLIPFORGE_LIBMPV_DIR`
   - This adds a separate LGPL/GPL runtime and distribution footprint; Qt Multimedia remains the default
 
@@ -177,7 +177,7 @@ Try it in the browser: **[sysadmindoc.github.io/ClipForge](https://sysadmindoc.g
 git clone https://github.com/SysAdminDoc/ClipForge.git
 cd ClipForge
 python -m venv .venv
-.\.venv\Scripts\python -m pip install -r requirements.lock
+.\.venv\Scripts\python -m pip install --require-hashes -r requirements.lock
 .\.venv\Scripts\python clipforge.py
 ```
 
@@ -188,7 +188,7 @@ explicitly before launch.
 ## Build and Verify
 
 ```powershell
-python -m pip install -r requirements-dev.lock
+python -m pip install --require-hashes -r requirements-dev.lock
 python scripts/sync_version.py --check
 python scripts/release_check.py
 python scripts/release_check.py --build
@@ -199,7 +199,9 @@ version source of truth; use `python scripts/sync_version.py --set X.Y.Z` to
 update desktop, web, README, and Windows executable metadata together.
 The release check generates disposable FFmpeg fixtures for audio/video,
 subtitles, chapters, rotation, VFR, odd filenames, and core edit operations;
-`--build` also creates and launch-smokes the unsigned PyInstaller executable.
+`--build` creates a fresh hash-locked environment, builds the unsigned
+PyInstaller executable, opens fixture media in it, runs a tiny packaged
+transcode, and launch-smokes the GUI.
 
 ## Usage
 

@@ -6,10 +6,12 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import time
+import venv
 from pathlib import Path
 
 
@@ -185,11 +187,46 @@ def run_gui_smoke():
     run([sys.executable, "-c", code], timeout=30, env=env)
 
 
+def remove_tree_with_retries(path, *, attempts=20):
+    path = Path(path)
+    for attempt in range(attempts):
+        try:
+            shutil.rmtree(path)
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(0.5)
+
+
 def run_build_smoke():
-    with tempfile.TemporaryDirectory(prefix="clipforge-release-build-") as temp:
-        temp_path = Path(temp)
+    temp_path = Path(tempfile.mkdtemp(prefix="clipforge-release-build-"))
+    try:
+        fixture_dir = temp_path / "fixtures"
+        fixture_dir.mkdir()
+        fixtures = build_media_fixtures(fixture_dir)
+        environment = temp_path / "venv"
+        venv.EnvBuilder(with_pip=True, clear=True).create(environment)
+        environment_python = environment / (
+            "Scripts/python.exe" if sys.platform == "win32" else "bin/python"
+        )
+        run(
+            [
+                environment_python,
+                "-m",
+                "pip",
+                "install",
+                "--disable-pip-version-check",
+                "--require-hashes",
+                "-r",
+                ROOT / "requirements-dev.lock",
+            ],
+            timeout=300,
+        )
         run([
-            "pyinstaller", "--noconfirm", "--clean",
+            environment_python, "-m", "PyInstaller", "--noconfirm", "--clean",
             "--distpath", temp_path / "dist",
             "--workpath", temp_path / "build",
             ROOT / "ClipForge.spec",
@@ -199,7 +236,21 @@ def run_build_smoke():
         )
         if not executable.is_file():
             raise RuntimeError("PyInstaller artifact was not created")
-        process = subprocess.Popen([str(executable)], cwd=ROOT)
+        packaged_output = temp_path / "packaged-smoke.mp4"
+        run(
+            [
+                executable,
+                "--release-smoke",
+                fixtures["audio_video"],
+                packaged_output,
+            ],
+            timeout=45,
+        )
+        require_valid(packaged_output)
+        process = subprocess.Popen(
+            [str(executable), str(fixtures["audio_video"])],
+            cwd=ROOT,
+        )
         try:
             time.sleep(4)
             if process.poll() is not None:
@@ -208,6 +259,9 @@ def run_build_smoke():
                 )
         finally:
             terminate_process_tree(process)
+            time.sleep(0.5)
+    finally:
+        remove_tree_with_retries(temp_path)
 
 
 def main():
@@ -216,6 +270,8 @@ def main():
     parser.add_argument("--media-only", action="store_true")
     args = parser.parse_args()
 
+    if sys.version_info < (3, 11):
+        raise RuntimeError("ClipForge release checks require Python 3.11 or newer")
     run_media_gate()
     if not args.media_only:
         run([sys.executable, "scripts/sync_version.py", "--check"])

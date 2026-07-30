@@ -25,12 +25,41 @@ def test_browser_runtime_inventory_and_policy_are_synchronized():
 
 def test_manifest_and_runtime_lock_agree():
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    assert project["project"]["requires-python"] == ">=3.10"
+    assert project["project"]["requires-python"] == ">=3.11"
     assert project["project"]["dependencies"] == ["PyQt6>=6.7,<7"]
-    lock = (ROOT / "requirements.lock").read_text(encoding="utf-8")
-    assert "PyQt6==" in lock
-    assert "PyQt6-Qt6==" in lock
-    assert "PyQt6-sip==" in lock
+    lock = (ROOT / "requirements.lock").read_text(encoding="utf-8").lower()
+    assert "pyqt6==" in lock
+    assert "pyqt6-qt6==" in lock
+    assert "pyqt6-sip==" in lock
+
+
+def test_all_dependency_environments_are_complete_hash_locks():
+    expected = {
+        "requirements.lock": ("pyqt6==",),
+        "requirements-dev.lock": ("pyqt6==", "pytest==", "pyinstaller=="),
+        "requirements-mpv.lock": ("pyqt6==", "mpv=="),
+    }
+    for filename, packages in expected.items():
+        lock = (ROOT / filename).read_text(encoding="utf-8").lower()
+        requirement_lines = [
+            line.strip()
+            for line in lock.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        assert not any(line.startswith(("-r ", "--requirement ")) for line in requirement_lines)
+        assert "--hash=sha256:" in lock
+        for package in packages:
+            assert package in lock
+
+
+def test_release_build_uses_isolated_python_and_packaged_media_smoke():
+    release_check = (ROOT / "scripts" / "release_check.py").read_text(
+        encoding="utf-8"
+    )
+    assert "venv.EnvBuilder" in release_check
+    assert '"--require-hashes"' in release_check
+    assert 'environment_python, "-m", "PyInstaller"' in release_check
+    assert '"--release-smoke"' in release_check
 
 
 def test_launchers_never_install_dependencies():

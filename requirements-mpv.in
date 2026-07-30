@@ -1,0 +1,3 @@
+# Optional libmpv preview wrapper plus the standard runtime.
+-r requirements.in
+mpv==1.0.8
