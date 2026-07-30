@@ -10,6 +10,7 @@ import sys
 import tempfile
 import threading
 import urllib.request
+import uuid
 import zipfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -125,8 +126,11 @@ class AIToolManager:
         return self.installs / tool_id / spec.version
 
     def managed_path(self, tool_id):
+        return self.verified_install_path(tool_id, self.install_dir(tool_id))
+
+    def verified_install_path(self, tool_id, install_dir):
         spec = self.spec(tool_id)
-        install_dir = self.install_dir(tool_id)
+        install_dir = Path(install_dir)
         manifest_path = install_dir / "install.json"
         if not manifest_path.is_file():
             return None
@@ -230,6 +234,48 @@ class AIToolInstallWorker(QThread):
                 archive.extract(entry, destination)
                 progress(80 + int(index / max(len(entries), 1) * 15))
 
+    def _activate_staged_install(self, staging, final_dir):
+        """Atomically activate a verified install and restore its predecessor on failure."""
+        staging = Path(staging)
+        final_dir = Path(final_dir)
+        if not self.manager.verified_install_path(self.tool_id, staging):
+            raise ValueError("Staged tool failed pre-activation verification")
+
+        backup = None
+        activated = False
+        if final_dir.exists():
+            backup = final_dir.parent / (
+                f".{final_dir.name}.backup-{uuid.uuid4().hex}"
+            )
+        try:
+            if backup:
+                os.replace(final_dir, backup)
+            os.replace(staging, final_dir)
+            activated = True
+            if not self.manager.managed_path(self.tool_id):
+                raise ValueError("Installed tool failed post-install verification")
+        except Exception as activation_error:
+            rollback_error = None
+            try:
+                if activated and final_dir.exists():
+                    _safe_remove_tree(final_dir, self.manager.root)
+                    if final_dir.exists():
+                        raise OSError("Could not remove failed replacement")
+                if backup and backup.exists():
+                    os.replace(backup, final_dir)
+            except Exception as error:
+                rollback_error = error
+            if rollback_error:
+                raise RuntimeError(
+                    f"{activation_error}; rollback failed: {rollback_error}"
+                ) from activation_error
+            raise
+
+        if backup and backup.exists():
+            _safe_remove_tree(backup, self.manager.root)
+        for stale_backup in final_dir.parent.glob(f".{final_dir.name}.backup-*"):
+            _safe_remove_tree(stale_backup, self.manager.root)
+
     def run(self):
         staging = None
         try:
@@ -272,15 +318,12 @@ class AIToolInstallWorker(QThread):
                 encoding="utf-8",
             )
             final_dir = self.manager.install_dir(spec.tool_id)
-            if final_dir.exists():
-                _safe_remove_tree(final_dir, self.manager.root)
             final_dir.parent.mkdir(parents=True, exist_ok=True)
-            os.replace(staging, final_dir)
+            self.status.emit("Activating verified package with rollback protection…")
+            self._activate_staged_install(staging, final_dir)
             staging = None
             archive_path.unlink(missing_ok=True)
             managed_path = self.manager.managed_path(spec.tool_id)
-            if not managed_path:
-                raise ValueError("Installed tool failed post-install verification")
             self.progress.emit(100)
             self.finished_signal.emit(
                 True,

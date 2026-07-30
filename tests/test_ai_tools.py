@@ -15,6 +15,26 @@ from clipforge.ai_tools import (
 )
 
 
+def _write_verified_install(manager, tool_id, directory, payload):
+    spec = manager.spec(tool_id)
+    executable = Path(directory) / "package" / spec.executable
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(payload)
+    (Path(directory) / "install.json").write_text(
+        json.dumps(
+            {
+                "tool_id": spec.tool_id,
+                "version": spec.version,
+                "archive_sha256": spec.sha256,
+                "executable": executable.relative_to(directory).as_posix(),
+                "executable_sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    return executable
+
+
 def test_ai_manifest_has_pinned_supply_chain_metadata():
     assert set(AI_TOOL_SPECS) == {"realesrgan", "span", "rife"}
     for spec in AI_TOOL_SPECS.values():
@@ -106,6 +126,49 @@ def test_ai_download_resumes_partial_archive(tmp_path, monkeypatch):
 
     assert archive.read_bytes() == payload
     assert requests[0][0].headers["Range"] == "bytes=8-"
+
+
+def test_ai_activation_replaces_verified_install_and_cleans_backups(tmp_path):
+    manager = AIToolManager(tmp_path / "tools")
+    worker = AIToolInstallWorker(manager, "span")
+    final_dir = manager.install_dir("span")
+    _write_verified_install(manager, "span", final_dir, b"old executable")
+    stale = final_dir.parent / f".{final_dir.name}.backup-stale"
+    _write_verified_install(manager, "span", stale, b"stale executable")
+    staging = final_dir.parent / ".install-new"
+    _write_verified_install(
+        manager,
+        "span",
+        staging,
+        b"new executable",
+    )
+
+    worker._activate_staged_install(staging, final_dir)
+
+    assert manager.managed_path("span").read_bytes() == b"new executable"
+    assert not staging.exists()
+    assert not list(final_dir.parent.glob(f".{final_dir.name}.backup-*"))
+
+
+def test_ai_activation_restores_previous_install_on_postcheck_failure(
+    tmp_path,
+    monkeypatch,
+):
+    manager = AIToolManager(tmp_path / "tools")
+    worker = AIToolInstallWorker(manager, "rife")
+    final_dir = manager.install_dir("rife")
+    _write_verified_install(manager, "rife", final_dir, b"known-good executable")
+    staging = final_dir.parent / ".install-new"
+    _write_verified_install(manager, "rife", staging, b"replacement executable")
+    original_managed_path = manager.managed_path
+    monkeypatch.setattr(manager, "managed_path", lambda _tool_id: None)
+
+    with pytest.raises(ValueError, match="post-install verification"):
+        worker._activate_staged_install(staging, final_dir)
+
+    monkeypatch.setattr(manager, "managed_path", original_managed_path)
+    assert manager.managed_path("rife").read_bytes() == b"known-good executable"
+    assert not list(final_dir.parent.glob(f".{final_dir.name}.backup-*"))
 
 
 def test_ai_frame_cache_is_atomic_reusable_and_source_keyed(tmp_path):
