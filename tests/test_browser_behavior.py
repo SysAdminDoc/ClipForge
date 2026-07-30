@@ -314,11 +314,24 @@ def test_every_track_is_reachable_at_900_by_700(browser_page):
         () => {
             const music = document.querySelector('#musicTrack');
             const controls = document.querySelector('.timeline-toolbar');
+            const trackControls = [...document.querySelectorAll('[data-track-control]')]
+                .map(control => {
+                    const bounds = control.getBoundingClientRect();
+                    return {
+                        label: control.getAttribute('aria-label'),
+                        visible: Boolean(control.offsetWidth || control.offsetHeight),
+                        left: bounds.left,
+                        right: bounds.right,
+                        top: bounds.top,
+                        bottom: bounds.bottom,
+                    };
+                });
             return {
                 viewport: [innerWidth, innerHeight],
                 documentWidth: document.documentElement.scrollWidth,
                 musicBottom: music.getBoundingClientRect().bottom,
                 controlsBottom: controls.getBoundingClientRect().bottom,
+                trackControls,
             };
         }
         """
@@ -327,6 +340,69 @@ def test_every_track_is_reachable_at_900_by_700(browser_page):
     assert layout["documentWidth"] <= 900
     assert layout["musicBottom"] <= 700
     assert layout["controlsBottom"] <= 700
+    assert len(layout["trackControls"]) == 6
+    assert all(
+        control["visible"]
+        and control["label"]
+        and 0 <= control["left"] < control["right"] <= 900
+        and 0 <= control["top"] < control["bottom"] <= 700
+        for control in layout["trackControls"]
+    )
+
+
+def test_media_clips_and_context_actions_are_keyboard_operable(browser_page):
+    browser_page.locator("#fileInput").set_input_files(
+        {"name": "keyboard.png", "mimeType": "image/png", "buffer": PNG_BYTES}
+    )
+    media = browser_page.locator(".media-item").first
+    media.wait_for()
+    assert media.get_attribute("role") == "button"
+    assert media.get_attribute("aria-label").startswith(
+        "Add keyboard.png (image,"
+    )
+    media.focus()
+    media.press("Enter")
+
+    clip = browser_page.locator(".clip").first
+    clip.wait_for()
+    assert clip.get_attribute("role") == "button"
+    assert "video track" in clip.get_attribute("aria-label")
+    clip.focus()
+    clip.press(" ")
+    assert browser_page.locator(".clip").first.get_attribute("aria-pressed") == "true"
+
+    clip = browser_page.locator(".clip").first
+    clip.focus()
+    clip.press("Shift+F10")
+    menu = browser_page.locator("#contextMenu")
+    assert menu.get_attribute("aria-hidden") == "false"
+    assert browser_page.evaluate(
+        "document.activeElement?.dataset.action"
+    ) == "cut-clip"
+
+    browser_page.keyboard.press("ArrowDown")
+    assert browser_page.evaluate(
+        "document.activeElement?.dataset.action"
+    ) == "copy-clip"
+    browser_page.keyboard.press("End")
+    assert browser_page.evaluate(
+        "document.activeElement?.dataset.action"
+    ) == "unlink-audio"
+    browser_page.keyboard.press("Home")
+    assert browser_page.evaluate(
+        "document.activeElement?.dataset.action"
+    ) == "cut-clip"
+    browser_page.keyboard.press("Escape")
+    assert menu.get_attribute("aria-hidden") == "true"
+    assert browser_page.evaluate(
+        "document.activeElement?.classList.contains('clip')"
+    )
+
+    browser_page.locator(".clip").first.press("Shift+F10")
+    browser_page.keyboard.press("ArrowDown")
+    browser_page.keyboard.press("Enter")
+    assert menu.get_attribute("aria-hidden") == "true"
+    browser_page.get_by_text("Copied to clipboard").wait_for()
 
 
 @pytest.mark.skipif(not FFMPEG, reason="FFmpeg is required for browser job media")

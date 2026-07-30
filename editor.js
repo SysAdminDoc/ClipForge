@@ -45,6 +45,7 @@ let timelineOffset = 0;
 let draggingClip = null;
 let draggingHandle = null;
 let isDraggingPlayhead = false;
+let contextMenuReturnFocus = null;
 
 // Undo/redo history
 const undoStack = [];
@@ -534,7 +535,15 @@ function setupEventListeners() {
     
     // Context menu
     document.addEventListener('contextmenu', onContextMenu);
-    document.addEventListener('click', () => document.getElementById('contextMenu').classList.remove('visible'));
+    document.addEventListener('click', event => {
+        closeContextMenu({
+            restoreFocus: Boolean(event.target.closest?.('#contextMenu')),
+        });
+    });
+    document.getElementById('contextMenu').addEventListener(
+        'keydown',
+        handleContextMenuKeyboard,
+    );
     
     // Keyboard shortcuts
     document.addEventListener('keydown', handleKeyboard);
@@ -806,6 +815,22 @@ function renderMediaList() {
         item.draggable = !media.missing;
         if (!media.missing) {
             item.addEventListener('dblclick', () => addToTimeline(media.id));
+            item.setAttribute('role', 'button');
+            item.tabIndex = 0;
+            item.setAttribute(
+                'aria-label',
+                `Add ${media.name} (${media.type}, ${formatTimecode(media.duration)}) to timeline`,
+            );
+            item.addEventListener('keydown', event => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    addToTimeline(media.id);
+                }
+            });
+        } else {
+            item.setAttribute('role', 'group');
+            item.setAttribute('aria-label', `${media.name}, missing source; relink required`);
         }
 
         const thumb = document.createElement('div');
@@ -1168,6 +1193,26 @@ function renderTimeline() {
         clipEl.dataset.id = clip.id;
         clipEl.style.left = left + 'px';
         clipEl.style.width = width + 'px';
+        clipEl.setAttribute('role', 'button');
+        clipEl.tabIndex = 0;
+        clipEl.setAttribute('aria-pressed', String(selectedClips.includes(clip)));
+        clipEl.setAttribute(
+            'aria-label',
+            `${clip.name}, ${clip.track} track, starts ${formatTimecode(clip.startTime)}, `
+            + `duration ${formatTimecode(clip.duration)}`,
+        );
+        clipEl.addEventListener('keydown', event => {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                event.stopPropagation();
+                selectClipFromKeyboard(clip, event.shiftKey);
+            } else if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+                event.preventDefault();
+                event.stopPropagation();
+                const rect = clipEl.getBoundingClientRect();
+                openContextMenu(clipEl, rect.left + 12, rect.top + 12);
+            }
+        });
         
         if (clip.track === 'video') {
             clipEl.style.background = `var(--track-video)`;
@@ -1227,6 +1272,20 @@ function renderTimeline() {
         transEl.style.width = Math.max(width, 20) + 'px';
         transEl.innerHTML = '🔀';
         transEl.title = trans.type;
+        transEl.setAttribute('role', 'button');
+        transEl.tabIndex = 0;
+        transEl.setAttribute(
+            'aria-label',
+            `${trans.type} transition at ${formatTimecode(trans.time)}, `
+            + `duration ${formatTimecode(trans.duration)}`,
+        );
+        transEl.addEventListener('keydown', event => {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                event.stopPropagation();
+                toast('info', `Selected ${trans.type} transition`);
+            }
+        });
         
         track.appendChild(transEl);
     });
@@ -1527,11 +1586,104 @@ function onContextMenu(e) {
     const clipEl = e.target.closest('.clip');
     if (clipEl || selectedClips.length > 0) {
         e.preventDefault();
-        const menu = document.getElementById('contextMenu');
-        menu.style.left = e.clientX + 'px';
-        menu.style.top = e.clientY + 'px';
-        menu.classList.add('visible');
+        let returnFocus = clipEl || document.activeElement;
+        if (clipEl) {
+            const clip = clips.find(item => item.id == clipEl.dataset.id);
+            if (clip && !selectedClips.includes(clip)) {
+                updateClipSelection(clip, false);
+                renderTimeline();
+                returnFocus = findRenderedClip(clip.id);
+            }
+        }
+        openContextMenu(returnFocus, e.clientX, e.clientY);
     }
+}
+
+function findRenderedClip(clipId) {
+    return [...document.querySelectorAll('.clip')].find(
+        element => element.dataset.id == clipId
+    ) || null;
+}
+
+function updateClipSelection(clip, additive) {
+    if (!additive) selectedClips = [];
+    if (!selectedClips.includes(clip)) selectedClips.push(clip);
+    if (clip.linkedTo) {
+        const linked = clips.find(item => item.id === clip.linkedTo);
+        if (linked && !selectedClips.includes(linked)) selectedClips.push(linked);
+    }
+    updateClipPropertiesPanel(clip);
+}
+
+function selectClipFromKeyboard(clip, additive = false) {
+    updateClipSelection(clip, additive);
+    renderTimeline();
+    requestAnimationFrame(() => findRenderedClip(clip.id)?.focus());
+}
+
+function openContextMenu(returnFocus, clientX, clientY) {
+    const menu = document.getElementById('contextMenu');
+    closeContextMenu({ restoreFocus: false });
+    contextMenuReturnFocus = returnFocus?.isConnected ? returnFocus : null;
+    menu.classList.add('visible');
+    menu.setAttribute('aria-hidden', 'false');
+
+    const bounds = menu.getBoundingClientRect();
+    menu.style.left = `${Math.max(4, Math.min(clientX, innerWidth - bounds.width - 4))}px`;
+    menu.style.top = `${Math.max(4, Math.min(clientY, innerHeight - bounds.height - 4))}px`;
+
+    const items = [...menu.querySelectorAll('[role="menuitem"]:not(.disabled)')];
+    items.forEach(item => { item.tabIndex = -1; });
+    if (items[0]) {
+        items[0].tabIndex = 0;
+        items[0].focus();
+    }
+}
+
+function closeContextMenu({ restoreFocus = true } = {}) {
+    const menu = document.getElementById('contextMenu');
+    if (!menu.classList.contains('visible')) return;
+    menu.classList.remove('visible');
+    menu.setAttribute('aria-hidden', 'true');
+    const returnFocus = contextMenuReturnFocus;
+    contextMenuReturnFocus = null;
+    if (restoreFocus && returnFocus?.isConnected) returnFocus.focus();
+}
+
+function handleContextMenuKeyboard(event) {
+    const menu = document.getElementById('contextMenu');
+    const items = [...menu.querySelectorAll('[role="menuitem"]:not(.disabled)')];
+    if (!items.length) return;
+    const activeIndex = Math.max(0, items.indexOf(document.activeElement));
+    let nextIndex = activeIndex;
+
+    if (event.key === 'ArrowDown' || (event.key === 'Tab' && !event.shiftKey)) {
+        nextIndex = (activeIndex + 1) % items.length;
+    } else if (event.key === 'ArrowUp' || (event.key === 'Tab' && event.shiftKey)) {
+        nextIndex = (activeIndex - 1 + items.length) % items.length;
+    } else if (event.key === 'Home') {
+        nextIndex = 0;
+    } else if (event.key === 'End') {
+        nextIndex = items.length - 1;
+    } else if (event.key === 'Escape') {
+        event.preventDefault();
+        event.stopPropagation();
+        closeContextMenu();
+        return;
+    } else if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        event.stopPropagation();
+        document.activeElement.click();
+        return;
+    } else {
+        return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+    items.forEach(item => { item.tabIndex = -1; });
+    items[nextIndex].tabIndex = 0;
+    items[nextIndex].focus();
 }
 
 // ==================== MEDIA DRAG & DROP ====================

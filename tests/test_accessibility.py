@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import shutil
 import subprocess
 from html.parser import HTMLParser
@@ -20,6 +21,32 @@ from clipforge.widgets import RangeSlider, Toast
 
 
 _QT_APP = QApplication.instance() or QApplication([])
+
+
+def _relative_luminance(hex_color):
+    channels = [
+        int(hex_color[index : index + 2], 16) / 255
+        for index in (0, 2, 4)
+    ]
+    channels = [
+        channel / 12.92
+        if channel <= 0.04045
+        else ((channel + 0.055) / 1.055) ** 2.4
+        for channel in channels
+    ]
+    return (
+        0.2126 * channels[0]
+        + 0.7152 * channels[1]
+        + 0.0722 * channels[2]
+    )
+
+
+def _contrast_ratio(first, second):
+    light, dark = sorted(
+        (_relative_luminance(first), _relative_luminance(second)),
+        reverse=True,
+    )
+    return (light + 0.05) / (dark + 0.05)
 
 
 class _ElementParser(HTMLParser):
@@ -118,6 +145,22 @@ def test_browser_tabs_labels_live_regions_and_900px_contract():
     assert "Local FFmpeg module load" in script
     assert "import('./vendor/ffmpeg/ffmpeg/index.js')" in script
     assert "setAttribute('aria-valuenow'" in script
+
+
+def test_browser_normal_text_tokens_meet_wcag_aa_contrast():
+    root = Path(__file__).resolve().parents[1]
+    html = (root / "index.html").read_text(encoding="utf-8")
+    tokens = dict(re.findall(r"--([\w-]+):\s*#([0-9a-fA-F]{6})", html))
+    backgrounds = [tokens[f"bg-{index}"] for index in range(6)]
+
+    for text_token in ("text-0", "text-1", "text-2", "text-3"):
+        assert min(
+            _contrast_ratio(tokens[text_token], background)
+            for background in backgrounds
+        ) >= 4.5
+
+    for solid_token in ("accent-solid", "accent-solid-hover"):
+        assert _contrast_ratio("ffffff", tokens[solid_token]) >= 4.5
 
 
 def test_browser_project_and_export_contract_is_explicit():

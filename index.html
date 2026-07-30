@@ -19,10 +19,12 @@
             --bg-5: #34343e;
             --text-0: #f0f0f4;
             --text-1: #b0b0b8;
-            --text-2: #7a7a84;
-            --text-3: #52525c;
+            --text-2: #a4a4ae;
+            --text-3: #9c9ca7;
             --accent: #6366f1;
             --accent-hover: #818cf8;
+            --accent-solid: #595cdb;
+            --accent-solid-hover: #5255c7;
             --accent-dim: rgba(99, 102, 241, 0.12);
             --success: #22c55e;
             --warning: #f59e0b;
@@ -145,8 +147,8 @@
         .btn:hover { background: var(--bg-4); color: var(--text-0); border-color: var(--bg-5); }
         .btn:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
         .btn:active { transform: scale(0.97); }
-        .btn.primary { background: var(--accent); border-color: var(--accent); color: white; }
-        .btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+        .btn.primary { background: var(--accent-solid); border-color: var(--accent-solid); color: white; }
+        .btn.primary:hover { background: var(--accent-solid-hover); border-color: var(--accent-solid-hover); }
         .btn.primary:active { background: #5558e6; }
         .btn:disabled { opacity: 0.4; cursor: not-allowed; pointer-events: none; }
         .btn.btn-sm { padding: 5px 10px; font-size: 11px; }
@@ -224,6 +226,11 @@
             margin-bottom: 4px;
         }
         .media-item:hover { background: var(--bg-2); }
+        .media-item:focus-visible, .clip:focus-visible,
+        .transition:focus-visible, .context-item:focus-visible {
+            outline: 2px solid var(--accent-hover);
+            outline-offset: 2px;
+        }
         .media-item.selected { background: var(--accent-dim); border: 1px solid var(--accent); }
         .media-item.missing { border: 1px solid var(--warning); cursor: default; }
         .media-thumb {
@@ -242,7 +249,7 @@
         .media-info { flex: 1; min-width: 0; }
         .media-name { font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .media-meta { font-size: 10px; color: var(--text-3); margin-top: 2px; }
-        .media-duration { font-size: 10px; color: var(--accent); }
+        .media-duration { font-size: 10px; color: var(--accent-hover); }
         .media-proxy-btn {
             margin-top: 5px;
             padding: 3px 6px;
@@ -355,12 +362,12 @@
         .transport-btn.play {
             width: 44px;
             height: 44px;
-            background: var(--accent);
+            background: var(--accent-solid);
             color: white;
             border-radius: 50%;
             box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
         }
-        .transport-btn.play:hover { background: var(--accent-hover); box-shadow: 0 4px 16px rgba(99, 102, 241, 0.4); }
+        .transport-btn.play:hover { background: var(--accent-solid-hover); box-shadow: 0 4px 16px rgba(99, 102, 241, 0.4); }
         .transport-btn.play:active { transform: scale(0.92); }
         
         .timecode {
@@ -555,7 +562,7 @@
         }
         .tool-btn:hover { background: var(--bg-2); color: var(--text-1); }
         .tool-btn:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
-        .tool-btn.active { background: var(--accent); color: white; box-shadow: 0 2px 6px rgba(99, 102, 241, 0.3); }
+        .tool-btn.active { background: var(--accent-solid); color: white; box-shadow: 0 2px 6px rgba(99, 102, 241, 0.3); }
         .tool-btn[title]:hover::after {
             content: attr(title);
             position: absolute;
@@ -681,7 +688,7 @@
             justify-content: center;
         }
         .track-btn:hover { background: var(--bg-4); color: var(--text-1); }
-        .track-btn.active { background: var(--accent); color: white; }
+        .track-btn.active { background: var(--accent-solid); color: white; }
         .track.hidden-track .clip, .track.muted .clip { opacity: 0.25; }
         .track.locked .clip { cursor: not-allowed; }
         
@@ -836,8 +843,12 @@
             gap: 10px;
             border-radius: var(--radius);
             transition: background var(--transition);
+            outline: none;
         }
-        .context-item:hover { background: var(--bg-3); color: var(--text-0); }
+        .context-item:hover, .context-item:focus-visible {
+            background: var(--bg-3);
+            color: var(--text-0);
+        }
         .context-item.disabled { color: var(--text-3); pointer-events: none; }
         .context-divider {
             height: 1px;
@@ -1111,7 +1122,7 @@
                     <button class="panel-tab" id="effectsTab" role="tab" aria-selected="false" aria-controls="effectsTabPanel" tabindex="-1">Effects</button>
                 </div>
                 <div class="tab-panel media-list" id="mediaTabPanel" role="tabpanel" aria-labelledby="mediaTab">
-                    <div id="mediaList">
+                    <div id="mediaList" role="region" aria-label="Project media">
                         <div style="text-align: center; padding: 40px 20px; color: var(--text-3);">
                             <div style="font-size: 32px; margin-bottom: 12px;" aria-hidden="true">📂</div>
                             <div style="font-size: 12px;">No media imported</div>
@@ -1322,16 +1333,16 @@
     </div>
     
     <!-- Context Menu -->
-    <div class="context-menu" id="contextMenu">
-        <div class="context-item" data-action="cut-clip"><span>✂️</span> Cut <span class="context-shortcut">Ctrl+X</span></div>
-        <div class="context-item" data-action="copy-clip"><span>📋</span> Copy <span class="context-shortcut">Ctrl+C</span></div>
-        <div class="context-item" data-action="paste-clip"><span>📄</span> Paste <span class="context-shortcut">Ctrl+V</span></div>
-        <div class="context-divider"></div>
-        <div class="context-item" data-action="split-clip"><span>✂️</span> Split <span class="context-shortcut">S</span></div>
-        <div class="context-item" data-action="delete-selected"><span>🗑️</span> Delete <span class="context-shortcut">Del</span></div>
-        <div class="context-divider"></div>
-        <div class="context-item" data-action="add-transition"><span>🔀</span> Add Transition</div>
-        <div class="context-item" data-action="unlink-audio"><span>🔗</span> Unlink Audio</div>
+    <div class="context-menu" id="contextMenu" role="menu" aria-label="Clip actions" aria-hidden="true">
+        <div class="context-item" role="menuitem" tabindex="-1" data-action="cut-clip"><span aria-hidden="true">✂️</span> Cut <span class="context-shortcut">Ctrl+X</span></div>
+        <div class="context-item" role="menuitem" tabindex="-1" data-action="copy-clip"><span aria-hidden="true">📋</span> Copy <span class="context-shortcut">Ctrl+C</span></div>
+        <div class="context-item" role="menuitem" tabindex="-1" data-action="paste-clip"><span aria-hidden="true">📄</span> Paste <span class="context-shortcut">Ctrl+V</span></div>
+        <div class="context-divider" role="separator"></div>
+        <div class="context-item" role="menuitem" tabindex="-1" data-action="split-clip"><span aria-hidden="true">✂️</span> Split <span class="context-shortcut">S</span></div>
+        <div class="context-item" role="menuitem" tabindex="-1" data-action="delete-selected"><span aria-hidden="true">🗑️</span> Delete <span class="context-shortcut">Del</span></div>
+        <div class="context-divider" role="separator"></div>
+        <div class="context-item" role="menuitem" tabindex="-1" data-action="add-transition"><span aria-hidden="true">🔀</span> Add Transition</div>
+        <div class="context-item" role="menuitem" tabindex="-1" data-action="unlink-audio"><span aria-hidden="true">🔗</span> Unlink Audio</div>
     </div>
     
     <!-- Export Modal -->
