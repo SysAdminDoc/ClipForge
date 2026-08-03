@@ -217,11 +217,20 @@ class ConvertPanel(QWidget):
         layout.addStretch()
 
     def _populate_vcodecs(self):
+        current = self.cmb_vcodec.currentText()
+        self.cmb_vcodec.clear()
         items = ["H.264 (libx264)", "H.265 (libx265)", "VP9", "AV1 (libaom)",
                  "SVT-AV1 (libsvtav1)", "Copy (no re-encode)"]
         for label in HW_ENCODERS:
             items.insert(-1, label)
         self.cmb_vcodec.addItems(items)
+        if current and self.cmb_vcodec.findText(current) >= 0:
+            self.cmb_vcodec.setCurrentText(current)
+
+    def refresh_hw_encoders(self):
+        """Refresh choices after asynchronous capability discovery."""
+        self._populate_vcodecs()
+        self._update_cmd_preview()
 
     def _refresh_presets(self):
         self.cmb_preset_select.blockSignals(True)

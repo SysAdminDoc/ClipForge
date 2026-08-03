@@ -3,6 +3,8 @@ import os
 import re
 import shutil
 import subprocess
+import sys
+import time
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -28,6 +30,7 @@ from clipforge import APP_VERSION
 from clipforge.app import MainWindow, apply_application_theme
 from clipforge.constants import C
 from clipforge.widgets import RangeSlider, Toast
+from clipforge.workers import FFmpegWorker
 
 
 _QT_APP = QApplication.instance() or QApplication([])
@@ -114,6 +117,7 @@ def test_long_toasts_preserve_the_actionable_beginning():
 def test_desktop_panels_fit_1280_by_860_in_both_themes(monkeypatch):
     monkeypatch.setattr("clipforge.app.load_settings", lambda: {})
     monkeypatch.setattr(MainWindow, "_check_deps", lambda self: None)
+    monkeypatch.setattr(MainWindow, "_start_capability_probe", lambda self: None)
     monkeypatch.setattr(MainWindow, "_load_recent", lambda self: None)
     monkeypatch.setattr(MainWindow, "_show_persistence_notices", lambda self: None)
     window = MainWindow()
@@ -209,6 +213,7 @@ def test_desktop_panels_fit_1280_by_860_in_both_themes(monkeypatch):
 def test_desktop_named_controls_expose_accessible_values(monkeypatch):
     monkeypatch.setattr("clipforge.app.load_settings", lambda: {})
     monkeypatch.setattr(MainWindow, "_check_deps", lambda self: None)
+    monkeypatch.setattr(MainWindow, "_start_capability_probe", lambda self: None)
     monkeypatch.setattr(MainWindow, "_load_recent", lambda self: None)
     monkeypatch.setattr(MainWindow, "_show_persistence_notices", lambda self: None)
     window = MainWindow()
@@ -234,6 +239,34 @@ def test_desktop_named_controls_expose_accessible_values(monkeypatch):
     finally:
         window.deleteLater()
         _QT_APP.processEvents()
+
+
+def test_global_cancel_and_shutdown_confirm_worker_termination(monkeypatch):
+    monkeypatch.setattr("clipforge.app.load_settings", lambda: {})
+    monkeypatch.setattr("clipforge.app.save_settings", lambda _settings: True)
+    monkeypatch.setattr(MainWindow, "_check_deps", lambda self: None)
+    monkeypatch.setattr(MainWindow, "_start_capability_probe", lambda self: None)
+    monkeypatch.setattr(MainWindow, "_load_recent", lambda self: None)
+    monkeypatch.setattr(MainWindow, "_show_persistence_notices", lambda self: None)
+    window = MainWindow()
+    worker = FFmpegWorker(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        parse_progress=False,
+        timeout=60,
+    )
+    window.trim_panel._test_long_worker = worker
+    worker.start()
+    assert worker.wait(50) is False
+    window._refresh_worker_status()
+    assert window.btn_cancel_jobs.isEnabled()
+
+    started = time.perf_counter()
+    window.btn_cancel_jobs.click()
+    assert worker.wait(5000)
+    window.close()
+
+    assert time.perf_counter() - started < 6
+    assert not worker.isRunning()
 
 
 def test_browser_tabs_labels_live_regions_and_900px_contract():

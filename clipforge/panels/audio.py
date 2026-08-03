@@ -12,8 +12,8 @@ from PyQt6.QtCore import pyqtSignal
 from clipforge_utils import format_size
 
 from ..constants import C
-from ..tools import FFMPEG, _confirm_overwrite, probe_media, stream_copy_issues
-from ..workers import FFmpegWorker
+from ..tools import FFMPEG, _confirm_overwrite, stream_copy_issues
+from ..workers import FFmpegWorker, MediaProbeWorker
 from ..widgets import FlowLayout
 
 
@@ -26,6 +26,7 @@ class AudioPanel(QWidget):
         self._filepath = None
         self._info = None
         self._worker = None
+        self._audio_probe_worker = None
         self._audio_streams = []
         self._replace_audio_streams = []
         self._setup_ui()
@@ -175,32 +176,45 @@ class AudioPanel(QWidget):
             self, "Select Audio File", "",
             "Audio Files (*.mp3 *.aac *.wav *.flac *.ogg *.m4a *.wma);;All Files (*)")
         if path:
-            result = probe_media(path)
-            streams = [
-                stream
-                for stream in (result.info or {}).get("streams", [])
-                if stream.get("codec_type") == "audio"
-            ]
-            if result.error or not streams:
-                message = result.error.message if result.error else "No audio stream found"
-                self.requestToast.emit(
-                    f"Replacement audio is not usable: {message}", C["red"]
-                )
-                return
-            self._replace_audio_path = path
-            self._replace_audio_streams = streams
-            self.lbl_replace_file.setText(Path(path).name)
-            self.cmb_replace_stream.clear()
-            for stream in streams:
-                self.cmb_replace_stream.addItem(
-                    (
-                        f"#{stream.get('index')} · {stream.get('codec_name')} · "
-                        f"{stream.get('channel_layout') or str(stream.get('channels')) + 'ch'}"
-                    ),
-                    stream.get("index"),
-                )
-            self.cmb_replace_stream.setEnabled(True)
-            self.btn_replace.setEnabled(bool(FFMPEG))
+            if self._audio_probe_worker and self._audio_probe_worker.isRunning():
+                self._audio_probe_worker.cancel()
+            self.lbl_replace_file.setText(f"Inspecting {Path(path).name}…")
+            self.btn_browse_audio.setEnabled(False)
+            worker = MediaProbeWorker(path, self)
+            self._audio_probe_worker = worker
+            worker.finished_signal.connect(self._on_replacement_audio_probed)
+            worker.start()
+
+    def _on_replacement_audio_probed(self, path, result):
+        self._audio_probe_worker = None
+        self.btn_browse_audio.setEnabled(True)
+        streams = [
+            stream
+            for stream in (result.info or {}).get("streams", [])
+            if stream.get("codec_type") == "audio"
+        ]
+        if result.error or not streams:
+            message = result.error.message if result.error else "No audio stream found"
+            self.lbl_replace_file.setText("No replacement audio selected")
+            self.requestToast.emit(
+                f"Replacement audio is not usable: {message}",
+                C["red"],
+            )
+            return
+        self._replace_audio_path = path
+        self._replace_audio_streams = streams
+        self.lbl_replace_file.setText(Path(path).name)
+        self.cmb_replace_stream.clear()
+        for stream in streams:
+            self.cmb_replace_stream.addItem(
+                (
+                    f"#{stream.get('index')} · {stream.get('codec_name')} · "
+                    f"{stream.get('channel_layout') or str(stream.get('channels')) + 'ch'}"
+                ),
+                stream.get("index"),
+            )
+        self.cmb_replace_stream.setEnabled(True)
+        self.btn_replace.setEnabled(bool(FFMPEG))
 
     def _selected_source_audio_index(self):
         value = self.cmb_audio_stream.currentData()

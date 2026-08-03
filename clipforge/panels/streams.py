@@ -20,10 +20,9 @@ from ..tools import (
     FFMPEG,
     _confirm_overwrite,
     escape_ffmetadata_value,
-    probe_video,
     stream_copy_issues,
 )
-from ..workers import FFmpegWorker, QualityMetricsWorker
+from ..workers import FFmpegWorker, MediaProbeWorker, QualityMetricsWorker
 from ..widgets import FlowLayout
 
 
@@ -38,6 +37,7 @@ class StreamsPanel(QWidget):
         self._info = None
         self._worker = None
         self._quality_worker = None
+        self._quality_probe_worker = None
         self._quality_path = None
         self._quality_info = None
         self._quality_report = None
@@ -316,8 +316,21 @@ class StreamsPanel(QWidget):
                 "Choose an encoded file different from the open reference", C["red"]
             )
             return
-        info = probe_video(path)
+        if self._quality_probe_worker and self._quality_probe_worker.isRunning():
+            self._quality_probe_worker.cancel()
+        self.lbl_quality_file.setText(f"Inspecting {Path(path).name}…")
+        self.btn_browse_quality.setEnabled(False)
+        worker = MediaProbeWorker(path, self)
+        self._quality_probe_worker = worker
+        worker.finished_signal.connect(self._on_quality_file_probed)
+        worker.start()
+
+    def _on_quality_file_probed(self, path, result):
+        self._quality_probe_worker = None
+        self.btn_browse_quality.setEnabled(True)
+        info = result.info
         if not info or not info.get("width") or not info.get("height"):
+            self.lbl_quality_file.setText("No comparison file selected")
             self.requestToast.emit("Encoded file could not be probed", C["red"])
             return
         self._quality_path = path
@@ -371,8 +384,8 @@ class StreamsPanel(QWidget):
                 "Reference and encoded files must be different", C["red"]
             )
             return
-        reference_info = probe_video(self._filepath)
-        encoded_info = probe_video(self._quality_path)
+        reference_info = self._info
+        encoded_info = self._quality_info
         if not reference_info or not encoded_info:
             self.requestToast.emit(
                 "Both files must be readable videos before comparison", C["red"]

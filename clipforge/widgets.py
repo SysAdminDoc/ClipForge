@@ -25,9 +25,9 @@ from clipforge_utils import (
     validate_media_path,
 )
 from .constants import C
-from .tools import FFMPEG, probe_media, probe_video, extract_frame
+from .tools import FFMPEG, probe_video, extract_frame
 from .settings import add_recent
-from .workers import FFmpegWorker, ThumbnailWorker
+from .workers import FFmpegWorker, MediaProbeWorker, ThumbnailWorker
 from .proxy import ProxyCache
 from .mpv_backend import MpvWidget, probe_mpv
 
@@ -1122,6 +1122,8 @@ class FileInfoBar(QWidget):
         self.setObjectName("fileInfoBar")
         self._info = None
         self._filepath = None
+        self._probe_worker = None
+        self._probe_workers = set()
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(12)
@@ -1136,10 +1138,15 @@ class FileInfoBar(QWidget):
         self.lbl_name.setProperty("class", "dimLabel")
         self.lbl_info = QLabel("")
         self.lbl_info.setProperty("class", "dimLabel")
+        self.btn_cancel_probe = QPushButton("Cancel inspection")
+        self.btn_cancel_probe.setAccessibleName("Cancel media inspection")
+        self.btn_cancel_probe.setVisible(False)
+        self.btn_cancel_probe.clicked.connect(self.cancel_probe)
 
         layout.addWidget(self.btn_open)
         layout.addWidget(self.lbl_name, 1)
         layout.addWidget(self.lbl_info)
+        layout.addWidget(self.btn_cancel_probe)
 
     def _open_file(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -1155,17 +1162,53 @@ class FileInfoBar(QWidget):
             self.lbl_info.setText("Choose an existing local media file")
             self.fileLoadFailed.emit(path or "", "The selected file does not exist.")
             return
-        result = probe_media(path)
+        if self._probe_worker and self._probe_worker.isRunning():
+            self._probe_worker.cancel()
+        self.lbl_name.setText(f"Inspecting {Path(path).name}…")
+        self.lbl_name.setToolTip(path)
+        self.lbl_info.setText("Reading bounded media metadata")
+        self.btn_open.setEnabled(False)
+        self.btn_cancel_probe.setEnabled(True)
+        self.btn_cancel_probe.setVisible(True)
+        worker = MediaProbeWorker(path, self)
+        self._probe_worker = worker
+        self._probe_workers.add(worker)
+        worker.finished_signal.connect(
+            lambda filepath, result, current=worker: self._on_probe_finished(
+                current,
+                filepath,
+                result,
+            )
+        )
+        worker.finished.connect(lambda current=worker: self._probe_workers.discard(current))
+        worker.start()
+
+    def cancel_probe(self):
+        if self._probe_worker and self._probe_worker.isRunning():
+            self._probe_worker.cancel()
+            self.btn_cancel_probe.setEnabled(False)
+            self.lbl_info.setText("Cancelling media inspection…")
+
+    def _on_probe_finished(self, worker, path, result):
+        if worker is not self._probe_worker:
+            return
+        self._probe_worker = None
+        self.btn_open.setEnabled(True)
+        self.btn_cancel_probe.setVisible(False)
         if result.error:
             self._filepath = None
             self._info = None
-            self.lbl_name.setText("Could not open media")
+            cancelled = result.error.code == "probe_cancelled"
+            self.lbl_name.setText(
+                "Media inspection cancelled" if cancelled else "Could not open media"
+            )
             details = result.error.message
             if result.error.details:
                 details += f" {result.error.details}"
             self.lbl_info.setText(result.error.message)
             self.lbl_info.setToolTip(details)
-            self.fileLoadFailed.emit(path, details)
+            if not cancelled:
+                self.fileLoadFailed.emit(path, details)
             return
         self._filepath = path
         self._info = result.info

@@ -22,7 +22,12 @@ from clipforge_utils import (
 from .tools import (
     FFMPEG, FFPROBE,
     find_realesrgan, find_rife, find_span,
+    detect_hw_encoders,
+    extract_frame,
+    nvdec_decode_is_safe,
+    probe_media,
     probe_video,
+    read_ffmpeg_version,
     create_job_temp_dir, _unregister_temp_dir,
 )
 from .processes import (
@@ -36,6 +41,95 @@ from .processes import (
 )
 from .diagnostics import DIAGNOSTICS
 from .ai_tools import AIFrameCache
+
+# ---------------------------------------------------------------------------
+# Probe workers
+# ---------------------------------------------------------------------------
+
+
+class MediaProbeWorker(QThread):
+    """Run bounded FFprobe inspection without blocking the GUI thread."""
+
+    finished_signal = pyqtSignal(str, object)
+
+    def __init__(self, filepath, parent=None, *, timeout=15):
+        super().__init__(parent)
+        self.filepath = str(filepath)
+        self.timeout = float(timeout)
+        self._cancel_event = threading.Event()
+
+    def cancel(self):
+        self._cancel_event.set()
+
+    def run(self):
+        result = probe_media(
+            self.filepath,
+            timeout=self.timeout,
+            cancel_event=self._cancel_event,
+        )
+        self.finished_signal.emit(self.filepath, result)
+
+
+class CapabilityProbeWorker(QThread):
+    """Discover FFmpeg version and advertised hardware encoders off-thread."""
+
+    finished_signal = pyqtSignal(object)
+
+    def __init__(self, parent=None, *, timeout=10):
+        super().__init__(parent)
+        self.timeout = float(timeout)
+        self._cancel_event = threading.Event()
+
+    def cancel(self):
+        self._cancel_event.set()
+
+    def run(self):
+        version = read_ffmpeg_version(
+            cancel_event=self._cancel_event,
+            timeout=self.timeout,
+        )
+        encoders = (
+            {}
+            if self._cancel_event.is_set()
+            else detect_hw_encoders(
+                cancel_event=self._cancel_event,
+                timeout=self.timeout,
+            )
+        )
+        self.finished_signal.emit(
+            {
+                "cancelled": self._cancel_event.is_set(),
+                "version": version,
+                "nvdec_safe": nvdec_decode_is_safe(version),
+                "encoders": encoders,
+            }
+        )
+
+
+class FrameExtractWorker(QThread):
+    """Extract one preview frame with cancellation and a hard timeout."""
+
+    finished_signal = pyqtSignal(str, object)
+
+    def __init__(self, filepath, time_sec=0, parent=None, *, timeout=10):
+        super().__init__(parent)
+        self.filepath = str(filepath)
+        self.time_sec = float(time_sec)
+        self.timeout = float(timeout)
+        self._cancel_event = threading.Event()
+
+    def cancel(self):
+        self._cancel_event.set()
+
+    def run(self):
+        pixmap = extract_frame(
+            self.filepath,
+            self.time_sec,
+            timeout=self.timeout,
+            cancel_event=self._cancel_event,
+        )
+        self.finished_signal.emit(self.filepath, pixmap)
+
 
 # ---------------------------------------------------------------------------
 # Process helpers

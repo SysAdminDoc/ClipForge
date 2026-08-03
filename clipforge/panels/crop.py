@@ -12,8 +12,8 @@ from PyQt6.QtCore import pyqtSignal
 from clipforge_utils import format_size
 
 from ..constants import C
-from ..tools import FFMPEG, _confirm_overwrite, extract_frame
-from ..workers import FFmpegWorker
+from ..tools import FFMPEG, _confirm_overwrite
+from ..workers import FFmpegWorker, FrameExtractWorker
 from ..widgets import CropView, FlowLayout
 
 
@@ -26,6 +26,7 @@ class CropPanel(QWidget):
         self._filepath = None
         self._info = None
         self._worker = None
+        self._frame_worker = None
         self._setup_ui()
 
     def _setup_ui(self):
@@ -96,9 +97,19 @@ class CropPanel(QWidget):
             spn.setMaximum(mx)
             spn.setValue(val)
             spn.blockSignals(False)
-        pix = extract_frame(filepath, 0)
-        if pix:
-            self.crop_view.set_image(pix)
+        if self._frame_worker and self._frame_worker.isRunning():
+            self._frame_worker.cancel()
+        worker = FrameExtractWorker(filepath, parent=self)
+        self._frame_worker = worker
+        worker.finished_signal.connect(self._on_frame_ready)
+        worker.start()
+
+    def _on_frame_ready(self, filepath, pixmap):
+        if filepath != self._filepath:
+            return
+        self._frame_worker = None
+        if pixmap:
+            self.crop_view.set_image(pixmap)
 
     def _reset_to_defaults(self):
         """Reset crop and rotation to defaults."""

@@ -18,11 +18,11 @@ from clipforge_utils import format_duration_short, format_size
 
 from ..constants import C
 from ..tools import (
-    FFMPEG, extract_frame,
+    FFMPEG,
     _confirm_overwrite, create_job_temp_dir, _unregister_temp_dir,
     escape_ffmpeg_filter_value,
 )
-from ..workers import FFmpegWorker
+from ..workers import FFmpegWorker, FrameExtractWorker
 from ..widgets import FlowLayout
 
 
@@ -35,6 +35,7 @@ class FiltersPanel(QWidget):
         self._filepath = None
         self._info = None
         self._worker = None
+        self._frame_worker = None
         self._caption_tmpdir = None
         self._setup_ui()
 
@@ -295,12 +296,26 @@ class FiltersPanel(QWidget):
         self._silence_segments = []
         self.btn_remove_silence.setEnabled(False)
         self.lbl_silence_result.setText("No scan yet")
-        pix = extract_frame(filepath, 0)
-        if pix:
-            scaled = pix.scaledToHeight(120, Qt.TransformationMode.SmoothTransformation)
+        if self._frame_worker and self._frame_worker.isRunning():
+            self._frame_worker.cancel()
+        self.lbl_preview_before.setText("Loading original preview…")
+        worker = FrameExtractWorker(filepath, parent=self)
+        self._frame_worker = worker
+        worker.finished_signal.connect(self._on_source_preview_ready)
+        worker.start()
+
+    def _on_source_preview_ready(self, filepath, pixmap):
+        if filepath != self._filepath:
+            return
+        self._frame_worker = None
+        if pixmap:
+            scaled = pixmap.scaledToHeight(
+                120,
+                Qt.TransformationMode.SmoothTransformation,
+            )
             self.lbl_preview_before.setPixmap(scaled)
         else:
-            self.lbl_preview_before.setText("Original")
+            self.lbl_preview_before.setText("Original preview unavailable")
 
     def _do_preview(self):
         if not self._filepath or not FFMPEG:

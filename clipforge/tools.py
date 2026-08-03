@@ -181,33 +181,39 @@ def nvdec_decode_is_safe(version_output):
     return version is not None and version > (8, 1, 2)
 
 
-def read_ffmpeg_version(ffmpeg_path=None):
+def read_ffmpeg_version(ffmpeg_path=None, *, cancel_event=None, timeout=10):
     path = ffmpeg_path or FFMPEG
     if not path:
         return ""
     try:
-        result = subprocess.run(
+        from .processes import run_managed_process
+
+        result = run_managed_process(
             [path, "-version"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            cancel_event=cancel_event,
+            timeout=timeout,
         )
+        if result.cancelled or result.timed_out:
+            return ""
         return (result.stdout or result.stderr or "").splitlines()[0]
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError:
         return ""
 
 
-def detect_hw_encoders():
+def detect_hw_encoders(*, cancel_event=None, timeout=10):
     """Detect available hardware encoders from FFmpeg."""
     if not FFMPEG:
         return {}
     try:
-        result = subprocess.run(
+        from .processes import run_managed_process
+
+        result = run_managed_process(
             [FFMPEG, "-hide_banner", "-encoders"],
-            capture_output=True, text=True, timeout=10,
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            cancel_event=cancel_event,
+            timeout=timeout,
         )
+        if result.cancelled or result.timed_out or result.returncode != 0:
+            return {}
         hw = {}
         for name, label in [
             ("h264_nvenc", "H.264 NVENC (NVIDIA)"),
@@ -223,13 +229,13 @@ def detect_hw_encoders():
             if name in result.stdout:
                 hw[label] = name
         return hw
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError:
         return {}
 
 
-HW_ENCODERS = detect_hw_encoders()
-FFMPEG_VERSION_OUTPUT = read_ffmpeg_version()
-CUDA_NVDEC_SAFE = nvdec_decode_is_safe(FFMPEG_VERSION_OUTPUT)
+HW_ENCODERS = {}
+FFMPEG_VERSION_OUTPUT = ""
+CUDA_NVDEC_SAFE = False
 
 
 def hardware_decode_args(video_encoder):
@@ -355,7 +361,7 @@ def _stream_rotation(stream):
     return _safe_float(stream.get("tags", {}).get("rotate"))
 
 
-def probe_media(filepath):
+def probe_media(filepath, *, timeout=15, cancel_event=None):
     """Return typed metadata or a stable, user-presentable probe error."""
     if not FFPROBE:
         return ProbeResult(
@@ -379,15 +385,24 @@ def probe_media(filepath):
             "-show_chapters",
             filepath,
         ]
-        result = subprocess.run(
+        from .processes import run_managed_process
+
+        result = run_managed_process(
             cmd,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=15,
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            cancel_event=cancel_event,
+            timeout=timeout,
         )
+        if result.cancelled:
+            return ProbeResult(
+                error=ProbeError("probe_cancelled", "Media inspection was cancelled.")
+            )
+        if result.timed_out:
+            return ProbeResult(
+                error=ProbeError(
+                    "probe_timeout",
+                    f"FFprobe timed out after {timeout:g} seconds.",
+                )
+            )
         if result.returncode != 0:
             details = (result.stderr or result.stdout).strip()
             probe_result = ProbeResult(
@@ -473,12 +488,6 @@ def probe_media(filepath):
         if cache_key:
             _probe_cache[cache_key] = probe_result
         return probe_result
-    except subprocess.TimeoutExpired:
-        return ProbeResult(
-            error=ProbeError(
-                "probe_timeout", "FFprobe timed out after 15 seconds."
-            )
-        )
     except OSError as exc:
         return ProbeResult(
             error=ProbeError("probe_launch_failed", "FFprobe could not start.", str(exc))
@@ -553,7 +562,7 @@ def stream_copy_issues(container, streams):
     return issues
 
 
-def extract_frame(filepath, time_sec=0):
+def extract_frame(filepath, time_sec=0, *, timeout=10, cancel_event=None):
     if not FFMPEG:
         return None
     tmp_name = None
@@ -563,19 +572,20 @@ def extract_frame(filepath, time_sec=0):
         tmp_name = tmp.name
         cmd = [FFMPEG, "-y", "-ss", str(time_sec), "-i", filepath,
                "-frames:v", "1", "-q:v", "2", tmp.name]
-        result = subprocess.run(
+        from .processes import run_managed_process
+
+        result = run_managed_process(
             cmd,
-            capture_output=True,
-            timeout=10,
-            creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
+            cancel_event=cancel_event,
+            timeout=timeout,
         )
-        if result.returncode != 0:
+        if result.returncode != 0 or result.cancelled or result.timed_out:
             return None
         if os.path.exists(tmp.name) and os.path.getsize(tmp.name) > 0:
             from PyQt6.QtGui import QPixmap
             pix = QPixmap(tmp.name)
             return pix
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError:
         pass
     finally:
         if tmp_name:

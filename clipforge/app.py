@@ -2,6 +2,7 @@
 
 import sys
 import os
+import time
 from collections import deque
 from pathlib import Path
 
@@ -11,7 +12,7 @@ from PyQt6.QtWidgets import (
     QListWidget, QListWidgetItem, QScrollArea, QStatusBar,
     QComboBox, QFileDialog, QSizePolicy,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread, QTimer
 from PyQt6.QtGui import QColor, QPalette, QDragEnterEvent, QDropEvent
 
 from . import APP_NAME, APP_VERSION
@@ -30,6 +31,7 @@ from .settings import (
     save_settings,
 )
 from .tools import FFMPEG, HW_ENCODERS, _confirm_overwrite
+from . import tools as tools_module
 from .diagnostics import DIAGNOSTICS, classify_severity
 from .widgets import (
     Toast,
@@ -45,6 +47,7 @@ from .panels.filters import FiltersPanel
 from .panels.audio import AudioPanel
 from .panels.streams import StreamsPanel
 from .panels.batch import BatchPanel
+from .workers import CapabilityProbeWorker
 
 
 def apply_application_theme(app, high_contrast=False):
@@ -78,6 +81,7 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)
         self._setup_ui()
         self._check_deps()
+        self._start_capability_probe()
         self._load_recent()
         self._show_persistence_notices()
 
@@ -167,14 +171,8 @@ class MainWindow(QMainWindow):
         self.lbl_hw_status.setProperty("class", "dimLabel")
         self.lbl_hw_status.setContentsMargins(16, 0, 16, 4)
         sb_layout.addWidget(self.lbl_hw_status)
-        if HW_ENCODERS:
-            hw_names = ", ".join(HW_ENCODERS.keys())
-            self.lbl_hw_status.setText(f"GPU: {len(HW_ENCODERS)} encoder(s)")
-            self.lbl_hw_status.setToolTip(hw_names)
-            self.lbl_hw_status.setStyleSheet(f"color: {C['green']};")
-        else:
-            self.lbl_hw_status.setText("GPU: No HW encoders")
-            self.lbl_hw_status.setStyleSheet(f"color: {C['overlay0']};")
+        self.lbl_hw_status.setText("GPU: Checking capabilities…")
+        self.lbl_hw_status.setStyleSheet(f"color: {C['overlay0']};")
 
         main_layout.addWidget(sidebar)
 
@@ -221,6 +219,15 @@ class MainWindow(QMainWindow):
         self.cmb_log_filter.currentTextChanged.connect(self._filter_console)
         console_toolbar.addWidget(self.cmb_log_filter)
         console_toolbar.addStretch()
+        self.btn_cancel_jobs = QPushButton("Cancel active jobs")
+        self.btn_cancel_jobs.setToolTip(
+            "Cancel every active media, inspection, preview, or install job"
+        )
+        self.btn_cancel_jobs.setAccessibleName("Cancel all active jobs")
+        self.btn_cancel_jobs.setEnabled(False)
+        self.btn_cancel_jobs.setFixedHeight(24)
+        self.btn_cancel_jobs.clicked.connect(self._cancel_active_jobs)
+        console_toolbar.addWidget(self.btn_cancel_jobs)
         btn_export_diagnostics = QPushButton("Export Diagnostics")
         btn_export_diagnostics.setToolTip(
             "Save bounded job diagnostics with file paths redacted; media is never included"
@@ -331,6 +338,10 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"Ready  •  v{APP_VERSION}")
         ensure_accessible_control_names(self.player)
         ensure_accessible_control_names(self)
+        self._worker_status_timer = QTimer(self)
+        self._worker_status_timer.setInterval(200)
+        self._worker_status_timer.timeout.connect(self._refresh_worker_status)
+        self._worker_status_timer.start()
 
         # Default to Trim panel
         self._switch_panel(0)
@@ -439,6 +450,87 @@ class MainWindow(QMainWindow):
                 "Or download from https://ffmpeg.org/download.html\n\n"
             )
 
+    def _start_capability_probe(self):
+        if not FFMPEG:
+            self.lbl_hw_status.setText("GPU: FFmpeg unavailable")
+            return
+        self._capability_worker = CapabilityProbeWorker(self, timeout=10)
+        self._capability_worker.finished_signal.connect(
+            self._on_capabilities_ready
+        )
+        self._capability_worker.start()
+
+    def _on_capabilities_ready(self, result):
+        if result.get("cancelled"):
+            self.lbl_hw_status.setText("GPU: Capability check cancelled")
+            self.lbl_hw_status.setStyleSheet(f"color: {C['yellow']};")
+            return
+        HW_ENCODERS.clear()
+        HW_ENCODERS.update(result.get("encoders") or {})
+        tools_module.FFMPEG_VERSION_OUTPUT = result.get("version") or ""
+        tools_module.CUDA_NVDEC_SAFE = bool(result.get("nvdec_safe"))
+        self.convert_panel.refresh_hw_encoders()
+        if HW_ENCODERS:
+            self.lbl_hw_status.setText(f"GPU: {len(HW_ENCODERS)} encoder(s)")
+            self.lbl_hw_status.setToolTip(", ".join(HW_ENCODERS))
+            self.lbl_hw_status.setStyleSheet(f"color: {C['green']};")
+        else:
+            self.lbl_hw_status.setText("GPU: No advertised encoders")
+            self.lbl_hw_status.setToolTip(
+                "FFmpeg did not advertise a supported hardware encoder"
+            )
+            self.lbl_hw_status.setStyleSheet(f"color: {C['overlay0']};")
+
+    @staticmethod
+    def _threads_in(value):
+        if isinstance(value, QThread):
+            yield value
+        elif isinstance(value, dict):
+            for item in value.values():
+                yield from MainWindow._threads_in(item)
+        elif isinstance(value, (list, tuple, set)):
+            for item in value:
+                yield from MainWindow._threads_in(item)
+
+    def _active_workers(self):
+        owners = [self, self.file_bar, self.player, *self._panels]
+        workers = []
+        seen = set()
+        for owner in owners:
+            for value in vars(owner).values():
+                for worker in self._threads_in(value):
+                    if id(worker) in seen or not worker.isRunning():
+                        continue
+                    seen.add(id(worker))
+                    workers.append(worker)
+        return workers
+
+    def _refresh_worker_status(self):
+        count = len(self._active_workers())
+        self.btn_cancel_jobs.setEnabled(count > 0)
+        self.btn_cancel_jobs.setText(
+            f"Cancel {count} active job{'s' if count != 1 else ''}"
+            if count
+            else "Cancel active jobs"
+        )
+
+    def _cancel_active_jobs(self):
+        workers = self._active_workers()
+        for worker in workers:
+            if hasattr(worker, "cancel"):
+                worker.cancel()
+            else:
+                worker.requestInterruption()
+        if workers:
+            self.btn_cancel_jobs.setEnabled(False)
+            self.status_bar.showMessage(
+                f"Cancelling {len(workers)} active job(s)…",
+                8000,
+            )
+            self.console.append(
+                f"[INFO] Cancellation requested for {len(workers)} active job(s).\n"
+            )
+
     def _load_recent(self):
         self.recent_list.clear()
         for path in load_recent():
@@ -519,23 +611,43 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
 
     def closeEvent(self, event):
+        self._worker_status_timer.stop()
         self.player.release()
-        active_workers = []
-        seen_workers = set()
-        for panel in self._panels:
-            for value in vars(panel).values():
-                if (
-                    id(value) not in seen_workers
-                    and hasattr(value, "isRunning")
-                    and value.isRunning()
-                ):
-                    seen_workers.add(id(value))
-                    active_workers.append(value)
+        active_workers = self._active_workers()
         for worker in active_workers:
             if hasattr(worker, "cancel"):
                 worker.cancel()
+            else:
+                worker.requestInterruption()
+        deadline = time.monotonic() + 8
         for worker in active_workers:
-            worker.wait(5000)
+            remaining_ms = max(0, int((deadline - time.monotonic()) * 1000))
+            if remaining_ms:
+                worker.wait(remaining_ms)
+        stubborn = [worker for worker in active_workers if worker.isRunning()]
+        for worker in stubborn:
+            message = (
+                f"Forced cleanup for unresponsive {type(worker).__name__} "
+                "after cancellation timeout"
+            )
+            DIAGNOSTICS.event(
+                "error",
+                message,
+                context={"component": "shutdown", "forced_cleanup": True},
+            )
+            self.console.append(f"[ERROR] {message}\n")
+            worker.terminate()
+            worker.wait(2000)
+        still_running = [worker for worker in stubborn if worker.isRunning()]
+        if still_running:
+            self._worker_status_timer.start()
+            self.toast.show_message(
+                "Could not stop every background job; close cancelled",
+                C["red"],
+                8000,
+            )
+            event.ignore()
+            return
         # Save window geometry
         self._settings["window_width"] = self.width()
         self._settings["window_height"] = self.height()
