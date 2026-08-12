@@ -37,6 +37,8 @@ let browserStorageApi = null;
 let browserPreviewApi = null;
 let browserExportApi = null;
 let browserDiagnosticsApi = null;
+let browserI18nApi = null;
+let browserI18nCatalog = null;
 let browserModulesPromise = null;
 const browserDiagnosticErrors = [];
 const BROWSER_DIAGNOSTIC_MAX_ERRORS = 50;
@@ -133,7 +135,8 @@ function loadBrowserModules() {
             import('./browser/preview.mjs'),
             import('./browser/export.mjs'),
             import('./browser/diagnostics.mjs'),
-        ]).then(([timeline, project, jobs, storage, preview, exportApi, diagnostics]) => {
+            import('./browser/i18n.mjs'),
+        ]).then(([timeline, project, jobs, storage, preview, exportApi, diagnostics, i18n]) => {
             browserTimelineApi = timeline;
             browserProjectApi = project;
             browserJobsApi = jobs;
@@ -141,6 +144,7 @@ function loadBrowserModules() {
             browserPreviewApi = preview;
             browserExportApi = exportApi;
             browserDiagnosticsApi = diagnostics;
+            browserI18nApi = i18n;
         });
     }
     return browserModulesPromise;
@@ -149,6 +153,15 @@ function loadBrowserModules() {
 // ==================== INITIALIZATION ====================
 document.addEventListener('DOMContentLoaded', async () => {
     await loadBrowserModules();
+    browserI18nCatalog = browserI18nApi.createBrowserI18n();
+    browserI18nApi.applyBrowserTranslations(document, browserI18nCatalog);
+    window.clipforgeI18n = browserI18nCatalog;
+    window.setClipforgeLocale = locale => {
+        browserI18nCatalog = browserI18nApi.createBrowserI18n(locale);
+        browserI18nApi.applyBrowserTranslations(document, browserI18nCatalog);
+        window.clipforgeI18n = browserI18nCatalog;
+        return browserI18nCatalog.locale;
+    };
     previewVideo = document.getElementById('previewVideo');
     previewCanvas = document.getElementById('previewCanvas');
     previewCtx = previewCanvas?.getContext('2d');
@@ -160,6 +173,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     window.clipforgeEditorReady = true;
     await initFFmpeg();
 });
+
+function browserT(key, values = {}) {
+    return browserI18nCatalog?.t(key, values) || String(key);
+}
 
 function withTimeout(promise, timeoutMs, label) {
     let timeoutId;
@@ -173,7 +190,7 @@ class BrowserJobConflictError extends Error {}
 class BrowserJobCancelledError extends Error {}
 
 function browserJobLabel(type) {
-    return browserJobsApi?.browserJobLabel(type) || 'Media job';
+    return browserJobsApi?.browserJobLabel(type) || browserT('mediaJob');
 }
 
 function browserJobId(type) {
@@ -234,8 +251,9 @@ async function restartBrowserFfmpeg(job) {
     document.getElementById('statusDot')?.classList.remove('ready');
     const overlay = document.getElementById('loadingOverlay');
     overlay?.classList.remove('hidden');
-    document.getElementById('loadingText').textContent =
-        `Restarting FFmpeg after ${job.label.toLowerCase()} cancellation...`;
+    document.getElementById('loadingText').textContent = browserT('restartingAfterCancel', {
+        job: job.label.toLowerCase(),
+    });
     const coreURL = new URL(
         './vendor/ffmpeg/core/ffmpeg-core.js',
         window.location.href,
@@ -252,14 +270,14 @@ async function restartBrowserFfmpeg(job) {
         );
         ffmpegLoaded = true;
         overlay?.classList.add('hidden');
-        document.getElementById('statusText').textContent = 'Ready';
+        document.getElementById('statusText').textContent = browserT('ready');
         return true;
     } catch (error) {
         ffmpeg = null;
         console.error('FFmpeg cancellation recovery failed:', error);
-        document.getElementById('statusText').textContent = 'Engine unavailable';
+        document.getElementById('statusText').textContent = browserT('engineUnavailable');
         document.getElementById('loadingText').textContent =
-            `FFmpeg recovery failed: ${error.message}`;
+            browserT('importFailed', { name: 'FFmpeg recovery', error: error.message });
         console.error(`FFmpeg did not recover after ${job.label.toLowerCase()} cancellation`);
         return false;
     }
@@ -274,7 +292,7 @@ async function cancelBrowserFfmpegJob(expectedType = null) {
     updateBrowserJobUi(job);
     if (job.type === 'export') {
         exportCancelRequested = true;
-        document.getElementById('loadingText').textContent = 'Cancelling export...';
+        document.getElementById('loadingText').textContent = browserT('cancellingExport');
         document.getElementById('cancelExportButton').disabled = true;
     }
     try {
@@ -435,7 +453,7 @@ async function initializeFFmpeg({ successToast = true, timeoutMs = 30000 } = {})
     document.documentElement.dataset.browserRuntime = 'local';
 
     try {
-        document.getElementById('loadingText').textContent = 'Loading FFmpeg modules...';
+        document.getElementById('loadingText').textContent = browserT('loadingFfmpegModules');
 
         const { FFmpeg } = await withTimeout(
             import('./vendor/ffmpeg/ffmpeg/index.js'),
@@ -467,7 +485,7 @@ async function initializeFFmpeg({ successToast = true, timeoutMs = 30000 } = {})
             console.log('[ffmpeg]', message);
         });
 
-        document.getElementById('loadingText').textContent = 'Loading local FFmpeg core (~31 MB)...';
+        document.getElementById('loadingText').textContent = browserT('loadingFfmpegCore');
 
         const coreURL = new URL(
             './vendor/ffmpeg/core/ffmpeg-core.js',
@@ -478,7 +496,7 @@ async function initializeFFmpeg({ successToast = true, timeoutMs = 30000 } = {})
             window.location.href,
         ).href;
 
-        document.getElementById('loadingText').textContent = 'Initializing FFmpeg...';
+        document.getElementById('loadingText').textContent = browserT('initializingFfmpeg');
         await withTimeout(
             ffmpeg.load({ coreURL, wasmURL }),
             timeoutMs,
@@ -488,16 +506,16 @@ async function initializeFFmpeg({ successToast = true, timeoutMs = 30000 } = {})
         ffmpegLoaded = true;
         document.getElementById('loadingOverlay').classList.add('hidden');
         document.getElementById('statusDot').classList.add('ready');
-        document.getElementById('statusText').textContent = 'Ready';
+        document.getElementById('statusText').textContent = browserT('ready');
 
-        if (successToast) toast('success', 'ClipForge ready!');
+        if (successToast) toast('success', browserT('clipforgeReady'));
         return true;
     } catch (e) {
         ffmpegLoaded = false;
         const errMsg = (e && (e.message || e.toString())) || 'Unknown error';
         recordBrowserDiagnosticError(e, 'ffmpeg.initialize');
         console.error('FFmpeg load error:', e);
-        document.getElementById('statusText').textContent = 'Engine unavailable';
+        document.getElementById('statusText').textContent = browserT('engineUnavailable');
         const overlay = document.getElementById('loadingOverlay');
         overlay.setAttribute('role', 'alert');
         const content = document.createElement('div');
@@ -507,13 +525,13 @@ async function initializeFFmpeg({ successToast = true, timeoutMs = 30000 } = {})
         icon.textContent = '⚠️';
         const title = document.createElement('div');
         title.style.cssText = 'font-size:14px;margin-bottom:16px;color:var(--text-1)';
-        title.textContent = 'Failed to load FFmpeg engine';
+        title.textContent = browserT('failedLoadEngine');
         const details = document.createElement('div');
         details.style.cssText = 'font-size:12px;margin-bottom:16px;color:var(--text-2);max-width:400px;word-break:break-word';
         details.textContent = errMsg;
         const retry = document.createElement('button');
         retry.className = 'btn primary';
-        retry.textContent = 'Retry';
+        retry.textContent = browserT('retry');
         retry.addEventListener('click', () => window.location.reload());
         content.append(icon, title, details, retry);
         overlay.replaceChildren(content);
@@ -797,7 +815,7 @@ async function handleFileDrop(files) {
                 );
             } catch (error) {
                 URL.revokeObjectURL(media.url);
-                toast('error', `Could not import ${file.name}: ${error.message}`);
+                toast('error', browserT('importFailed', { name: file.name, error: error.message }));
                 continue;
             }
         } else if (type === 'image') {
@@ -810,7 +828,7 @@ async function handleFileDrop(files) {
     }
     
     renderMediaList();
-    if (imported > 0) toast('success', `Imported ${imported} file(s)`);
+    if (imported > 0) toast('success', browserT('importedFiles', { count: imported }));
 }
 
 function getMediaType(file) {
@@ -1354,7 +1372,7 @@ async function refreshBrowserProxyCacheStatus() {
         }
         return stats;
     } catch (error) {
-        label.textContent = `Proxy cache unavailable: ${error.message}`;
+        label.textContent = browserT('proxyCacheUnavailable', { error: error.message });
         if (button) button.disabled = true;
         return null;
     }
@@ -1362,7 +1380,7 @@ async function refreshBrowserProxyCacheStatus() {
 
 async function purgeBrowserProxyCache() {
     if (browserProxyJob) {
-        toast('info', 'Finish or cancel the active proxy job before purging its cache');
+        toast('info', browserT('purgeActiveProxy'));
         return;
     }
     try {
@@ -1385,11 +1403,11 @@ async function purgeBrowserProxyCache() {
         renderMediaList();
         renderTimeline();
         await refreshBrowserProxyCacheStatus();
-        toast('success', `Purged ${records.length} browser proxy record${records.length === 1 ? '' : 's'}`);
+        toast('success', browserT('purgedProxyRecords', { count: records.length }));
     } catch (error) {
         recordBrowserDiagnosticError(error, 'proxy.purge');
         console.error('Browser proxy purge failed:', error);
-        toast('error', `Could not purge browser proxy cache: ${error.message}`);
+        toast('error', browserT('purgeProxyFailed', { error: error.message }));
     }
 }
 
@@ -1421,7 +1439,7 @@ async function generateBrowserProxy(mediaId) {
         return;
     }
     if (!ffmpegLoaded) {
-        toast('error', 'The FFmpeg engine is not ready');
+        toast('error', browserT('ffmpegNotReady'));
         return;
     }
 
@@ -2186,7 +2204,7 @@ function splitClipAt(clip, time) {
     
     clips.push(newClip);
     renderTimeline();
-    toast('info', 'Clip split');
+    toast('info', browserT('clipSplit'));
 }
 
 function deleteSelected() {
@@ -2205,13 +2223,13 @@ function deleteSelected() {
     updateDuration();
     renderTimeline();
     clearClipPropertiesPanel();
-    toast('info', 'Deleted selected clips');
+    toast('info', browserT('deletedClips'));
 }
 
 function copyClip() {
     if (selectedClips.length === 0) return;
     clipboard = selectedClips.map(clip => ({ ...clip }));
-    toast('info', 'Copied to clipboard');
+    toast('info', browserT('copiedClipboard'));
 }
 
 function cutClip() {
@@ -2251,7 +2269,7 @@ function pasteClip() {
     selectedClips = newClips;
     updateDuration();
     renderTimeline();
-    toast('info', 'Pasted clips');
+    toast('info', browserT('pastedClips'));
 }
 
 function selectAllClips() {
@@ -2650,7 +2668,7 @@ async function exportVideo() {
     const overlay = document.getElementById('loadingOverlay');
     const cancelButton = document.getElementById('cancelExportButton');
     overlay.classList.remove('hidden');
-    document.getElementById('loadingText').textContent = 'Exporting video...';
+    document.getElementById('loadingText').textContent = browserT('exportingVideo');
     document.getElementById('loadingProgress').style.width = '0%';
     document.getElementById('loadingProgressTrack').setAttribute('aria-valuenow', '0');
     cancelButton.hidden = false;
@@ -2777,7 +2795,7 @@ async function exportVideo() {
                         concatName,
                         new TextEncoder().encode(concatList),
                     );
-                    document.getElementById('loadingText').textContent = 'Joining clips...';
+                    document.getElementById('loadingText').textContent = browserT('joiningClips');
                     const args = [
                         '-f', 'concat', '-safe', '0', '-i', concatName,
                         '-map', '0:v:0',

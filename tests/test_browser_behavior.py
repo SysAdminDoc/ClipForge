@@ -583,6 +583,37 @@ def test_every_track_is_reachable_at_900_by_700(browser_page):
     )
 
 
+def test_proof_locale_translates_static_controls_without_layout_overflow(
+    chromium_browser,
+    browser_app_url,
+):
+    context = chromium_browser.new_context(viewport={"width": 1280, "height": 860})
+    context.add_init_script("window.CLIPFORGE_LOCALE = 'en-XA';")
+    page = context.new_page()
+    page.goto(browser_app_url, wait_until="domcontentloaded")
+    page.wait_for_function("() => window.clipforgeEditorReady === true")
+    try:
+        assert page.locator("html").get_attribute("data-locale") == "en-XA"
+        assert page.locator('[data-i18n="openProject"]').inner_text().startswith("⟦")
+        assert page.locator('[data-i18n="selectClip"]').inner_text().startswith("⟦")
+        layout = page.evaluate(
+            """
+            () => ({
+                documentWidth: document.documentElement.scrollWidth,
+                viewportWidth: window.innerWidth,
+                visibleRight: [...document.querySelectorAll(
+                    '.menu-bar, .header, .media-panel, .center-area, .properties-panel'
+                )].filter(element => element.offsetParent !== null)
+                    .map(element => Math.round(element.getBoundingClientRect().right)),
+            })
+            """
+        )
+        assert layout["documentWidth"] <= layout["viewportWidth"]
+        assert max(layout["visibleRight"]) <= layout["viewportWidth"]
+    finally:
+        context.close()
+
+
 def test_media_clips_and_context_actions_are_keyboard_operable(browser_page):
     browser_page.locator("#fileInput").set_input_files(
         {"name": "keyboard.png", "mimeType": "image/png", "buffer": PNG_BYTES}

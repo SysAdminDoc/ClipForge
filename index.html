@@ -1105,18 +1105,18 @@
     <div class="app">
         <!-- Menu Bar -->
         <div class="menu-bar" aria-label="Application menu">
-            <button class="menu-item" data-action="open-project">Open project</button>
-            <button class="menu-item" data-action="show-edit-menu" aria-haspopup="menu" aria-expanded="false">Edit</button>
-            <div class="edit-menu" id="editMenu" role="menu" aria-label="Edit actions" aria-hidden="true" hidden>
-                <button class="edit-menu-item" id="editUndo" role="menuitem" data-action="undo">Undo<span class="edit-menu-shortcut">Ctrl+Z</span></button>
-                <button class="edit-menu-item" id="editRedo" role="menuitem" data-action="redo">Redo<span class="edit-menu-shortcut">Ctrl+Shift+Z</span></button>
-                <button class="edit-menu-item" id="editCut" role="menuitem" data-action="cut-clip">Cut<span class="edit-menu-shortcut">Ctrl+X</span></button>
-                <button class="edit-menu-item" id="editCopy" role="menuitem" data-action="copy-clip">Copy<span class="edit-menu-shortcut">Ctrl+C</span></button>
-                <button class="edit-menu-item" id="editPaste" role="menuitem" data-action="paste-clip">Paste<span class="edit-menu-shortcut">Ctrl+V</span></button>
-                <button class="edit-menu-item" id="editSelectAll" role="menuitem" data-action="select-all">Select all<span class="edit-menu-shortcut">Ctrl+A</span></button>
-                <button class="edit-menu-item" id="editDelete" role="menuitem" data-action="delete-selected">Delete<span class="edit-menu-shortcut">Del</span></button>
+            <button class="menu-item" data-action="open-project" data-i18n="openProject">Open project</button>
+            <button class="menu-item" data-action="show-edit-menu" data-i18n="edit" aria-haspopup="menu" aria-expanded="false">Edit</button>
+            <div class="edit-menu" id="editMenu" role="menu" data-i18n-aria-label="editActions" aria-hidden="true" hidden>
+                <button class="edit-menu-item" id="editUndo" role="menuitem" data-action="undo"><span data-i18n="undo">Undo</span><span class="edit-menu-shortcut">Ctrl+Z</span></button>
+                <button class="edit-menu-item" id="editRedo" role="menuitem" data-action="redo"><span data-i18n="redo">Redo</span><span class="edit-menu-shortcut">Ctrl+Shift+Z</span></button>
+                <button class="edit-menu-item" id="editCut" role="menuitem" data-action="cut-clip"><span data-i18n="cut">Cut</span><span class="edit-menu-shortcut">Ctrl+X</span></button>
+                <button class="edit-menu-item" id="editCopy" role="menuitem" data-action="copy-clip"><span data-i18n="copy">Copy</span><span class="edit-menu-shortcut">Ctrl+C</span></button>
+                <button class="edit-menu-item" id="editPaste" role="menuitem" data-action="paste-clip"><span data-i18n="paste">Paste</span><span class="edit-menu-shortcut">Ctrl+V</span></button>
+                <button class="edit-menu-item" id="editSelectAll" role="menuitem" data-action="select-all"><span data-i18n="selectAll">Select all</span><span class="edit-menu-shortcut">Ctrl+A</span></button>
+                <button class="edit-menu-item" id="editDelete" role="menuitem" data-action="delete-selected"><span data-i18n="delete">Delete</span><span class="edit-menu-shortcut">Del</span></button>
             </div>
-            <button class="menu-item" data-action="export-browser-diagnostics">Diagnostics</button>
+            <button class="menu-item" data-action="export-browser-diagnostics" data-i18n="diagnostics">Diagnostics</button>
             <div class="menu-spacer"></div>
             <div class="menu-item" style="color: var(--text-3); cursor: default;">v0.5.2</div>
         </div>
@@ -1131,12 +1131,12 @@
             <div class="header-actions">
                 <div class="status-badge" role="status" aria-live="polite">
                     <div class="status-dot" id="statusDot"></div>
-                    <span id="statusText">Loading...</span>
+                    <span id="statusText" data-i18n="loading">Loading...</span>
                 </div>
-                <button class="btn btn-sm" id="cancelJobButton" data-action="cancel-job" hidden aria-label="Cancel active media job">Cancel job</button>
-                <button class="btn" data-action="open-project" aria-label="Open project">📂 Open</button>
-                <button class="btn" data-action="save-project" aria-label="Save project">💾 Save</button>
-                <button class="btn primary" id="exportButton" data-action="show-export" aria-label="Export video">⬇️ Export</button>
+                <button class="btn btn-sm" id="cancelJobButton" data-action="cancel-job" hidden data-i18n-aria-label="cancelJob"><span data-i18n="cancelJob">Cancel job</span></button>
+                <button class="btn" data-action="open-project" data-i18n-aria-label="openProject"><span aria-hidden="true">📂</span> <span data-i18n="open">Open</span></button>
+                <button class="btn" data-action="save-project" data-i18n-aria-label="save"><span aria-hidden="true">💾</span> <span data-i18n="save">Save</span></button>
+                <button class="btn primary" id="exportButton" data-action="show-export" data-i18n-aria-label="exportVideo"><span aria-hidden="true">⬇️</span> <span data-i18n="export">Export</span></button>
             </div>
         </div>
         
@@ -1145,49 +1145,49 @@
             <!-- Media Panel -->
             <div class="media-panel">
                 <div class="panel-header">
-                    <span class="panel-title">Project</span>
-                    <button class="btn btn-sm" data-action="import-media" aria-label="Import media files">+ Import</button>
+                    <span class="panel-title" data-i18n="project">Project</span>
+                    <button class="btn btn-sm" data-action="import-media" data-i18n-aria-label="importMediaFiles"><span aria-hidden="true">+</span> <span data-i18n="import">Import</span></button>
                 </div>
                 <div class="import-area">
                     <div class="drop-zone" id="dropZone" role="button" tabindex="0" aria-label="Import video, audio, or image files" data-action="import-media">
                         <div class="drop-zone-icon" aria-hidden="true">+</div>
-                        <div class="drop-zone-text">Drop files here or click to browse<br><span style="font-size: 10px; color: var(--text-3);">Video, audio, and image files</span></div>
+                        <div class="drop-zone-text"><span data-i18n="dropFiles">Drop files here or click to browse</span><br><span style="font-size: 10px; color: var(--text-3);" data-i18n="mediaFiles">Video, audio, and image files</span></div>
                     </div>
                     <input type="file" id="fileInput" multiple accept="video/*,audio/*,image/*">
                     <input type="file" id="projectFileInput" accept=".clipforge,application/json">
                     <input type="file" id="relinkFileInput" multiple accept="video/*,audio/*,image/*">
                 </div>
                 <div class="recovery-bar" id="recoveryBar" hidden>
-                    <span id="recoveryText">A recoverable browser project is available.</span>
-                    <button class="btn btn-sm" data-action="recover-project">Recover</button>
-                    <button class="btn btn-sm" data-action="discard-recovery">Discard</button>
+                    <span id="recoveryText" data-i18n="recoverableProject">A recoverable browser project is available.</span>
+                    <button class="btn btn-sm" data-action="recover-project" data-i18n="recover">Recover</button>
+                    <button class="btn btn-sm" data-action="discard-recovery" data-i18n="discard">Discard</button>
                 </div>
                 <div class="recovery-bar" id="relinkBar">
-                    <span>Project files store media references, not media bytes. Relink moved or reopened local sources here.</span>
-                    <button class="btn btn-sm" id="relinkButton" hidden data-action="relink-media">Relink</button>
+                    <span data-i18n="relinkHint">Project files store media references, not media bytes. Relink moved or reopened local sources here.</span>
+                    <button class="btn btn-sm" id="relinkButton" hidden data-action="relink-media" data-i18n="relink">Relink</button>
                 </div>
                 <div class="recovery-bar" id="browserProxyCacheBar">
                     <span id="browserProxyCacheText">Proxy cache usage is loading…</span>
-                    <button class="btn btn-sm" data-action="purge-browser-cache" aria-label="Purge browser proxy cache">Purge</button>
+                    <button class="btn btn-sm" data-action="purge-browser-cache" data-i18n-aria-label="purge" data-i18n="purge">Purge</button>
                 </div>
                 <div class="panel-tabs" role="tablist" aria-label="Project browser">
-                    <button class="panel-tab active" id="mediaTab" role="tab" aria-selected="true" aria-controls="mediaTabPanel" tabindex="0">Media</button>
-                    <button class="panel-tab" id="effectsTab" role="tab" aria-selected="false" aria-controls="effectsTabPanel" tabindex="-1">Effects</button>
+                    <button class="panel-tab active" id="mediaTab" role="tab" aria-selected="true" aria-controls="mediaTabPanel" tabindex="0" data-i18n="media">Media</button>
+                    <button class="panel-tab" id="effectsTab" role="tab" aria-selected="false" aria-controls="effectsTabPanel" tabindex="-1" data-i18n="effects">Effects</button>
                 </div>
                 <div class="tab-panel media-list" id="mediaTabPanel" role="tabpanel" aria-labelledby="mediaTab">
                     <div id="mediaList" role="region" aria-label="Project media">
                         <div style="text-align: center; padding: 40px 20px; color: var(--text-3);">
                             <div style="font-size: 32px; margin-bottom: 12px;" aria-hidden="true">📂</div>
-                            <div style="font-size: 12px;">No media imported</div>
+                            <div style="font-size: 12px;" data-i18n="noMedia">No media imported</div>
                         </div>
                     </div>
                 </div>
                 <div class="tab-panel media-list" id="effectsTabPanel" role="tabpanel" aria-labelledby="effectsTab" hidden>
                     <div class="effects-list">
-                        <button class="effect-item" data-action="quick-effect" data-effect="cinematic"><span class="effect-icon" aria-hidden="true">🎞</span><span class="effect-name">Cinematic contrast</span></button>
-                        <button class="effect-item" data-action="quick-effect" data-effect="bright"><span class="effect-icon" aria-hidden="true">☀</span><span class="effect-name">Brighten</span></button>
-                        <button class="effect-item" data-action="quick-effect" data-effect="mono"><span class="effect-icon" aria-hidden="true">◐</span><span class="effect-name">Monochrome</span></button>
-                        <button class="effect-item" data-action="quick-effect" data-effect="reset"><span class="effect-icon" aria-hidden="true">↺</span><span class="effect-name">Reset color</span></button>
+                        <button class="effect-item" data-action="quick-effect" data-effect="cinematic"><span class="effect-icon" aria-hidden="true">🎞</span><span class="effect-name" data-i18n="cinematicContrast">Cinematic contrast</span></button>
+                        <button class="effect-item" data-action="quick-effect" data-effect="bright"><span class="effect-icon" aria-hidden="true">☀</span><span class="effect-name" data-i18n="brighten">Brighten</span></button>
+                        <button class="effect-item" data-action="quick-effect" data-effect="mono"><span class="effect-icon" aria-hidden="true">◐</span><span class="effect-name" data-i18n="monochrome">Monochrome</span></button>
+                        <button class="effect-item" data-action="quick-effect" data-effect="reset"><span class="effect-icon" aria-hidden="true">↺</span><span class="effect-name" data-i18n="resetColor">Reset color</span></button>
                     </div>
                 </div>
             </div>
@@ -1201,18 +1201,18 @@
                         <canvas id="previewCanvas" style="display: none; max-width: 100%; max-height: 100%;"></canvas>
                         <div class="preview-placeholder" id="previewPlaceholder">
                             <div class="preview-placeholder-icon">▶</div>
-                            <div class="preview-placeholder-text">Drop media files here or use the import panel to get started</div>
+                            <div class="preview-placeholder-text" data-i18n="previewHint">Drop media files here or use the import panel to get started</div>
                         </div>
                     </div>
                 </div>
                 
                 <!-- Preview Controls -->
                 <div class="preview-controls">
-                    <button class="transport-btn" data-action="go-start" title="Go to start" aria-label="Go to start">⏮</button>
-                    <button class="transport-btn" data-action="step-backward" title="Step back" aria-label="Step backward">⏪</button>
-                    <button class="transport-btn play" id="playBtn" data-action="toggle-play" aria-label="Play preview">▶</button>
-                    <button class="transport-btn" data-action="step-forward" title="Step forward" aria-label="Step forward">⏩</button>
-                    <button class="transport-btn" data-action="go-end" title="Go to end" aria-label="Go to end">⏭</button>
+                    <button class="transport-btn" data-action="go-start" data-i18n-title="goToStart" data-i18n-aria-label="goToStart" aria-label="Go to start">⏮</button>
+                    <button class="transport-btn" data-action="step-backward" data-i18n-title="stepBack" data-i18n-aria-label="stepBackward" aria-label="Step backward">⏪</button>
+                    <button class="transport-btn play" id="playBtn" data-action="toggle-play" data-i18n-aria-label="playPreview" aria-label="Play preview">▶</button>
+                    <button class="transport-btn" data-action="step-forward" data-i18n-title="stepForward" data-i18n-aria-label="stepForward" aria-label="Step forward">⏩</button>
+                    <button class="transport-btn" data-action="go-end" data-i18n-title="goToEnd" data-i18n-aria-label="goToEnd" aria-label="Go to end">⏭</button>
                     
                     <div class="timecode">
                         <span id="currentTime">00:00:00:00</span>
@@ -1221,8 +1221,8 @@
                     <span class="timecode-total" id="totalTime">00:00:00:00</span>
                     
                     <div class="volume-control">
-                        <button class="volume-btn" data-action="toggle-mute" aria-label="Mute preview audio" aria-pressed="false">🔊</button>
-                        <input type="range" class="volume-slider" id="volumeSlider" min="0" max="100" value="100" aria-label="Preview volume" data-input-action="preview-volume">
+                        <button class="volume-btn" data-action="toggle-mute" data-i18n-aria-label="mutePreview" aria-label="Mute preview audio" aria-pressed="false">🔊</button>
+                        <input type="range" class="volume-slider" id="volumeSlider" min="0" max="100" value="100" data-i18n-aria-label="previewVolume" aria-label="Preview volume" data-input-action="preview-volume">
                     </div>
                 </div>
                 
@@ -1230,19 +1230,19 @@
                 <div class="timeline-section">
                     <div class="timeline-toolbar">
                         <div class="timeline-tools">
-                            <button class="tool-btn active" data-tool="select" data-action="set-tool" title="Selection (V)" aria-label="Selection tool" aria-pressed="true">🖱️</button>
-                            <button class="tool-btn" data-tool="razor" data-action="set-tool" title="Razor (C)" aria-label="Razor tool" aria-pressed="false">✂️</button>
-                            <button class="tool-btn" data-tool="slip" data-action="set-tool" title="Slip (Y)" aria-label="Slip tool" aria-pressed="false">↔️</button>
-                            <button class="tool-btn" data-tool="hand" data-action="set-tool" title="Hand (H)" aria-label="Hand tool" aria-pressed="false">✋</button>
+                            <button class="tool-btn active" data-tool="select" data-action="set-tool" data-i18n-title="selectionShortcut" data-i18n-aria-label="selectionTool" aria-label="Selection tool" aria-pressed="true">🖱️</button>
+                            <button class="tool-btn" data-tool="razor" data-action="set-tool" data-i18n-title="razorShortcut" data-i18n-aria-label="razorTool" aria-label="Razor tool" aria-pressed="false">✂️</button>
+                            <button class="tool-btn" data-tool="slip" data-action="set-tool" data-i18n-title="slipShortcut" data-i18n-aria-label="slipTool" aria-label="Slip tool" aria-pressed="false">↔️</button>
+                            <button class="tool-btn" data-tool="hand" data-action="set-tool" data-i18n-title="handShortcut" data-i18n-aria-label="handTool" aria-label="Hand tool" aria-pressed="false">✋</button>
                         </div>
                         
-                        <button class="btn btn-sm" data-action="split-clip" title="Split at playhead (S)">✂️ Split</button>
-                        <button class="btn btn-sm" data-action="delete-selected" title="Delete (Del)">🗑️ Delete</button>
-                        <button class="btn btn-sm" data-action="add-transition" title="Add dissolve">🔀 Dissolve</button>
+                        <button class="btn btn-sm" data-action="split-clip" data-i18n-title="splitShortcut"><span aria-hidden="true">✂️</span> <span data-i18n="split">Split</span></button>
+                        <button class="btn btn-sm" data-action="delete-selected" data-i18n-title="deleteShortcut"><span aria-hidden="true">🗑️</span> <span data-i18n="delete">Delete</span></button>
+                        <button class="btn btn-sm" data-action="add-transition" data-i18n-title="addDissolve"><span aria-hidden="true">🔀</span> <span data-i18n="dissolve">Dissolve</span></button>
                         
                         <div class="timeline-zoom">
                             <span style="font-size: 12px;">🔍</span>
-                            <input type="range" class="zoom-slider" id="zoomSlider" min="10" max="200" value="50" aria-label="Timeline zoom" data-input-action="timeline-zoom">
+                            <input type="range" class="zoom-slider" id="zoomSlider" min="10" max="200" value="50" data-i18n-aria-label="timelineZoom" data-input-action="timeline-zoom">
                             <span class="zoom-value" id="zoomValue">50%</span>
                         </div>
                     </div>
@@ -1303,55 +1303,55 @@
             <!-- Properties Panel -->
             <div class="properties-panel">
                 <div class="panel-header">
-                    <span class="panel-title">Properties</span>
+                    <span class="panel-title" data-i18n="properties">Properties</span>
                 </div>
                 <div class="panel-tabs" role="tablist" aria-label="Properties">
-                    <button class="panel-tab active" id="clipTab" role="tab" aria-selected="true" aria-controls="clipTabPanel" tabindex="0">Clip</button>
-                    <button class="panel-tab" id="transitionsTab" role="tab" aria-selected="false" aria-controls="transitionsTabPanel" tabindex="-1">Transitions</button>
-                    <button class="panel-tab" id="audioTab" role="tab" aria-selected="false" aria-controls="audioTabPanel" tabindex="-1">Audio</button>
+                    <button class="panel-tab active" id="clipTab" role="tab" aria-selected="true" aria-controls="clipTabPanel" tabindex="0" data-i18n="clip">Clip</button>
+                    <button class="panel-tab" id="transitionsTab" role="tab" aria-selected="false" aria-controls="transitionsTabPanel" tabindex="-1" data-i18n="transitions">Transitions</button>
+                    <button class="panel-tab" id="audioTab" role="tab" aria-selected="false" aria-controls="audioTabPanel" tabindex="-1" data-i18n="audio">Audio</button>
                 </div>
 
                 <div class="tab-panel" id="clipTabPanel" role="tabpanel" aria-labelledby="clipTab">
                     <div class="properties-section" id="clipProperties">
-                        <div class="properties-section-title">No Clip Selected</div>
-                        <div id="clipPropertiesContent" style="color: var(--text-3); font-size: 12px;">
+                        <div class="properties-section-title" data-i18n="noClip">No Clip Selected</div>
+                        <div id="clipPropertiesContent" style="color: var(--text-3); font-size: 12px;" data-i18n="selectClip">
                             Select a clip on the timeline to view its properties
                         </div>
                     </div>
 
                     <div class="properties-section">
-                        <div class="properties-section-title">Video Effects</div>
+                        <div class="properties-section-title" data-i18n="videoEffects">Video Effects</div>
                         <div class="property-row">
-                            <span class="property-label">Opacity</span>
+                            <span class="property-label" data-i18n="opacity">Opacity</span>
                             <input type="range" class="property-slider" id="opacitySlider" min="0" max="100" value="100" aria-label="Clip opacity" data-input-action="clip-property" data-property="opacity">
                             <span class="property-value" id="opacityValue">100%</span>
                         </div>
                         <div class="property-row">
-                            <span class="property-label">Scale</span>
+                            <span class="property-label" data-i18n="scale">Scale</span>
                             <input type="range" class="property-slider" id="scaleSlider" min="10" max="200" value="100" aria-label="Clip scale" data-input-action="clip-property" data-property="scale">
                             <span class="property-value" id="scaleValue">100%</span>
                         </div>
                         <div class="property-row">
-                            <span class="property-label">Rotation</span>
+                            <span class="property-label" data-i18n="rotation">Rotation</span>
                             <input type="range" class="property-slider" id="rotationSlider" min="-180" max="180" value="0" aria-label="Clip rotation" data-input-action="clip-property" data-property="rotation">
                             <span class="property-value" id="rotationValue">0°</span>
                         </div>
                     </div>
 
                     <div class="properties-section">
-                        <div class="properties-section-title">Color Correction</div>
+                        <div class="properties-section-title" data-i18n="colorCorrection">Color Correction</div>
                         <div class="property-row">
-                            <span class="property-label">Brightness</span>
+                            <span class="property-label" data-i18n="brightness">Brightness</span>
                             <input type="range" class="property-slider" id="brightnessSlider" min="-100" max="100" value="0" aria-label="Clip brightness" data-input-action="clip-property" data-property="brightness">
                             <span class="property-value" id="brightnessValue">0</span>
                         </div>
                         <div class="property-row">
-                            <span class="property-label">Contrast</span>
+                            <span class="property-label" data-i18n="contrast">Contrast</span>
                             <input type="range" class="property-slider" id="contrastSlider" min="-100" max="100" value="0" aria-label="Clip contrast" data-input-action="clip-property" data-property="contrast">
                             <span class="property-value" id="contrastValue">0</span>
                         </div>
                         <div class="property-row">
-                            <span class="property-label">Saturation</span>
+                            <span class="property-label" data-i18n="saturation">Saturation</span>
                             <input type="range" class="property-slider" id="saturationSlider" min="-100" max="100" value="0" aria-label="Clip saturation" data-input-action="clip-property" data-property="saturation">
                             <span class="property-value" id="saturationValue">0</span>
                         </div>

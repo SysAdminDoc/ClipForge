@@ -24,6 +24,7 @@ from .constants import (
     VIDEO_EXTS,
 )
 from .theme import stylesheet_for
+from .i18n import catalog_for_environment, localize_widget_tree
 from .settings import (
     consume_persistence_notices,
     load_recent,
@@ -76,6 +77,7 @@ def apply_application_theme(app, high_contrast=False):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self._i18n = catalog_for_environment()
         self.setWindowTitle(WINDOW_TITLE)
         self.setMinimumSize(1150, 780)
         self._settings = load_settings()
@@ -85,6 +87,7 @@ class MainWindow(QMainWindow):
         self.resize(w, h)
         self.setAcceptDrops(True)
         self._setup_ui()
+        localize_widget_tree(self, self._i18n)
         self._check_deps()
         self._start_capability_probe()
         self._load_recent()

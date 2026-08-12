@@ -120,6 +120,7 @@ All-in-one video editor — Trim, Crop, Upscale, Interpolate, Convert, Filter, A
 - Schema-versioned transactional settings, recents, and presets with atomic writes, backup recovery, corrupt-data quarantine, and legacy migration
 - **Capability-aware hardware encoding** — advertised FFmpeg encoders run bounded real encode probes off the GUI thread; unsupported devices are disabled with the driver error, and results are cached per FFmpeg binary/device signature
 - **Accessible controls** — screen reader labels, keyboard focus states
+- **Localization-ready UI** — strict English-default catalogs with named-placeholder validation and an `en-XA` pseudo-locale for long-string layout checks; set `CLIPFORGE_LOCALE=en-XA` for desktop or `window.CLIPFORGE_LOCALE = 'en-XA'` before loading the web editor
 - All panels wrapped in scroll areas for small screens
 - Status bar with current state
 - Dependency detection with guidance for missing tools
@@ -128,7 +129,7 @@ All-in-one video editor — Trim, Crop, Upscale, Interpolate, Convert, Filter, A
 - **Atomic output safety** — validates staged media before replacing the chosen destination
 - **Runtime security policy** — rejects unreviewed FFmpeg branches, keeps NVDEC fail-closed until a reviewed boundary, and requires the patched Qt 6.11.1 runtime
 - **Cross-surface provenance** — release checks record exact versions, SHA-256 hashes, licenses, and lock/source metadata for browser assets, Python distributions, FFmpeg/ffprobe, optional libmpv, and managed AI tools; support diagnostics include the identities used by each desktop job
-- 196-test suite covering utilities, process safety, semantic media validation, generated media, probing, proxy/AI caching, supply-chain validation, diagnostics, persistence, browser modules/jobs, and accessibility contracts
+- 200-test suite covering utilities, process safety, semantic media validation, generated media, probing, proxy/AI caching, supply-chain validation, diagnostics, persistence, browser modules/jobs, localization, and accessibility contracts
 
 ### Web Editor
 
@@ -210,7 +211,7 @@ python scripts/release_check.py --build
 Release builds are unsigned and produced locally. `clipforge/version.py` is the
 version source of truth; use `python scripts/sync_version.py --set X.Y.Z` to
 update desktop, web, README, and Windows executable metadata together.
-The release check runs the 196-test Python and headless-Chromium suite, then
+The release check runs the 200-test Python and headless-Chromium suite, then
 generates disposable FFmpeg fixtures for audio/video,
 subtitles, chapters, rotation, VFR, odd filenames, and core edit operations;
 `--build` creates a fresh hash-locked environment, builds the unsigned
