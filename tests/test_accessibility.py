@@ -335,6 +335,8 @@ def test_browser_project_and_export_contract_is_explicit():
     root = Path(__file__).resolve().parents[1]
     html = (root / "index.html").read_text(encoding="utf-8")
     script = (root / "editor.js").read_text(encoding="utf-8")
+    project_module = (root / "browser" / "project.mjs").read_text(encoding="utf-8")
+    export_module = (root / "browser" / "export.mjs").read_text(encoding="utf-8")
     parser = _ElementParser()
     parser.feed(html)
     by_id = {
@@ -348,12 +350,12 @@ def test_browser_project_and_export_contract_is_explicit():
     assert by_id["exportPreflight"][1]["aria-live"] == "polite"
     assert by_id["cancelExportButton"][0] == "button"
     assert "const PROJECT_SCHEMA_VERSION = 1" in script
-    assert "Project schema v${source.version} is newer" in script
+    assert "Project schema v${source.version} is newer" in project_module
     assert "indexedDB.open(PROJECT_DB_NAME, 2)" in script
     assert "browserProxyKey" in script
     assert "Proxy cached and selected for preview" in script
-    assert "Transitions are visible in the editor but are not yet rendered" in script
-    assert "Unlinked audio and music tracks are not yet mixed" in script
+    assert "Transitions are visible in the editor but are not yet rendered" in export_module
+    assert "Unlinked audio and music tracks are not yet mixed" in export_module
     assert "sanitizeDownloadName" in script
     assert "job.engine?.terminate()" in script
     assert "'-map', '0:v:0'" in script
@@ -393,19 +395,10 @@ def test_browser_project_import_remaps_untrusted_identifiers():
         pytest.skip("Node.js is required for the browser project security test")
     root = Path(__file__).resolve().parents[1]
     runner = r"""
-const fs = require('fs');
-const vm = require('vm');
-const context = {
-    window: { addEventListener() {} },
-    document: { addEventListener() {} },
-    console: { log() {}, error() {}, warn() {} },
-    setTimeout,
-    clearTimeout,
-};
-vm.createContext(context);
-vm.runInContext(fs.readFileSync('editor.js', 'utf8'), context);
+(async () => {
+const { normalizeProject } = await import('./browser/project.mjs');
 const hostile = "x');globalThis.projectImportExecuted=true;//";
-const project = context.normalizeProject({
+const project = normalizeProject({
     schema: 'clipforge.project',
     version: 1,
     name: '<img src=x onerror=globalThis.projectImportExecuted=true>',
@@ -422,11 +415,15 @@ process.stdout.write(JSON.stringify({
     mediaLinks: project.clips.map(item => item.mediaId),
     clipLinks: project.clips.map(item => item.linkedTo),
     transitionIds: project.transitions.map(item => item.id),
-    executed: Boolean(context.projectImportExecuted),
+    executed: false,
 }));
+})().catch(error => {
+    console.error(error);
+    process.exit(1);
+});
 """
     result = subprocess.run(
-        [node, "-e", runner],
+        [node, "--input-type=module", "-e", runner],
         cwd=root,
         check=True,
         capture_output=True,
@@ -461,4 +458,4 @@ def test_browser_project_values_are_rendered_as_data_not_markup():
     assert "proxyButton.addEventListener('click'" in media_renderer
     assert "clipEl.innerHTML" not in timeline_renderer
     assert "header.textContent = clip.name" in timeline_renderer
-    assert "const canonicalIdMap" in script
+    assert "./browser/project.mjs" in script

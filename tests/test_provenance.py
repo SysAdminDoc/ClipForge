@@ -57,3 +57,15 @@ def test_stale_required_python_provenance_fails():
     with pytest.raises(RuntimeError, match="Python dependency"):
         validate_provenance(stale)
 
+
+def test_known_license_file_packages_have_explicit_spdx_provenance():
+    manifest = build_provenance()
+    dependencies = {
+        dependency["normalized_name"]: dependency
+        for group in manifest["python"]["groups"]
+        for dependency in group["dependencies"]
+    }
+
+    assert dependencies["colorama"]["license"] == "BSD-3-Clause"
+    assert dependencies["pygments"]["license"] == "BSD-2-Clause"
+    assert dependencies["typing-extensions"]["license"] == "PSF-2.0.1"

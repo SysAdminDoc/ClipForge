@@ -273,6 +273,11 @@ def _run_browser_matrix(root: Path, source: Path, source_info, desktop_output: P
         raise RuntimeError("Playwright is required for the browser media matrix") from exc
 
     class _IsolatedHandler(SimpleHTTPRequestHandler):
+        extensions_map = {
+            **SimpleHTTPRequestHandler.extensions_map,
+            ".mjs": "application/javascript",
+        }
+
         def end_headers(self):
             self.send_header("Cross-Origin-Opener-Policy", "same-origin")
             self.send_header("Cross-Origin-Embedder-Policy", "require-corp")

@@ -31,7 +31,10 @@ _PACKAGE_LINE = re.compile(
 )
 _HASH_LINE = re.compile(r"--hash=sha256:([0-9a-fA-F]{64})")
 _LICENSE_OVERRIDES = {
+    "colorama": "BSD-3-Clause",
     "pyqt6": "GPL-3.0-only OR commercial",
+    "pygments": "BSD-2-Clause",
+    "typing-extensions": "PSF-2.0.1",
 }
 
 

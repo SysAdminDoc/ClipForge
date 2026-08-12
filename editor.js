@@ -30,12 +30,16 @@ let browserProxyJob = null;
 let browserFfmpegJob = null;
 let lastBrowserFfmpegJob = null;
 let ffmpegInitPromise = null;
+let browserTimelineApi = null;
+let browserProjectApi = null;
+let browserJobsApi = null;
+let browserStorageApi = null;
+let browserPreviewApi = null;
+let browserExportApi = null;
+let browserDiagnosticsApi = null;
+let browserModulesPromise = null;
 const browserDiagnosticErrors = [];
 const BROWSER_DIAGNOSTIC_MAX_ERRORS = 50;
-const BROWSER_SECRET_KEY_PATTERN = /(?:password|passwd|token|secret|api[_-]?key|authorization|credential|cookie|signature|session)/i;
-const BROWSER_PRIVATE_KEY_PATTERN = /^(?:file(?:name|path)?|local_path|media(?:_name|_path)?|private_metadata|title|artist|album|comment|location|tags)$/i;
-const BROWSER_URL_PATTERN = /\b(?:https?|ftp):\/\/[^\s"'<>]+/gi;
-const BROWSER_PATH_PATTERN = /(?<![\w])(?:[a-z]:\\|\\\\)[^\r\n"']+|(?<![\w:/])\/(?:[^\/\r\n"']+\/)+[^\/\r\n"']*/gi;
 const trackStates = {
     video: { visible: true, locked: false },
     audio: { muted: false, solo: false },
@@ -92,53 +96,14 @@ function recordBrowserDiagnosticError(error, context = 'runtime') {
     }
 }
 
-function redactBrowserUrlMatch(match) {
-    let raw = match;
-    let trailing = '';
-    while (raw && '.,;:)]}>'.includes(raw.at(-1))) {
-        trailing = raw.at(-1) + trailing;
-        raw = raw.slice(0, -1);
-    }
-    try {
-        const url = new URL(raw);
-        if (url.username || url.password) {
-            url.username = '<redacted-secret>';
-            url.password = '<redacted-secret>';
-        }
-        for (const key of [...url.searchParams.keys()]) {
-            if (BROWSER_SECRET_KEY_PATTERN.test(key)) {
-                url.searchParams.set(key, '<redacted-secret>');
-            }
-        }
-        if (url.hash) url.hash = '#<redacted-secret>';
-        return url.toString() + trailing;
-    } catch (_error) {
-        return '<redacted-url>' + trailing;
-    }
-}
-
 function redactBrowserText(value) {
-    return String(value)
-        .replace(BROWSER_URL_PATTERN, redactBrowserUrlMatch)
-        .replace(BROWSER_PATH_PATTERN, '<redacted-path>');
+    if (!browserDiagnosticsApi) throw new Error('Browser diagnostics module is not ready');
+    return browserDiagnosticsApi.redactBrowserText(value);
 }
 
 function redactBrowserValue(value, key = '') {
-    const keyText = String(key);
-    const controlKey = /(?:redacted|included)$/i.test(keyText);
-    if (!controlKey && BROWSER_SECRET_KEY_PATTERN.test(keyText)) return '<redacted-secret>';
-    if (!controlKey && BROWSER_PRIVATE_KEY_PATTERN.test(keyText)) return '<redacted-private-metadata>';
-    if (typeof value === 'string') return redactBrowserText(value);
-    if (Array.isArray(value)) return value.map(item => redactBrowserValue(item));
-    if (value && typeof value === 'object') {
-        return Object.fromEntries(
-            Object.entries(value).map(([itemKey, item]) => [
-                itemKey,
-                redactBrowserValue(item, itemKey),
-            ]),
-        );
-    }
-    return value;
+    if (!browserDiagnosticsApi) throw new Error('Browser diagnostics module is not ready');
+    return browserDiagnosticsApi.redactBrowserValue(value, key);
 }
 
 window.addEventListener('error', event => {
@@ -156,8 +121,32 @@ let previewVideo, previewCanvas, previewCtx;
 let activePreviewClipId = null;
 let previewSource = null;
 
+function loadBrowserModules() {
+    if (!browserModulesPromise) {
+        browserModulesPromise = Promise.all([
+            import('./browser/timeline.mjs'),
+            import('./browser/project.mjs'),
+            import('./browser/jobs.mjs'),
+            import('./browser/storage.mjs'),
+            import('./browser/preview.mjs'),
+            import('./browser/export.mjs'),
+            import('./browser/diagnostics.mjs'),
+        ]).then(([timeline, project, jobs, storage, preview, exportApi, diagnostics]) => {
+            browserTimelineApi = timeline;
+            browserProjectApi = project;
+            browserJobsApi = jobs;
+            browserStorageApi = storage;
+            browserPreviewApi = preview;
+            browserExportApi = exportApi;
+            browserDiagnosticsApi = diagnostics;
+        });
+    }
+    return browserModulesPromise;
+}
+
 // ==================== INITIALIZATION ====================
 document.addEventListener('DOMContentLoaded', async () => {
+    await loadBrowserModules();
     previewVideo = document.getElementById('previewVideo');
     previewCanvas = document.getElementById('previewCanvas');
     previewCtx = previewCanvas?.getContext('2d');
@@ -182,17 +171,13 @@ class BrowserJobConflictError extends Error {}
 class BrowserJobCancelledError extends Error {}
 
 function browserJobLabel(type) {
-    return {
-        waveform: 'Waveform',
-        proxy: 'Proxy',
-        export: 'Export',
-    }[type] || 'Media job';
+    return browserJobsApi?.browserJobLabel(type) || 'Media job';
 }
 
 function browserJobId(type) {
     const token = globalThis.crypto?.randomUUID?.().replaceAll('-', '')
         || `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
-    return `cf_${type}_${token}`;
+    return browserJobsApi?.browserJobId(type, token) || `cf_${type}_${token}`;
 }
 
 function updateBrowserJobUi(job = browserFfmpegJob) {
@@ -1143,25 +1128,13 @@ async function browserProxySourceFingerprint(file) {
 }
 
 function browserProxyFingerprintMatches(left, right) {
-    return Boolean(
-        left
-        && right
-        && left.name === right.name
-        && Number(left.size) === Number(right.size)
-        && Number(left.lastModified) === Number(right.lastModified)
-        && left.sampleBytes === right.sampleBytes
-        && left.sampleSha256 === right.sampleSha256,
-    );
+    if (!browserStorageApi) throw new Error('Browser storage module is not ready');
+    return browserStorageApi.proxyFingerprintMatches(left, right);
 }
 
 function browserProxyKeyFromFingerprint(fingerprint) {
-    return [
-        `v${BROWSER_PROXY_PROFILE}`,
-        fingerprint.size,
-        fingerprint.lastModified,
-        fingerprint.sampleSha256,
-        encodeURIComponent(fingerprint.name),
-    ].join(':');
+    if (!browserStorageApi) throw new Error('Browser storage module is not ready');
+    return browserStorageApi.proxyKeyFromFingerprint(fingerprint, BROWSER_PROXY_PROFILE);
 }
 
 async function browserProxyIdentity(file) {
@@ -1174,26 +1147,22 @@ async function browserProxyKey(file) {
 }
 
 function browserProxyRecordSize(record) {
-    const size = Number(record?.size ?? record?.blob?.size ?? 0);
-    return Number.isFinite(size) && size > 0 ? size : 0;
+    if (!browserStorageApi) throw new Error('Browser storage module is not ready');
+    return browserStorageApi.proxyRecordSize(record);
 }
 
 function browserProxyRecordIsComplete(record) {
-    return Boolean(
-        record
-        && record.profile === BROWSER_PROXY_PROFILE
-        && record.complete === true
-        && typeof record.key === 'string'
-        && record.blob instanceof Blob
-        && browserProxyRecordSize(record) === record.blob.size
-        && record.blob.size > 0,
-    );
+    if (!browserStorageApi) throw new Error('Browser storage module is not ready');
+    return browserStorageApi.proxyRecordIsComplete(record, BROWSER_PROXY_PROFILE, Blob);
 }
 
 function browserProxyRecordIsValid(record, source) {
-    return Boolean(
-        browserProxyRecordIsComplete(record)
-        && browserProxyFingerprintMatches(record.source, source)
+    if (!browserStorageApi) throw new Error('Browser storage module is not ready');
+    return browserStorageApi.proxyRecordIsValid(
+        record,
+        source,
+        BROWSER_PROXY_PROFILE,
+        Blob,
     );
 }
 
@@ -2244,111 +2213,13 @@ function unlinkAudio() {
 
 // ==================== PLAYBACK ====================
 function resolveTimelineAtTime(time = currentTime) {
-    const projectDuration = clips.reduce(
-        (end, clip) => Math.max(end, finiteNumber(clip.startTime) + finiteNumber(clip.duration)),
-        0,
-    );
-    const globalTime = Math.max(
-        0,
-        Math.min(projectDuration, finiteNumber(time)),
-    );
-    const active = clips.filter(clip => {
-        const start = finiteNumber(clip.startTime);
-        const end = start + Math.max(0, finiteNumber(clip.duration));
-        return start <= globalTime && globalTime < end;
-    });
-    const videoCandidates = active
-        .filter(clip => clip.track === 'video')
-        .sort((left, right) => finiteNumber(left.startTime) - finiteNumber(right.startTime));
-    const selectedVideo = trackStates.video.visible === false
-        ? null
-        : videoCandidates[videoCandidates.length - 1] || null;
-    const video = selectedVideo
-        ? {
-            clip: selectedVideo,
-            sourceTime: Math.max(
-                finiteNumber(selectedVideo.inPoint),
-                Math.min(
-                    finiteNumber(selectedVideo.outPoint, finiteNumber(selectedVideo.inPoint) + finiteNumber(selectedVideo.duration)),
-                    finiteNumber(selectedVideo.inPoint) + globalTime - finiteNumber(selectedVideo.startTime),
-                ),
-            ),
-        }
-        : null;
-
-    const audioCandidates = active.filter(
-        clip => clip.track === 'audio' || clip.track === 'music',
-    );
-    const soloTrack = trackStates.audio.solo
-        ? 'audio'
-        : (trackStates.music.solo ? 'music' : null);
-    const audio = audioCandidates
-        .filter(clip => !soloTrack || clip.track === soloTrack)
-        .filter(clip => !trackStates[clip.track]?.muted)
-        .map(clip => ({
-            clip,
-            sourceTime: Math.max(
-                finiteNumber(clip.inPoint),
-                Math.min(
-                    finiteNumber(clip.outPoint, finiteNumber(clip.inPoint) + finiteNumber(clip.duration)),
-                    finiteNumber(clip.inPoint) + globalTime - finiteNumber(clip.startTime),
-                ),
-            ),
-            volume: Math.max(0, Math.min(100, finiteNumber(clip.volume, 100))),
-        }));
-    return {
-        time: globalTime,
-        video,
-        audio,
-        active,
-        trackStates: JSON.parse(JSON.stringify(trackStates)),
-    };
+    if (!browserTimelineApi) throw new Error('Browser timeline module is not ready');
+    return browserTimelineApi.resolveTimelineAtTime(clips, trackStates, time);
 }
 
 function buildResolvedTimelinePlan() {
-    const projectDuration = clips.reduce(
-        (end, clip) => Math.max(end, finiteNumber(clip.startTime) + finiteNumber(clip.duration)),
-        0,
-    );
-    const boundaries = [...new Set([
-        0,
-        projectDuration,
-        ...clips.flatMap(clip => [
-            Math.max(0, finiteNumber(clip.startTime)),
-            Math.max(0, finiteNumber(clip.startTime) + finiteNumber(clip.duration)),
-        ]),
-    ])].sort((left, right) => left - right);
-    const videoSegments = [];
-    const audioSegments = [];
-    for (let index = 0; index < boundaries.length - 1; index++) {
-        const start = boundaries[index];
-        const end = boundaries[index + 1];
-        if (end - start <= 0.0001) continue;
-        const resolved = resolveTimelineAtTime((start + end) / 2);
-        if (resolved.video) {
-            const previous = videoSegments[videoSegments.length - 1];
-            if (
-                previous
-                && previous.clip.id === resolved.video.clip.id
-                && Math.abs(previous.timelineStart + previous.duration - start) < 0.0001
-            ) {
-                previous.duration = end - previous.timelineStart;
-            } else {
-                videoSegments.push({
-                    clip: resolved.video.clip,
-                    timelineStart: start,
-                    sourceStart: finiteNumber(resolved.video.clip.inPoint),
-                    duration: end - start,
-                });
-            }
-        }
-        audioSegments.push({
-            timelineStart: start,
-            duration: end - start,
-            clips: resolved.audio,
-        });
-    }
-    return { duration: projectDuration, boundaries, videoSegments, audioSegments };
+    if (!browserTimelineApi) throw new Error('Browser timeline module is not ready');
+    return browserTimelineApi.buildResolvedTimelinePlan(clips, trackStates);
 }
 
 function togglePlay() {
@@ -2456,8 +2327,8 @@ function loadPreview(url) {
 function syncPreviewAtTime(time, { autoplay = false } = {}) {
     if (!previewVideo) return null;
     const resolved = resolveTimelineAtTime(time);
-    const video = resolved.video;
-    if (!video) {
+    const preview = browserPreviewApi?.resolvePreviewState(resolved, mediaItems);
+    if (!preview) {
         previewVideo.pause();
         activePreviewClipId = null;
         previewSource = null;
@@ -2467,23 +2338,18 @@ function syncPreviewAtTime(time, { autoplay = false } = {}) {
             'No video clip at the playhead.';
         return resolved;
     }
-    const clip = video.clip;
-    const media = mediaItems.find(item => item.id == clip.mediaId);
-    const url = clip.url || media?.proxyUrl || media?.url;
+    const { clip, url } = preview;
     if (!url) return resolved;
     if (activePreviewClipId !== clip.id || previewSource !== url) {
         activePreviewClipId = clip.id;
         loadPreview(url);
     }
-    previewVideo.style.opacity = String(Math.max(0, Math.min(1, finiteNumber(clip.opacity, 100) / 100)));
-    previewVideo.style.transform = `rotate(${finiteNumber(clip.rotation)}deg) scale(${Math.max(0.01, finiteNumber(clip.scale, 100) / 100)})`;
-    previewVideo.style.filter = `brightness(${1 + finiteNumber(clip.brightness) / 100}) contrast(${1 + finiteNumber(clip.contrast) / 100}) saturate(${1 + finiteNumber(clip.saturation) / 100})`;
-    const linkedAudio = resolved.audio.find(
-        entry => entry.clip.id === clip.linkedTo || entry.clip.linkedTo === clip.id,
-    );
-    previewVideo.muted = !linkedAudio;
-    previewVideo.volume = linkedAudio ? linkedAudio.volume / 100 : 0;
-    const target = Math.max(0, video.sourceTime);
+    previewVideo.style.opacity = String(preview.opacity);
+    previewVideo.style.transform = preview.transform;
+    previewVideo.style.filter = preview.filter;
+    previewVideo.muted = preview.muted;
+    previewVideo.volume = preview.volume;
+    const target = preview.sourceTime;
     if (previewVideo.readyState >= 1 && Math.abs(previewVideo.currentTime - target) > 0.08) {
         previewVideo.currentTime = target;
     }
@@ -2638,113 +2504,18 @@ function sanitizeDownloadName(value) {
 }
 
 function buildExportPreflight() {
-    const format = document.getElementById('exportFormat')?.value || 'mp4';
-    const resolution = document.getElementById('exportResolution')?.value || 'original';
-    const reasons = [];
-    const notes = [];
-    const videoClips = clips
-        .filter(clip => clip.track === 'video')
-        .sort((a, b) => a.startTime - b.startTime);
-    const timelinePlan = buildResolvedTimelinePlan();
-
-    if (!ffmpegLoaded) reasons.push('The FFmpeg engine is not ready.');
-    if (browserFfmpegJob && browserFfmpegJob.type !== 'export') {
-        reasons.push(
-            `${browserFfmpegJob.label} is ${browserFfmpegJob.state}; `
-            + 'finish or cancel it before exporting.',
-        );
-    }
-    if (videoClips.length === 0) reasons.push('At least one video clip is required.');
-    if (videoClips.some(clip => clip.type !== 'video')) {
-        reasons.push('Image timeline clips are not supported by browser export.');
-    }
-    if (transitions.length > 0) {
-        reasons.push('Transitions are visible in the editor but are not yet rendered by browser export.');
-    }
-    const independentAudio = clips.filter(
-        clip => (clip.track === 'audio' || clip.track === 'music') && !clip.linkedTo,
-    );
-    if (independentAudio.length > 0) {
-        reasons.push('Unlinked audio and music tracks are not yet mixed by browser export.');
-    }
-    if (
-        trackStates.video.visible === false
-        || trackStates.audio.muted
-        || trackStates.audio.solo
-        || trackStates.music.muted
-        || trackStates.music.solo
-    ) {
-        reasons.push('Track visibility, mute, and solo states are preview-only and must be reset before export.');
-    }
-    if (videoClips.length > 0 && timelinePlan.videoSegments.length !== videoClips.length) {
-        reasons.push('The resolved timeline cannot represent every video clip as a deterministic export segment.');
-    }
-
-    videoClips.forEach((clip, index) => {
-        const media = mediaItems.find(item => item.id == clip.mediaId);
-        if (!media || media.missing || !media.file) {
-            reasons.push(`Clip ${index + 1} (${clip.name || 'unnamed'}) needs its source relinked.`);
-        }
-        if (!(Number(clip.duration) > 0) || Number(clip.inPoint) < 0) {
-            reasons.push(`Clip ${index + 1} has invalid trim timing.`);
-        }
-        if (Number(clip.opacity ?? 100) !== 100 || Number(clip.scale ?? 100) !== 100) {
-            reasons.push(`Clip ${index + 1} uses opacity or scale, which browser export does not render yet.`);
-        }
-        const linkedAudio = clips.find(
-            candidate => candidate.id === clip.linkedTo && candidate.track === 'audio',
-        );
-        if (!linkedAudio) {
-            reasons.push(`Clip ${index + 1} has changed audio linkage, which browser export cannot represent safely.`);
-        } else if (
-            Number(linkedAudio.volume ?? 100) !== 100
-            || Math.abs(finiteNumber(linkedAudio.startTime) - finiteNumber(clip.startTime)) > 0.01
-            || Math.abs(finiteNumber(linkedAudio.duration) - finiteNumber(clip.duration)) > 0.01
-            || Math.abs(finiteNumber(linkedAudio.inPoint) - finiteNumber(clip.inPoint)) > 0.01
-        ) {
-            reasons.push(`Clip ${index + 1} has edited linked-audio timing or volume, which browser export does not render yet.`);
-        }
-        if (index === 0 && finiteNumber(clip.startTime) > 0.05) {
-            reasons.push(`There is an unrendered ${finiteNumber(clip.startTime).toFixed(2)} second gap before the first clip.`);
-        } else if (index > 0) {
-            const previous = videoClips[index - 1];
-            const gap = Number(clip.startTime) - (Number(previous.startTime) + Number(previous.duration));
-            if (Math.abs(gap) > 0.05) {
-                reasons.push(
-                    gap > 0
-                        ? `There is an unrendered ${gap.toFixed(2)} second gap before clip ${index + 1}.`
-                        : `Clip ${index + 1} overlaps the preceding clip without a supported transition.`,
-                );
-            }
-        }
+    if (!browserExportApi) throw new Error('Browser export module is not ready');
+    return browserExportApi.buildExportPreflight({
+        format: document.getElementById('exportFormat')?.value || 'mp4',
+        resolution: document.getElementById('exportResolution')?.value || 'original',
+        clips,
+        transitions,
+        trackStates,
+        mediaItems,
+        ffmpegLoaded,
+        browserFfmpegJob,
+        timelinePlan: buildResolvedTimelinePlan(),
     });
-
-    if (resolution === 'original' && videoClips.length > 1) {
-        const dimensions = new Set(
-            videoClips.map(clip => {
-                const media = mediaItems.find(item => item.id == clip.mediaId);
-                return media?.width && media?.height ? `${media.width}x${media.height}` : 'unknown';
-            }),
-        );
-        if (dimensions.size > 1 || dimensions.has('unknown')) {
-            reasons.push('Multi-clip original-resolution export requires matching, known source dimensions; choose a fixed resolution.');
-        }
-    }
-
-    notes.push('Video trim, rotation, brightness, contrast, and saturation are rendered.');
-    notes.push(
-        format === 'gif'
-            ? 'GIF has no audio by format; embedded source audio will be omitted.'
-            : 'Embedded source audio is preserved when present.',
-    );
-    return {
-        supported: reasons.length === 0,
-        reasons: [...new Set(reasons)],
-        notes,
-        videoClips,
-        videoSegments: timelinePlan.videoSegments,
-        timelinePlan,
-    };
 }
 
 function renderExportPreflight() {
@@ -2975,207 +2746,24 @@ function finiteNumber(value, fallback = 0) {
     return Number.isFinite(number) ? number : fallback;
 }
 
-function projectMediaReference(media) {
-    const file = media.file;
-    return {
-        name: String(file?.name || media.name || 'media').slice(0, 255),
-        size: finiteNumber(file?.size ?? media.reference?.size, 0),
-        lastModified: finiteNumber(file?.lastModified ?? media.reference?.lastModified, 0),
-        mime: String(file?.type || media.reference?.mime || '').slice(0, 127),
-        relativePath: String(file?.webkitRelativePath || media.reference?.relativePath || '').slice(0, 1024),
-    };
-}
-
 function serializeProject() {
-    const project = {
-        schema: PROJECT_SCHEMA,
-        version: PROJECT_SCHEMA_VERSION,
+    if (!browserProjectApi) throw new Error('Browser project module is not ready');
+    return browserProjectApi.serializeProject({
+        mediaItems,
+        clips,
+        transitions,
+        pixelsPerSecond,
+        trackStates,
+        name: document.querySelector('.project-name')?.textContent?.trim()
+            || 'Untitled Project',
         savedAt: new Date().toISOString(),
-        name: document.querySelector('.project-name')?.textContent?.trim() || 'Untitled Project',
-        media: mediaItems.map(media => ({
-            id: media.id,
-            name: String(media.name || '').slice(0, 255),
-            type: ['video', 'audio', 'image'].includes(media.type) ? media.type : 'video',
-            duration: finiteNumber(media.duration),
-            width: finiteNumber(media.width),
-            height: finiteNumber(media.height),
-            reference: projectMediaReference(media),
-            proxy: media.proxyKey ? {
-                key: media.proxyKey,
-                profile: BROWSER_PROXY_PROFILE,
-                size: finiteNumber(media.proxySize),
-            } : null,
-        })),
-        clips: clips.map(clip => ({
-            id: clip.id,
-            mediaId: clip.mediaId,
-            track: ['video', 'audio', 'music'].includes(clip.track) ? clip.track : 'video',
-            startTime: finiteNumber(clip.startTime),
-            duration: finiteNumber(clip.duration),
-            inPoint: finiteNumber(clip.inPoint),
-            outPoint: finiteNumber(clip.outPoint, finiteNumber(clip.duration)),
-            name: String(clip.name || '').slice(0, 255),
-            type: ['video', 'audio', 'image'].includes(clip.type) ? clip.type : 'video',
-            linkedTo: clip.linkedTo ?? null,
-            opacity: finiteNumber(clip.opacity, 100),
-            scale: finiteNumber(clip.scale, 100),
-            rotation: finiteNumber(clip.rotation),
-            brightness: finiteNumber(clip.brightness),
-            contrast: finiteNumber(clip.contrast),
-            saturation: finiteNumber(clip.saturation),
-            volume: finiteNumber(clip.volume, 100),
-        })),
-        transitions: transitions.map(transition => ({
-            id: transition.id,
-            time: finiteNumber(transition.time),
-            duration: finiteNumber(transition.duration, 1),
-            type: ['dissolve', 'fade', 'wipe', 'zoom'].includes(transition.type)
-                ? transition.type
-                : 'dissolve',
-        })),
-        timeline: {
-            pixelsPerSecond: finiteNumber(pixelsPerSecond, 50),
-            trackStates: JSON.parse(JSON.stringify(trackStates)),
-        },
-    };
-    return project;
+        proxyProfile: BROWSER_PROXY_PROFILE,
+    });
 }
 
 function normalizeProject(raw) {
-    if (!raw || typeof raw !== 'object') throw new Error('Project file must contain a JSON object');
-    let source = raw;
-    if (raw.schema !== PROJECT_SCHEMA) {
-        if (!Array.isArray(raw.mediaItems) || !Array.isArray(raw.clips)) {
-            throw new Error('This is not a ClipForge project file');
-        }
-        source = {
-            schema: PROJECT_SCHEMA,
-            version: PROJECT_SCHEMA_VERSION,
-            name: 'Imported legacy project',
-            media: raw.mediaItems.map(media => ({
-                ...media,
-                reference: {
-                    name: media.name,
-                    size: media.size || 0,
-                    lastModified: media.lastModified || 0,
-                    mime: media.type || '',
-                },
-            })),
-            clips: raw.clips,
-            transitions: raw.transitions || [],
-            timeline: { pixelsPerSecond: 50, trackStates: {} },
-        };
-    }
-    if (finiteNumber(source.version) > PROJECT_SCHEMA_VERSION) {
-        throw new Error(`Project schema v${source.version} is newer than this editor supports`);
-    }
-    if (!Array.isArray(source.media) || !Array.isArray(source.clips) || !Array.isArray(source.transitions || [])) {
-        throw new Error('Project media, clips, and transitions must be arrays');
-    }
-    if (source.media.length > 5000 || source.clips.length > 10000 || source.transitions.length > 5000) {
-        throw new Error('Project exceeds the browser editor safety limits');
-    }
-
-    const canonicalIdMap = (items, prefix) => {
-        const ids = new Map();
-        items.forEach((item, index) => {
-            if (!item || typeof item !== 'object') {
-                throw new Error(`Project ${prefix} ${index + 1} must be an object`);
-            }
-            const sourceId = String(item.id ?? `${prefix}-source-${index + 1}`);
-            if (ids.has(sourceId)) {
-                throw new Error(`Project contains duplicate ${prefix} identifiers`);
-            }
-            ids.set(sourceId, `${prefix}-${index + 1}`);
-        });
-        return ids;
-    };
-    const mediaIdMap = canonicalIdMap(source.media, 'media');
-    const clipIdMap = canonicalIdMap(source.clips, 'clip');
-    const transitionIdMap = canonicalIdMap(source.transitions || [], 'transition');
-
-    const media = source.media.map((item, index) => ({
-        id: mediaIdMap.get(String(item.id ?? `media-source-${index + 1}`)),
-        name: String(item.name || item.reference?.name || `Media ${index + 1}`).slice(0, 255),
-        type: ['video', 'audio', 'image'].includes(item.type) ? item.type : 'video',
-        duration: Math.max(0, finiteNumber(item.duration)),
-        width: Math.max(0, finiteNumber(item.width)),
-        height: Math.max(0, finiteNumber(item.height)),
-        reference: {
-            name: String(item.reference?.name || item.name || '').slice(0, 255),
-            size: Math.max(0, finiteNumber(item.reference?.size)),
-            lastModified: Math.max(0, finiteNumber(item.reference?.lastModified)),
-            mime: String(item.reference?.mime || '').slice(0, 127),
-            relativePath: String(item.reference?.relativePath || '').slice(0, 1024),
-        },
-        proxy: item.proxy && typeof item.proxy === 'object' ? {
-            key: String(item.proxy.key || '').slice(0, 1024),
-            profile: finiteNumber(item.proxy.profile),
-            size: Math.max(0, finiteNumber(item.proxy.size)),
-        } : null,
-        file: null,
-        url: null,
-        proxyUrl: null,
-        proxyKey: null,
-        proxySize: 0,
-        proxyActive: false,
-        thumbnail: null,
-        waveform: null,
-        missing: true,
-    }));
-    const normalizedClips = source.clips.map((clip, index) => {
-        const mediaId = mediaIdMap.get(String(clip.mediaId));
-        if (!mediaId) {
-            throw new Error(`Clip ${index + 1} references media that is not in the project`);
-        }
-        const linkedTo = clip.linkedTo == null
-            ? null
-            : clipIdMap.get(String(clip.linkedTo));
-        if (clip.linkedTo != null && !linkedTo) {
-            throw new Error(`Clip ${index + 1} links to a clip that is not in the project`);
-        }
-        return {
-            id: clipIdMap.get(String(clip.id ?? `clip-source-${index + 1}`)),
-            mediaId,
-            track: ['video', 'audio', 'music'].includes(clip.track) ? clip.track : 'video',
-            startTime: Math.max(0, finiteNumber(clip.startTime)),
-            duration: Math.max(0, finiteNumber(clip.duration)),
-            inPoint: Math.max(0, finiteNumber(clip.inPoint)),
-            outPoint: Math.max(0, finiteNumber(clip.outPoint, finiteNumber(clip.duration))),
-            name: String(clip.name || `Clip ${index + 1}`).slice(0, 255),
-            type: ['video', 'audio', 'image'].includes(clip.type) ? clip.type : 'video',
-            linkedTo,
-            opacity: finiteNumber(clip.opacity, 100),
-            scale: finiteNumber(clip.scale, 100),
-            rotation: finiteNumber(clip.rotation),
-            brightness: finiteNumber(clip.brightness),
-            contrast: finiteNumber(clip.contrast),
-            saturation: finiteNumber(clip.saturation),
-            volume: finiteNumber(clip.volume, 100),
-            thumbnail: null,
-            waveform: null,
-            url: null,
-        };
-    });
-    return {
-        schema: PROJECT_SCHEMA,
-        version: PROJECT_SCHEMA_VERSION,
-        name: String(source.name || 'Untitled Project').slice(0, 100),
-        media,
-        clips: normalizedClips,
-        transitions: (source.transitions || []).map((transition, index) => ({
-            id: transitionIdMap.get(String(transition.id ?? `transition-source-${index + 1}`)),
-            time: Math.max(0, finiteNumber(transition.time)),
-            duration: Math.max(0.01, finiteNumber(transition.duration, 1)),
-            type: ['dissolve', 'fade', 'wipe', 'zoom'].includes(transition.type)
-                ? transition.type
-                : 'dissolve',
-        })),
-        timeline: {
-            pixelsPerSecond: Math.min(200, Math.max(10, finiteNumber(source.timeline?.pixelsPerSecond, 50))),
-            trackStates: source.timeline?.trackStates || {},
-        },
-    };
+    if (!browserProjectApi) throw new Error('Browser project module is not ready');
+    return browserProjectApi.normalizeProject(raw);
 }
 
 function releaseMediaUrls() {
@@ -3540,18 +3128,8 @@ function formatBytes(bytes) {
 }
 
 function browserDiagnosticJobSummary(job) {
-    if (!job) return null;
-    return {
-        id: job.id,
-        type: job.type,
-        state: job.state,
-        progress: finiteNumber(job.progress),
-        stage: job.stage || null,
-        error: job.error || null,
-        engineReusable: job.engineReusable ?? null,
-        startedAt: job.startedAt || null,
-        finishedAt: job.finishedAt || null,
-    };
+    if (!browserJobsApi) throw new Error('Browser jobs module is not ready');
+    return browserJobsApi.summarizeBrowserJob(job, finiteNumber(job?.progress));
 }
 
 async function buildBrowserDiagnostics({ redact = true } = {}) {

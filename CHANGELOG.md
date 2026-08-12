@@ -17,6 +17,8 @@ All notable changes to ClipForge will be documented in this file.
 - Browser proxy and desktop preview/AI caches now use bounded sampled-content identities, byte-based lifecycle limits, corruption/incomplete-entry validation, quota/disk preflight, usage reporting, LRU pruning, and explicit purge controls.
 - Desktop and browser diagnostics exports now include bounded capability, storage, job, and error reports; default redaction removes local paths, URL credentials/tokens, secret command options, and private media metadata.
 - Hardware encoder choices now run bounded real FFmpeg encode probes off the GUI thread, cache results per FFmpeg binary/device signature, disable unusable choices with driver reasons, and record capability results in diagnostics; native libmpv versions below 0.41.0 fall back to Qt Multimedia.
+- The browser editor now loads project schema, timeline planning, jobs, cache predicates, preview state, export preflight, and diagnostics redaction through narrow ES modules with DOM-free Node coverage; browser behavior and the media matrix serve `.mjs` with the correct module MIME type.
+- Release provenance now recognizes the SPDX licenses used by current Colorama, Pygments, and typing-extensions license files, keeping clean build verification fail-closed without treating valid metadata as missing.
 
 ## [v0.5.2] - 2026-07-29
 
