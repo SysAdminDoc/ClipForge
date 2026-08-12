@@ -30,7 +30,12 @@ from .settings import (
     load_settings,
     save_settings,
 )
-from .tools import FFMPEG, HW_ENCODERS, _confirm_overwrite
+from .tools import (
+    FFMPEG,
+    HW_ENCODERS,
+    HW_ENCODER_CAPABILITIES,
+    _confirm_overwrite,
+)
 from . import tools as tools_module
 from .diagnostics import DIAGNOSTICS, classify_severity
 from .widgets import (
@@ -467,13 +472,29 @@ class MainWindow(QMainWindow):
             return
         HW_ENCODERS.clear()
         HW_ENCODERS.update(result.get("encoders") or {})
+        HW_ENCODER_CAPABILITIES.clear()
+        HW_ENCODER_CAPABILITIES.update(result.get("encoder_capabilities") or {})
         tools_module.FFMPEG_VERSION_OUTPUT = result.get("version") or ""
         tools_module.CUDA_NVDEC_SAFE = bool(result.get("nvdec_safe"))
         self.convert_panel.refresh_hw_encoders()
-        if HW_ENCODERS:
-            self.lbl_hw_status.setText(f"GPU: {len(HW_ENCODERS)} encoder(s)")
-            self.lbl_hw_status.setToolTip(", ".join(HW_ENCODERS))
+        usable = [
+            label for label, encoder in HW_ENCODERS.items()
+            if HW_ENCODER_CAPABILITIES.get(encoder, {}).get("status") == "usable"
+        ]
+        if usable:
+            self.lbl_hw_status.setText(
+                f"GPU: {len(usable)}/{len(HW_ENCODERS)} encoder(s) usable"
+            )
+            self.lbl_hw_status.setToolTip(", ".join(usable))
             self.lbl_hw_status.setStyleSheet(f"color: {C['green']};")
+        elif HW_ENCODERS:
+            reasons = [
+                f"{label}: {HW_ENCODER_CAPABILITIES.get(encoder, {}).get('reason', 'probe unavailable')}"
+                for label, encoder in HW_ENCODERS.items()
+            ]
+            self.lbl_hw_status.setText("GPU: advertised encoders unavailable")
+            self.lbl_hw_status.setToolTip("\n".join(reasons))
+            self.lbl_hw_status.setStyleSheet(f"color: {C['yellow']};")
         else:
             self.lbl_hw_status.setText("GPU: No advertised encoders")
             self.lbl_hw_status.setToolTip(

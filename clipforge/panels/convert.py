@@ -28,6 +28,7 @@ from ..settings import (
 from ..tools import (
     FFMPEG,
     HW_ENCODERS,
+    HW_ENCODER_CAPABILITIES,
     _unregister_temp_dir,
     _confirm_overwrite,
     create_job_temp_dir,
@@ -224,6 +225,19 @@ class ConvertPanel(QWidget):
         for label in HW_ENCODERS:
             items.insert(-1, label)
         self.cmb_vcodec.addItems(items)
+        for label, encoder in HW_ENCODERS.items():
+            index = self.cmb_vcodec.findText(label)
+            capability = HW_ENCODER_CAPABILITIES.get(encoder) or {}
+            item = self.cmb_vcodec.model().item(index) if index >= 0 else None
+            if item is None:
+                continue
+            status = capability.get("status")
+            reason = capability.get("reason", "Capability probe did not complete")
+            if status != "usable":
+                item.setEnabled(False)
+                item.setToolTip(f"Unavailable: {reason}")
+            else:
+                item.setToolTip("Verified by a real FFmpeg encode probe")
         if current and self.cmb_vcodec.findText(current) >= 0:
             self.cmb_vcodec.setCurrentText(current)
 
@@ -735,6 +749,12 @@ class ConvertPanel(QWidget):
             issues.append(
                 "Two-pass requires Target Bitrate with a supported software "
                 "encoder/container combination."
+            )
+        capability = HW_ENCODER_CAPABILITIES.get(self._selected_video_encoder())
+        if capability and capability.get("status") != "usable":
+            issues.append(
+                f"{self.cmb_vcodec.currentText()} is unavailable: "
+                f"{capability.get('reason', 'hardware capability probe failed')}"
             )
         return issues
 

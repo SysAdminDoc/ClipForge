@@ -1,6 +1,7 @@
 """Reusable UI widgets: Toast, RangeSlider, ThumbnailStrip, CropView, VideoPlayer, FileInfoBar."""
 
 import os
+from dataclasses import asdict
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
@@ -27,6 +28,7 @@ from clipforge_utils import (
 from .constants import C
 from .tools import FFMPEG
 from .settings import add_recent
+from .diagnostics import DIAGNOSTICS
 from .workers import FFmpegWorker, MediaProbeWorker, ThumbnailWorker
 from .proxy import ProxyCache
 from .mpv_backend import MpvWidget, probe_mpv
@@ -523,6 +525,10 @@ class VideoPlayer(QWidget):
         self._backend_name = "qt"
         self._mpv_widget = None
         self._mpv_capability = probe_mpv()
+        DIAGNOSTICS.record_capabilities(
+            "libmpv",
+            asdict(self._mpv_capability),
+        )
         self._thumb_worker = None
         self._background_workers = set()
         self._fps = 30.0
@@ -560,6 +566,7 @@ class VideoPlayer(QWidget):
                     library_path=self._mpv_capability.library_path,
                     library_file=self._mpv_capability.library_file,
                     native_version=self._mpv_capability.native_version,
+                    native_version_status=self._mpv_capability.native_version_status,
                 )
         layout.addWidget(self.video_stack)
 

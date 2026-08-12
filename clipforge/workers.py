@@ -22,6 +22,7 @@ from .tools import (
     FFMPEG, FFPROBE,
     find_realesrgan, find_rife, find_span,
     detect_hw_encoders,
+    probe_hw_encoders,
     extract_frame,
     probe_media,
     read_ffmpeg_version,
@@ -132,6 +133,25 @@ class CapabilityProbeWorker(QThread):
                 timeout=self.timeout,
             )
         )
+        encoder_capabilities = (
+            {}
+            if self._cancel_event.is_set()
+            else probe_hw_encoders(
+                encoders.values(),
+                version=version,
+                cancel_event=self._cancel_event,
+                timeout=max(15, self.timeout),
+            )
+        )
+        DIAGNOSTICS.record_capabilities(
+            "ffmpeg_hardware",
+            {
+                "ffmpeg": FFMPEG,
+                "version": version,
+                "advertised": encoders,
+                "probes": encoder_capabilities,
+            },
+        )
         result = {
             "cancelled": self._cancel_event.is_set(),
             "version": version,
@@ -139,6 +159,7 @@ class CapabilityProbeWorker(QThread):
             "nvdec_policy": nvdec_policy.as_dict(),
             "nvdec_safe": nvdec_policy.accepted,
             "encoders": encoders,
+            "encoder_capabilities": encoder_capabilities,
         }
         outcome = WorkerOutcome(
             "cancelled" if result["cancelled"] else "succeeded",
@@ -148,6 +169,10 @@ class CapabilityProbeWorker(QThread):
             details={
                 "version": version,
                 "encoder_count": len(encoders),
+                "usable_encoder_count": sum(
+                    capability.get("status") == "usable"
+                    for capability in encoder_capabilities.values()
+                ),
                 "ffmpeg_policy": ffmpeg_policy.as_dict(),
                 "nvdec_policy": nvdec_policy.as_dict(),
             },

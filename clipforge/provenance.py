@@ -294,6 +294,7 @@ def _mpv_inventory():
     native_path = getattr(capability, "library_file", None) or find_native_library()
     native = executable_identity(native_path, name="libmpv")
     native["version"] = getattr(capability, "native_version", None) or native.get("version")
+    native["version_status"] = getattr(capability, "native_version_status", "unknown")
     native["license"] = "GPL-2.0-or-later" if native_path else None
     native["license_basis"] = "libmpv native runtime" if native_path else None
     wrapper = {

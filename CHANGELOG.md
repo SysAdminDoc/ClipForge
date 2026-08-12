@@ -16,6 +16,7 @@ All notable changes to ClipForge will be documented in this file.
 - Browser preview and export now share a resolved timeline plan for clip boundaries, source in-points, transforms, and track audio state; browser behavior tests cover the same plan at both surfaces.
 - Browser proxy and desktop preview/AI caches now use bounded sampled-content identities, byte-based lifecycle limits, corruption/incomplete-entry validation, quota/disk preflight, usage reporting, LRU pruning, and explicit purge controls.
 - Desktop and browser diagnostics exports now include bounded capability, storage, job, and error reports; default redaction removes local paths, URL credentials/tokens, secret command options, and private media metadata.
+- Hardware encoder choices now run bounded real FFmpeg encode probes off the GUI thread, cache results per FFmpeg binary/device signature, disable unusable choices with driver reasons, and record capability results in diagnostics; native libmpv versions below 0.41.0 fall back to Qt Multimedia.
 
 ## [v0.5.2] - 2026-07-29
 

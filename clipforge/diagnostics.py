@@ -171,6 +171,7 @@ class DiagnosticsStore:
         self._tool_versions = {}
         self._tool_identities = {}
         self._runtime_policy = {}
+        self._capabilities = {}
         self._lock = threading.RLock()
 
     def reset(self):
@@ -179,6 +180,7 @@ class DiagnosticsStore:
             self._events.clear()
             self._tool_identities.clear()
             self._runtime_policy.clear()
+            self._capabilities.clear()
 
     def record_runtime_policy(self, component, decision, *, identity=None):
         """Store a bounded runtime-policy decision for support diagnostics."""
@@ -187,6 +189,11 @@ class DiagnosticsStore:
             payload["identity"] = dict(identity)
         with self._lock:
             self._runtime_policy[str(component)] = payload
+
+    def record_capabilities(self, component, payload):
+        """Store bounded capability results used to explain disabled choices."""
+        with self._lock:
+            self._capabilities[str(component)] = dict(payload or {})
 
     def tool_version(self, name, executable):
         identity = self.tool_identity(name, executable)
@@ -297,6 +304,7 @@ class DiagnosticsStore:
                 }
                 jobs.append(copied)
             runtime_policy = dict(self._runtime_policy)
+            capabilities = dict(self._capabilities)
             runtime_policy.setdefault(
                 "qt",
                 {
@@ -331,6 +339,7 @@ class DiagnosticsStore:
                     "media_contents_included": False,
                 },
                 "storage": _storage_snapshot(),
+                "capabilities": capabilities,
                 "jobs": jobs,
                 "events": list(self._events),
             }

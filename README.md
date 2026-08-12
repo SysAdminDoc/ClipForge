@@ -100,7 +100,7 @@ All-in-one video editor — Trim, Crop, Upscale, Interpolate, Convert, Filter, A
 
 ### Video Player
 - Built-in video playback with play/pause, seek, volume
-- Optional experimental libmpv backend with exact seek/frame-step and broader codec coverage; Qt Multimedia remains the dependency-free default
+- Optional experimental libmpv backend with exact seek/frame-step and broader codec coverage; native libmpv versions below 0.41.0 fall back to Qt Multimedia, which remains the dependency-free default
 - Frame-accurate stepping using **actual video fps** (not hardcoded 30fps)
 - Playback speed control (0.25x - 2x)
 - A-B loop for segment preview
@@ -118,7 +118,7 @@ All-in-one video editor — Trim, Crop, Upscale, Interpolate, Convert, Filter, A
 - Bounded severity-filtered console with redacted JSON diagnostics export
 - Enhanced progress tracking with ETA, speed, and file size
 - Schema-versioned transactional settings, recents, and presets with atomic writes, backup recovery, corrupt-data quarantine, and legacy migration
-- Hardware encoder status display in sidebar
+- **Capability-aware hardware encoding** — advertised FFmpeg encoders run bounded real encode probes off the GUI thread; unsupported devices are disabled with the driver error, and results are cached per FFmpeg binary/device signature
 - **Accessible controls** — screen reader labels, keyboard focus states
 - All panels wrapped in scroll areas for small screens
 - Status bar with current state
@@ -128,7 +128,7 @@ All-in-one video editor — Trim, Crop, Upscale, Interpolate, Convert, Filter, A
 - **Atomic output safety** — validates staged media before replacing the chosen destination
 - **Runtime security policy** — rejects unreviewed FFmpeg branches, keeps NVDEC fail-closed until a reviewed boundary, and requires the patched Qt 6.11.1 runtime
 - **Cross-surface provenance** — release checks record exact versions, SHA-256 hashes, licenses, and lock/source metadata for browser assets, Python distributions, FFmpeg/ffprobe, optional libmpv, and managed AI tools; support diagnostics include the identities used by each desktop job
-- 184-test suite covering utilities, process safety, semantic media validation, generated media, probing, proxy/AI caching, supply-chain validation, diagnostics, persistence, browser jobs, and accessibility contracts
+- 188-test suite covering utilities, process safety, semantic media validation, generated media, probing, proxy/AI caching, supply-chain validation, diagnostics, persistence, browser jobs, and accessibility contracts
 
 ### Web Editor
 
@@ -207,7 +207,7 @@ python scripts/release_check.py --build
 Release builds are unsigned and produced locally. `clipforge/version.py` is the
 version source of truth; use `python scripts/sync_version.py --set X.Y.Z` to
 update desktop, web, README, and Windows executable metadata together.
-The release check runs the 184-test Python and headless-Chromium suite, then
+The release check runs the 188-test Python and headless-Chromium suite, then
 generates disposable FFmpeg fixtures for audio/video,
 subtitles, chapters, rotation, VFR, odd filenames, and core edit operations;
 `--build` creates a fresh hash-locked environment, builds the unsigned

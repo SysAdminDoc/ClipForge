@@ -8,6 +8,7 @@ import shutil
 import tempfile
 import atexit
 import threading
+import platform
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypedDict
@@ -157,6 +158,20 @@ FFPROBE = find_tool("ffprobe")
 # Hardware encoder detection
 # ---------------------------------------------------------------------------
 
+HW_ENCODER_LABELS = {
+    "h264_nvenc": "H.264 NVENC (NVIDIA)",
+    "hevc_nvenc": "H.265 NVENC (NVIDIA)",
+    "h264_qsv": "H.264 QSV (Intel)",
+    "hevc_qsv": "H.265 QSV (Intel)",
+    "h264_amf": "H.264 AMF (AMD)",
+    "hevc_amf": "H.265 AMF (AMD)",
+    "av1_nvenc": "AV1 NVENC (NVIDIA)",
+    "av1_qsv": "AV1 QSV (Intel)",
+    "av1_amf": "AV1 AMF (AMD)",
+}
+_HW_CAPABILITY_CACHE = {}
+_HW_CAPABILITY_CACHE_LOCK = threading.RLock()
+
 def parse_ffmpeg_version(version_output):
     """Return an FFmpeg release tuple, or None for an unrecognized build."""
     return _parse_ffmpeg_version(version_output)
@@ -186,33 +201,24 @@ def read_ffmpeg_version(ffmpeg_path=None, *, cancel_event=None, timeout=10):
         return ""
 
 
-def detect_hw_encoders(*, cancel_event=None, timeout=10):
+def detect_hw_encoders(ffmpeg_path=None, *, cancel_event=None, timeout=10):
     """Detect available hardware encoders from FFmpeg."""
-    if not FFMPEG:
+    ffmpeg_path = ffmpeg_path or FFMPEG
+    if not ffmpeg_path:
         return {}
     try:
         from .processes import run_managed_process
 
         result = run_managed_process(
-            [FFMPEG, "-hide_banner", "-encoders"],
+            [ffmpeg_path, "-hide_banner", "-encoders"],
             cancel_event=cancel_event,
             timeout=timeout,
         )
         if result.cancelled or result.timed_out or result.returncode != 0:
             return {}
         hw = {}
-        for name, label in [
-            ("h264_nvenc", "H.264 NVENC (NVIDIA)"),
-            ("hevc_nvenc", "H.265 NVENC (NVIDIA)"),
-            ("h264_qsv", "H.264 QSV (Intel)"),
-            ("hevc_qsv", "H.265 QSV (Intel)"),
-            ("h264_amf", "H.264 AMF (AMD)"),
-            ("hevc_amf", "H.265 AMF (AMD)"),
-            ("av1_nvenc", "AV1 NVENC (NVIDIA)"),
-            ("av1_qsv", "AV1 QSV (Intel)"),
-            ("av1_amf", "AV1 AMF (AMD)"),
-        ]:
-            if name in result.stdout:
+        for name, label in HW_ENCODER_LABELS.items():
+            if any(name in line.split() for line in result.stdout.splitlines() if line.strip()):
                 hw[label] = name
         return hw
     except OSError:
@@ -220,8 +226,142 @@ def detect_hw_encoders(*, cancel_event=None, timeout=10):
 
 
 HW_ENCODERS = {}
+HW_ENCODER_CAPABILITIES = {}
 FFMPEG_VERSION_OUTPUT = ""
 CUDA_NVDEC_SAFE = False
+
+
+def _hardware_cache_key(ffmpeg_path, version, encoder):
+    try:
+        path = Path(ffmpeg_path).resolve()
+        stat = path.stat()
+        binary = (os.fspath(path), stat.st_size, stat.st_mtime_ns)
+    except OSError:
+        binary = (str(ffmpeg_path), None, None)
+    device = (platform.system(), platform.machine())
+    return binary, str(version or ""), device, str(encoder)
+
+
+def _hardware_probe_args(ffmpeg_path, encoder):
+    args = [
+        ffmpeg_path,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=black:s=64x64:r=1",
+        "-frames:v",
+        "2",
+        "-an",
+    ]
+    if "qsv" in encoder or "amf" in encoder:
+        args.extend(["-vf", "format=nv12"])
+    else:
+        args.extend(["-pix_fmt", "yuv420p"])
+    args.extend(["-c:v", encoder, "-f", "null", "-"])
+    return args
+
+
+def probe_hw_encoder(
+    encoder,
+    ffmpeg_path=None,
+    *,
+    version="",
+    cancel_event=None,
+    timeout=15,
+):
+    """Run a bounded real encode probe for one advertised hardware encoder."""
+    ffmpeg_path = ffmpeg_path or FFMPEG
+    if not ffmpeg_path:
+        return {
+            "encoder": encoder,
+            "status": "unavailable",
+            "reason": "FFmpeg is unavailable",
+            "cached": False,
+        }
+    key = _hardware_cache_key(ffmpeg_path, version, encoder)
+    with _HW_CAPABILITY_CACHE_LOCK:
+        cached = _HW_CAPABILITY_CACHE.get(key)
+    if cached:
+        return {**cached, "cached": True}
+    try:
+        from .processes import run_managed_process
+
+        result = run_managed_process(
+            _hardware_probe_args(ffmpeg_path, encoder),
+            cancel_event=cancel_event,
+            timeout=timeout,
+        )
+        if result.cancelled:
+            payload = {
+                "encoder": encoder,
+                "status": "cancelled",
+                "reason": "Hardware capability probe was cancelled",
+                "cached": False,
+            }
+        elif result.timed_out:
+            payload = {
+                "encoder": encoder,
+                "status": "unavailable",
+                "reason": f"Probe timed out after {timeout:g} seconds",
+                "cached": False,
+            }
+        elif result.returncode == 0:
+            payload = {
+                "encoder": encoder,
+                "status": "usable",
+                "reason": "Real FFmpeg encode probe succeeded",
+                "cached": False,
+            }
+        else:
+            details = (result.stderr or result.stdout or "probe failed").strip()
+            payload = {
+                "encoder": encoder,
+                "status": "unavailable",
+                "reason": details[-800:],
+                "cached": False,
+            }
+    except OSError as error:
+        payload = {
+            "encoder": encoder,
+            "status": "unavailable",
+            "reason": str(error),
+            "cached": False,
+        }
+    if payload["status"] != "cancelled":
+        with _HW_CAPABILITY_CACHE_LOCK:
+            _HW_CAPABILITY_CACHE[key] = dict(payload)
+    return payload
+
+
+def probe_hw_encoders(
+    encoders,
+    ffmpeg_path=None,
+    *,
+    version="",
+    cancel_event=None,
+    timeout=15,
+):
+    """Probe every advertised encoder without blocking the GUI thread."""
+    results = {}
+    for encoder in dict.fromkeys(encoders):
+        if cancel_event and cancel_event.is_set():
+            break
+        results[encoder] = probe_hw_encoder(
+            encoder,
+            ffmpeg_path,
+            version=version,
+            cancel_event=cancel_event,
+            timeout=timeout,
+        )
+    return results
+
+
+def clear_hw_capability_cache():
+    with _HW_CAPABILITY_CACHE_LOCK:
+        _HW_CAPABILITY_CACHE.clear()
 
 
 def hardware_decode_args(video_encoder):

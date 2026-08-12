@@ -9,6 +9,15 @@ from clipforge.runtime_policy import (
 )
 
 
+class _ProcessResult:
+    def __init__(self, *, returncode=0, stdout="", stderr="", cancelled=False, timed_out=False):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+        self.cancelled = cancelled
+        self.timed_out = timed_out
+
+
 def test_ffmpeg_version_parser_handles_release_and_git_banners():
     assert tools.parse_ffmpeg_version("ffmpeg version 8.1.2-full_build") == (8, 1, 2)
     assert tools.parse_ffmpeg_version("ffmpeg version n9.0 Copyright") == (9, 0, 0)
@@ -40,6 +49,47 @@ def test_nvenc_keeps_encoding_but_uses_safe_decode_fallback(monkeypatch):
         "-hwaccel_output_format",
         "cuda",
     ]
+
+
+def test_hardware_probe_runs_a_real_encoder_check_and_caches_by_binary(monkeypatch):
+    calls = []
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        return _ProcessResult()
+
+    monkeypatch.setattr("clipforge.processes.run_managed_process", fake_run)
+    tools.clear_hw_capability_cache()
+
+    first = tools.probe_hw_encoder(
+        "h264_nvenc",
+        "ffmpeg-test",
+        version="ffmpeg version 9.0",
+    )
+    second = tools.probe_hw_encoder(
+        "h264_nvenc",
+        "ffmpeg-test",
+        version="ffmpeg version 9.0",
+    )
+
+    assert first["status"] == "usable"
+    assert second["cached"] is True
+    assert len(calls) == 1
+    assert calls[0][-5:] == ["-pix_fmt", "yuv420p", "-c:v", "h264_nvenc", "-f", "null", "-"][-5:]
+
+
+def test_hardware_probe_reports_driver_failure_reason(monkeypatch):
+    monkeypatch.setattr(
+        "clipforge.processes.run_managed_process",
+        lambda *_args, **_kwargs: _ProcessResult(
+            returncode=1,
+            stderr="Cannot load NVENC driver",
+        ),
+    )
+    tools.clear_hw_capability_cache()
+    result = tools.probe_hw_encoder("h264_nvenc", "ffmpeg-test", version="ffmpeg version 9.0")
+    assert result["status"] == "unavailable"
+    assert "NVENC driver" in result["reason"]
 
 
 def test_ffmpeg_security_policy_uses_patched_branch_floors():

@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import QApplication, QTextEdit
 from clipforge.panels.convert import ConvertPanel
 from clipforge.processes import validate_output
 from clipforge.tools import FFMPEG, FFPROBE
+from clipforge import tools
 
 
 _QT_APP = QApplication.instance() or QApplication([])
@@ -47,6 +48,26 @@ def test_two_pass_is_gated_to_target_bitrate_software_combinations():
     panel.cmb_vcodec.setCurrentText("Copy (no re-encode)")
     assert panel.cmb_rate_control.currentText() == "Constant Quality"
     assert not panel.cmb_rate_control.isEnabled()
+    panel.close()
+
+
+def test_unusable_hardware_encoder_is_disabled_with_probe_reason(monkeypatch):
+    monkeypatch.setitem(tools.HW_ENCODERS, "H.264 NVENC (NVIDIA)", "h264_nvenc")
+    monkeypatch.setitem(
+        tools.HW_ENCODER_CAPABILITIES,
+        "h264_nvenc",
+        {"status": "unavailable", "reason": "Cannot load NVENC driver"},
+    )
+    panel = _panel()
+    panel.refresh_hw_encoders()
+    index = panel.cmb_vcodec.findText("H.264 NVENC (NVIDIA)")
+    item = panel.cmb_vcodec.model().item(index)
+
+    assert item is not None
+    assert item.isEnabled() is False
+    assert "NVENC driver" in item.toolTip()
+    panel.cmb_vcodec.setCurrentIndex(index)
+    assert "NVENC driver" in panel._conversion_preflight()[0]
     panel.close()
 
 

@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import QWidget
 
 
 _DLL_DIRECTORY_HANDLES = []
+MPV_NATIVE_MIN_VERSION = (0, 41, 0)
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,25 @@ class MpvCapability:
     library_path: str | None = None
     library_file: str | None = None
     native_version: str | None = None
+    native_version_status: str = "unknown"
+
+
+def _version_tuple(value):
+    if not value:
+        return None
+    parts = str(value).split(".")
+    try:
+        return tuple(int(part) for part in parts[:3])
+    except ValueError:
+        return None
+
+
+def native_version_status(version):
+    parsed = _version_tuple(version)
+    if parsed is None:
+        return "unknown"
+    padded = (*parsed, 0, 0)[:3]
+    return "outdated" if padded < MPV_NATIVE_MIN_VERSION else "supported"
 
 
 def find_native_library():
@@ -124,20 +144,38 @@ def probe_mpv():
         import mpv  # noqa: F401 - importing the wrapper validates native loading
 
         version = importlib.metadata.version("mpv")
+        native_version = _native_file_version(library_file)
+        native_status = native_version_status(native_version)
+        if native_status == "outdated":
+            return MpvCapability(
+                available=False,
+                wrapper_version=version,
+                reason=(
+                    f"Native libmpv {native_version} is below the supported "
+                    "0.41.0 minimum; Qt Multimedia fallback is active"
+                ),
+                library_path=library_path,
+                library_file=library_file,
+                native_version=native_version,
+                native_version_status=native_status,
+            )
         return MpvCapability(
             available=True,
             wrapper_version=version,
             library_path=library_path,
             library_file=library_file,
-            native_version=_native_file_version(library_file),
+            native_version=native_version,
+            native_version_status=native_status,
         )
     except (ImportError, OSError, RuntimeError, importlib.metadata.PackageNotFoundError) as error:
+        native_version = _native_file_version(library_file)
         return MpvCapability(
             available=False,
             reason=str(error),
             library_path=library_path,
             library_file=library_file,
-            native_version=_native_file_version(library_file),
+            native_version=native_version,
+            native_version_status=native_version_status(native_version),
         )
 
 
