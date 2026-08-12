@@ -452,6 +452,53 @@ class ConvertPanel(QWidget):
         self._update_estimate()
         self._update_cmd_preview()
 
+    def project_state(self):
+        """Return conversion settings and the selected preset for a project."""
+        return {
+            "preset": self.cmb_preset_select.currentText(),
+            "container": self.cmb_container.currentText(),
+            "video_codec": self.cmb_vcodec.currentText(),
+            "audio_codec": self.cmb_acodec.currentText(),
+            "encoder_preset": self.cmb_enc_preset.currentText(),
+            "crf": self.spn_crf.value(),
+            "rate_control": self.cmb_rate_control.currentText(),
+            "video_bitrate": self.spn_video_bitrate.value(),
+            "two_pass": self.chk_two_pass.isChecked(),
+            "resolution": self.cmb_resolution.currentText(),
+            "fps": self.cmb_fps.currentText(),
+            "speed": self.spn_speed.value(),
+        }
+
+    def restore_project_state(self, state):
+        state = state if isinstance(state, dict) else {}
+        controls = {
+            "container": self.cmb_container,
+            "video_codec": self.cmb_vcodec,
+            "audio_codec": self.cmb_acodec,
+            "encoder_preset": self.cmb_enc_preset,
+            "rate_control": self.cmb_rate_control,
+            "resolution": self.cmb_resolution,
+            "fps": self.cmb_fps,
+        }
+        for name, control in controls.items():
+            options = [control.itemText(i) for i in range(control.count())]
+            if state.get(name) in options:
+                control.setCurrentText(state[name])
+        for name, control, minimum, maximum in (
+            ("crf", self.spn_crf, 0, 51),
+            ("video_bitrate", self.spn_video_bitrate, 100, 200000),
+        ):
+            if name in state:
+                control.setValue(max(minimum, min(maximum, int(state[name]))))
+        if "speed" in state:
+            self.spn_speed.setValue(max(0.1, min(10.0, float(state["speed"]))))
+        self.chk_two_pass.setChecked(bool(state.get("two_pass", False)))
+        preset = str(state.get("preset") or "")
+        preset_options = [self.cmb_preset_select.itemText(i) for i in range(self.cmb_preset_select.count())]
+        if preset in preset_options:
+            self.cmb_preset_select.setCurrentText(preset)
+        self._update_cmd_preview()
+
     def _update_estimate(self):
         if not self._info:
             return

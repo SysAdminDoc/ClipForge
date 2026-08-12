@@ -23,6 +23,8 @@ All notable changes to ClipForge will be documented in this file.
 - Added an isolated Mediabunny 1.53.0 + WebCodecs benchmark page/CLI with a pinned MPL-2.0 artifact, codec capability report, timing/heap/output measurements, duration/track parity checks, and explicit FFmpeg.wasm fallback/trim limitations; production export is unchanged.
 - Added strict English-default localization catalogs for desktop and browser UIs, named-placeholder validation, stable browser translation IDs, and an `en-XA` pseudo-locale with rendered long-string layout coverage.
 - Added browser accessibility regression coverage for forced-colors focus/layout, modal and menu focus restoration, keyboard timeline movement/trimming/slip edits, and keyboard timeline panning; drag-only timeline actions now expose ARIA keyboard alternatives.
+- Added versioned desktop `.cfproj` session files with external media identities, relative-path relinking, atomic writes, `.bak` recovery copies, trim/filter/preset state, and an explicit unsupported-feature policy; the browser editor now saves `.cfproj` while accepting legacy `.clipforge` files.
+- Added an ordered desktop filter stack with drag/up/down reordering and a live FFmpeg video/audio graph preview; project sessions persist the stack order.
 
 ## [v0.5.2] - 2026-07-29
 

@@ -9,6 +9,7 @@ let currentTool = 'select';
 let currentTransitionType = 'dissolve';
 const PROJECT_SCHEMA = 'clipforge.project';
 const PROJECT_SCHEMA_VERSION = 1;
+const PROJECT_FILE_EXTENSION = '.cfproj';
 const PROJECT_DB_NAME = 'clipforge-recovery';
 const PROJECT_STORE_NAME = 'projects';
 const PROJECT_RECOVERY_KEY = 'current';
@@ -3265,7 +3266,7 @@ function saveProject() {
     const a = document.createElement('a');
     const blobUrl = URL.createObjectURL(blob);
     a.href = blobUrl;
-    a.download = `${sanitizeDownloadName(project.name)}.clipforge`;
+    a.download = `${sanitizeDownloadName(project.name)}${PROJECT_FILE_EXTENSION}`;
     a.click();
     setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
     setProjectDirty(false);

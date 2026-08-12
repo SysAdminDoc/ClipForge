@@ -764,9 +764,9 @@ def test_media_clips_and_context_actions_are_keyboard_operable(browser_page):
     clip.press("Shift+F10")
     menu = browser_page.locator("#contextMenu")
     assert menu.get_attribute("aria-hidden") == "false"
-    assert browser_page.evaluate(
-        "document.activeElement?.dataset.action"
-    ) == "cut-clip"
+    browser_page.wait_for_function(
+        "() => document.activeElement?.dataset.action === 'cut-clip'"
+    )
 
     browser_page.keyboard.press("ArrowDown")
     assert browser_page.evaluate(

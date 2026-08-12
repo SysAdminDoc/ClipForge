@@ -3,6 +3,7 @@
 import sys
 import os
 import time
+import json
 from collections import deque
 from pathlib import Path
 
@@ -13,7 +14,7 @@ from PyQt6.QtWidgets import (
     QComboBox, QFileDialog, QSizePolicy,
 )
 from PyQt6.QtCore import Qt, QThread, QTimer
-from PyQt6.QtGui import QColor, QPalette, QDragEnterEvent, QDropEvent
+from PyQt6.QtGui import QAction, QColor, QPalette, QDragEnterEvent, QDropEvent
 
 from . import APP_NAME, APP_VERSION
 from .constants import (
@@ -25,6 +26,14 @@ from .constants import (
 )
 from .theme import stylesheet_for
 from .i18n import catalog_for_environment, localize_widget_tree
+from .project import (
+    PROJECT_EXTENSION,
+    ProjectError,
+    build_project,
+    load_project,
+    resolve_project_input,
+    save_project,
+)
 from .settings import (
     consume_persistence_notices,
     load_recent,
@@ -81,6 +90,10 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(WINDOW_TITLE)
         self.setMinimumSize(1150, 780)
         self._settings = load_settings()
+        self._project_path = None
+        self._project_dirty = False
+        self._pending_project_state = None
+        self._project_signature = None
         # Restore window geometry
         w = self._settings.get("window_width", 1340)
         h = self._settings.get("window_height", 860)
@@ -88,12 +101,17 @@ class MainWindow(QMainWindow):
         self.setAcceptDrops(True)
         self._setup_ui()
         localize_widget_tree(self, self._i18n)
+        self._project_autosave_timer = QTimer(self)
+        self._project_autosave_timer.setInterval(15000)
+        self._project_autosave_timer.timeout.connect(self._autosave_project_if_needed)
+        self._project_autosave_timer.start()
         self._check_deps()
         self._start_capability_probe()
         self._load_recent()
         self._show_persistence_notices()
 
     def _setup_ui(self):
+        self._setup_project_menu()
         central = QWidget()
         self.setCentralWidget(central)
         main_layout = QHBoxLayout(central)
@@ -354,6 +372,166 @@ class MainWindow(QMainWindow):
         # Default to Trim panel
         self._switch_panel(0)
 
+    def _setup_project_menu(self):
+        menu = self.menuBar().addMenu("Project")
+        open_action = QAction("Open .cfproj…", self)
+        open_action.setShortcut("Ctrl+O")
+        open_action.triggered.connect(self._open_project)
+        menu.addAction(open_action)
+        save_action = QAction("Save Project", self)
+        save_action.setShortcut("Ctrl+S")
+        save_action.triggered.connect(self._save_project)
+        menu.addAction(save_action)
+        save_as_action = QAction("Save Project As…", self)
+        save_as_action.triggered.connect(self._save_project_as)
+        menu.addAction(save_as_action)
+        menu.addSeparator()
+        policy_action = QAction("Project files store external media references", self)
+        policy_action.setEnabled(False)
+        menu.addAction(policy_action)
+
+    def _project_payload(self):
+        source = self.file_bar.filepath()
+        inputs = [source] if source else []
+        return build_project(
+            inputs,
+            project_path=self._project_path,
+            media_info=self.file_bar.info() or {},
+            trim=self.trim_panel.project_state(),
+            filters=self.filters_panel.project_state(),
+            preset=self.convert_panel.project_state(),
+            active_panel=self.stack.currentIndex(),
+            name=Path(self._project_path).stem if self._project_path else None,
+        )
+
+    @staticmethod
+    def _project_signature_for(payload):
+        return json.dumps(payload, sort_keys=True, ensure_ascii=False)
+
+    def _update_project_title(self):
+        marker = "* " if self._project_dirty else ""
+        name = Path(self._project_path).stem if self._project_path else "Untitled Project"
+        self.setWindowTitle(f"{marker}{name} — {APP_NAME} v{APP_VERSION}")
+
+    def _mark_project_dirty(self):
+        self._project_dirty = True
+        self._update_project_title()
+
+    def _save_project_to(self, path):
+        try:
+            payload = self._project_payload()
+            target = save_project(path, payload)
+        except (OSError, ProjectError, ValueError) as exc:
+            self.toast.show_message(f"Project save failed: {exc}", C["red"], 6000)
+            return False
+        self._project_path = target
+        self._project_signature = self._project_signature_for(payload)
+        self._project_dirty = False
+        self._update_project_title()
+        self.status_bar.showMessage(f"Project saved: {target.name}", 5000)
+        self.toast.show_message(f"Project saved: {target.name}", C["green"], 4000)
+        return True
+
+    def _save_project(self):
+        if self._project_path:
+            return self._save_project_to(self._project_path)
+        return self._save_project_as()
+
+    def _save_project_as(self):
+        source = self.file_bar.filepath()
+        default_name = (
+            Path(source).with_suffix(PROJECT_EXTENSION).name
+            if source else f"ClipForge-project{PROJECT_EXTENSION}"
+        )
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save ClipForge Project",
+            str(Path(source).parent / default_name) if source else default_name,
+            "ClipForge Projects (*.cfproj);;Legacy ClipForge Projects (*.clipforge);;All Files (*)",
+        )
+        if not path:
+            return False
+        if Path(path).suffix.lower() not in {PROJECT_EXTENSION, ".clipforge"}:
+            path += PROJECT_EXTENSION
+        return self._save_project_to(path)
+
+    def _open_project(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open ClipForge Project",
+            str(Path.home()),
+            "ClipForge Projects (*.cfproj *.clipforge);;All Files (*)",
+        )
+        if path:
+            return self._load_project_file(path)
+        return False
+
+    def _load_project_file(self, path):
+        try:
+            payload = load_project(path)
+        except (OSError, ProjectError, ValueError) as exc:
+            self.toast.show_message(f"Project open failed: {exc}", C["red"], 6000)
+            return False
+        if not payload.get("inputs"):
+            self._project_path = Path(path).expanduser().resolve()
+            self._pending_project_state = None
+            self._project_dirty = False
+            self._project_signature = self._project_signature_for(payload)
+            self._update_project_title()
+            self.status_bar.showMessage("Empty project opened", 5000)
+            return True
+        source = resolve_project_input(payload, path, payload.get("active_input", 0))
+        if source is None:
+            reference = payload.get("inputs", [{}])[payload.get("active_input", 0)]
+            source, _ = QFileDialog.getOpenFileName(
+                self,
+                f"Relink {reference.get('name', 'project media')}",
+                str(Path(path).parent),
+                "Media Files (*.*);;All Files (*)",
+            )
+            if not source:
+                self.toast.show_message(
+                    "Project opened, but its media source is missing; use Open Video to relink it.",
+                    C["yellow"],
+                    6000,
+                )
+                return False
+            source = Path(source)
+        self._project_path = Path(path).expanduser().resolve()
+        self._pending_project_state = payload
+        self._project_dirty = False
+        self._update_project_title()
+        self.file_bar.load_file(str(source))
+        return True
+
+    def _apply_pending_project_state(self):
+        payload = self._pending_project_state
+        if not payload:
+            return
+        self.trim_panel.restore_project_state(payload.get("trim"))
+        self.filters_panel.restore_project_state(payload.get("filters"))
+        self.convert_panel.restore_project_state(payload.get("preset"))
+        panel = payload.get("active_panel")
+        if isinstance(panel, int) and 0 <= panel < len(self._panels):
+            self._switch_panel(panel)
+        self._pending_project_state = None
+        self._project_dirty = False
+        self._project_signature = self._project_signature_for(self._project_payload())
+        self._update_project_title()
+
+    def _autosave_project_if_needed(self):
+        if not self._project_path or not self.file_bar.filepath():
+            return
+        try:
+            payload = self._project_payload()
+            signature = self._project_signature_for(payload)
+        except (TypeError, ValueError):
+            return
+        if signature == self._project_signature:
+            return
+        if self._save_project_to(self._project_path):
+            self.console.append("[INFO] Project autosaved with a recoverable backup.\n")
+
     @staticmethod
     def _line_matches_filter(text, level_filter):
         """Match exactly one structured severity, or all severities."""
@@ -582,6 +760,10 @@ class MainWindow(QMainWindow):
         self.streams_panel.load_file(filepath, info)
         self.console.append(f"Loaded: {filepath}\n")
         self.status_bar.showMessage(f"Loaded: {Path(filepath).name}")
+        if self._pending_project_state:
+            self._apply_pending_project_state()
+        else:
+            self._mark_project_dirty()
         self._load_recent()
         self._show_persistence_notices()
 
@@ -633,6 +815,10 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
 
     def closeEvent(self, event):
+        if self._project_path:
+            self._autosave_project_if_needed()
+        if hasattr(self, "_project_autosave_timer"):
+            self._project_autosave_timer.stop()
         self._worker_status_timer.stop()
         self.player.release()
         active_workers = self._active_workers()

@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QSlider,
     QGroupBox, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox,
     QProgressBar, QFileDialog, QGridLayout,
+    QListWidget, QListWidgetItem, QAbstractItemView,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QPixmap
@@ -24,6 +25,13 @@ from ..tools import (
 )
 from ..workers import FFmpegWorker, FrameExtractWorker
 from ..widgets import FlowLayout
+from ..filter_stack import (
+    FILTER_STACK_DEFAULT,
+    FILTER_STACK_LABELS,
+    filter_graph,
+    normalize_filter_order,
+    reorder_filter_stack,
+)
 
 
 class FiltersPanel(QWidget):
@@ -37,6 +45,7 @@ class FiltersPanel(QWidget):
         self._worker = None
         self._frame_worker = None
         self._caption_tmpdir = None
+        self._filter_stack_order = list(FILTER_STACK_DEFAULT)
         self._setup_ui()
 
     def _setup_ui(self):
@@ -89,6 +98,35 @@ class FiltersPanel(QWidget):
         row2.addWidget(self.chk_deinterlace)
         pl.addLayout(row2)
         layout.addWidget(proc_grp)
+
+        stack_grp = QGroupBox("Filter Stack (drag to reorder)")
+        stack_layout = QVBoxLayout(stack_grp)
+        self.lst_filter_stack = QListWidget()
+        self.lst_filter_stack.setAccessibleName("Filter stack order")
+        self.lst_filter_stack.setToolTip(
+            "Drag filters to change the order used for the FFmpeg video graph"
+        )
+        self.lst_filter_stack.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.lst_filter_stack.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.lst_filter_stack.currentRowChanged.connect(lambda _row: self._refresh_filter_graph())
+        self.lst_filter_stack.model().rowsMoved.connect(
+            lambda *_args: self._on_filter_stack_changed()
+        )
+        stack_layout.addWidget(self.lst_filter_stack)
+        stack_buttons = FlowLayout()
+        self.btn_filter_up = QPushButton("Move Up")
+        self.btn_filter_up.clicked.connect(lambda: self._move_filter_stack(-1))
+        self.btn_filter_down = QPushButton("Move Down")
+        self.btn_filter_down.clicked.connect(lambda: self._move_filter_stack(1))
+        self.lbl_filter_graph = QLabel("[video] → passthrough → [output]")
+        self.lbl_filter_graph.setProperty("class", "dimLabel")
+        self.lbl_filter_graph.setWordWrap(True)
+        stack_buttons.addWidget(self.btn_filter_up)
+        stack_buttons.addWidget(self.btn_filter_down)
+        stack_buttons.addWidget(self.lbl_filter_graph, 1)
+        stack_layout.addLayout(stack_buttons)
+        layout.addWidget(stack_grp)
+        self._populate_filter_stack()
 
         # Subtitle burn-in
         sub_grp = QGroupBox("Subtitle Burn-in")
@@ -242,6 +280,19 @@ class FiltersPanel(QWidget):
         btn_row.addWidget(self.btn_apply)
         layout.addLayout(btn_row)
         layout.addStretch()
+        for slider in self._sliders.values():
+            slider.valueChanged.connect(lambda _value: self._refresh_filter_graph())
+        for check in (
+            self.chk_deinterlace,
+            self.chk_denoise,
+            self.chk_sharpen,
+            self.chk_normalize,
+        ):
+            check.stateChanged.connect(lambda _state: self._refresh_filter_graph())
+        self.cmb_loudness_target.currentTextChanged.connect(
+            lambda _text: self._refresh_filter_graph()
+        )
+        self._refresh_filter_graph()
 
     def _reset_to_defaults(self):
         """Reset all filter settings to defaults."""
@@ -258,6 +309,8 @@ class FiltersPanel(QWidget):
         self.spn_silence_db.setValue(-30)
         self.spn_silence_dur.setValue(0.5)
         self._silence_segments = []
+        self._filter_stack_order = list(FILTER_STACK_DEFAULT)
+        self._populate_filter_stack()
         self.btn_remove_silence.setEnabled(False)
         self.lbl_silence_result.setText("No scan yet")
         self.cmb_loudness_target.setCurrentIndex(0)
@@ -277,6 +330,7 @@ class FiltersPanel(QWidget):
         if path:
             self._sub_path = path
             self.lbl_sub_file.setText(Path(path).name)
+            self._refresh_filter_graph()
 
     def _browse_lut(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -285,6 +339,7 @@ class FiltersPanel(QWidget):
         if path:
             self._lut_path = path
             self.lbl_lut_file.setText(Path(path).name)
+            self._refresh_filter_graph()
 
     def load_file(self, filepath, info):
         self._filepath = filepath
@@ -303,6 +358,108 @@ class FiltersPanel(QWidget):
         self._frame_worker = worker
         worker.finished_signal.connect(self._on_source_preview_ready)
         worker.start()
+
+    def project_state(self):
+        """Return filter controls and reviewable silence markers."""
+        return {
+            "sliders": {name: control.value() for name, control in self._sliders.items()},
+            "stabilize": self.chk_stabilize.isChecked(),
+            "denoise": self.chk_denoise.isChecked(),
+            "sharpen": self.chk_sharpen.isChecked(),
+            "deinterlace": self.chk_deinterlace.isChecked(),
+            "subtitle_path": self._sub_path or "",
+            "lut_path": self._lut_path or "",
+            "normalize": self.chk_normalize.isChecked(),
+            "loudness_target": self.cmb_loudness_target.currentText(),
+            "silence_threshold_db": self.spn_silence_db.value(),
+            "silence_min_duration": self.spn_silence_dur.value(),
+            "silence_segments": [
+                [float(start), float(end)]
+                for start, end in self._silence_segments
+            ],
+            "filter_stack_order": list(self._filter_stack_order),
+        }
+
+    def restore_project_state(self, state):
+        state = state if isinstance(state, dict) else {}
+        for name, value in (state.get("sliders") or {}).items():
+            control = self._sliders.get(name)
+            if control is not None:
+                control.setValue(int(value))
+        for key, control in (
+            ("stabilize", self.chk_stabilize),
+            ("denoise", self.chk_denoise),
+            ("sharpen", self.chk_sharpen),
+            ("deinterlace", self.chk_deinterlace),
+            ("normalize", self.chk_normalize),
+        ):
+            control.setChecked(bool(state.get(key, False)))
+        targets = [self.cmb_loudness_target.itemText(i) for i in range(self.cmb_loudness_target.count())]
+        if state.get("loudness_target") in targets:
+            self.cmb_loudness_target.setCurrentText(state["loudness_target"])
+        self.spn_silence_db.setValue(
+            max(-60, min(-10, int(state.get("silence_threshold_db", -30) or -30)))
+        )
+        self.spn_silence_dur.setValue(
+            max(0.1, min(10.0, float(state.get("silence_min_duration", 0.5) or 0.5)))
+        )
+        segments = []
+        for item in (state.get("silence_segments") or [])[:500]:
+            if isinstance(item, (list, tuple)) and len(item) == 2:
+                start, end = sorted((max(0.0, float(item[0])), max(0.0, float(item[1]))))
+                if end > start:
+                    segments.append((start, end))
+        self._silence_segments = segments
+        self.btn_remove_silence.setEnabled(bool(segments))
+        self._filter_stack_order = normalize_filter_order(state.get("filter_stack_order"))
+        self._populate_filter_stack()
+
+    def _populate_filter_stack(self):
+        if not hasattr(self, "lst_filter_stack"):
+            return
+        self.lst_filter_stack.blockSignals(True)
+        self.lst_filter_stack.clear()
+        for filter_id in normalize_filter_order(self._filter_stack_order):
+            item = QListWidgetItem(FILTER_STACK_LABELS[filter_id])
+            item.setData(Qt.ItemDataRole.UserRole, filter_id)
+            self.lst_filter_stack.addItem(item)
+        self.lst_filter_stack.blockSignals(False)
+        self._on_filter_stack_changed()
+
+    def _on_filter_stack_changed(self):
+        if hasattr(self, "lst_filter_stack"):
+            self._filter_stack_order = normalize_filter_order(
+                [
+                    self.lst_filter_stack.item(index).data(Qt.ItemDataRole.UserRole)
+                    for index in range(self.lst_filter_stack.count())
+                ]
+            )
+        self._refresh_filter_graph()
+
+    def _move_filter_stack(self, delta):
+        row = self.lst_filter_stack.currentRow()
+        target = row + int(delta)
+        if row < 0 or not 0 <= target < self.lst_filter_stack.count():
+            return
+        values = reorder_filter_stack(self._filter_stack_order, row, target)
+        self._filter_stack_order = values
+        self._populate_filter_stack()
+        self.lst_filter_stack.setCurrentRow(target)
+
+    def _refresh_filter_graph(self):
+        required = (
+            "lbl_filter_graph",
+            "_sliders",
+            "chk_deinterlace",
+            "chk_denoise",
+            "chk_sharpen",
+            "chk_normalize",
+            "_sub_path",
+            "_lut_path",
+        )
+        if all(hasattr(self, name) for name in required):
+            vf, af = self._build_filters(update_graph=False)
+            self.lbl_filter_graph.setText(filter_graph(vf, af))
 
     def _on_source_preview_ready(self, filepath, pixmap):
         if filepath != self._filepath:
@@ -506,6 +663,8 @@ class FiltersPanel(QWidget):
             self.requestToast.emit("Subtitles generated", C["green"])
             self._sub_path = str(out_path)
             self.lbl_sub_file.setText(out_path.name)
+            if hasattr(self, "_refresh_filter_graph"):
+                self._refresh_filter_graph()
         except OSError as exc:
             self.requestToast.emit(f"Caption generation failed: {exc}", C["red"])
         finally:
@@ -513,7 +672,7 @@ class FiltersPanel(QWidget):
             if self._caption_tmpdir == caption_tmpdir:
                 self._caption_tmpdir = None
 
-    def _build_filters(self):
+    def _build_filters(self, update_graph=True):
         vf = []
         af = []
         b = self._sliders["brightness"].value()
@@ -530,22 +689,24 @@ class FiltersPanel(QWidget):
             eq_parts.append(f"saturation={s/100:.2f}")
         if g != 100:
             eq_parts.append(f"gamma={g/100:.2f}")
-        if eq_parts:
-            vf.append(f"eq={':'.join(eq_parts)}")
-        if h != 0:
-            vf.append(f"hue=h={h}")
-        if self.chk_deinterlace.isChecked():
-            vf.append("yadif")
-        if self.chk_denoise.isChecked():
-            vf.append("nlmeans")
-        if self.chk_sharpen.isChecked():
-            vf.append("unsharp=5:5:1.0")
-        if self._lut_path:
-            escaped = escape_ffmpeg_filter_value(self._lut_path)
-            vf.append(f"lut3d=filename={escaped}")
-        if self._sub_path:
-            escaped = escape_ffmpeg_filter_value(self._sub_path)
-            vf.append(f"subtitles=filename={escaped}")
+        for filter_id in normalize_filter_order(self._filter_stack_order):
+            if filter_id == "color":
+                if eq_parts:
+                    vf.append(f"eq={':'.join(eq_parts)}")
+                if h != 0:
+                    vf.append(f"hue=h={h}")
+            elif filter_id == "deinterlace" and self.chk_deinterlace.isChecked():
+                vf.append("yadif")
+            elif filter_id == "denoise" and self.chk_denoise.isChecked():
+                vf.append("nlmeans")
+            elif filter_id == "sharpen" and self.chk_sharpen.isChecked():
+                vf.append("unsharp=5:5:1.0")
+            elif filter_id == "lut" and self._lut_path:
+                escaped = escape_ffmpeg_filter_value(self._lut_path)
+                vf.append(f"lut3d=filename={escaped}")
+            elif filter_id == "subtitles" and self._sub_path:
+                escaped = escape_ffmpeg_filter_value(self._sub_path)
+                vf.append(f"subtitles=filename={escaped}")
         if self.chk_normalize.isChecked():
             target_text = self.cmb_loudness_target.currentText()
             lufs_map = {
@@ -557,6 +718,8 @@ class FiltersPanel(QWidget):
             }
             lufs = lufs_map.get(target_text, -14)
             af.append(f"loudnorm=I={lufs}:TP=-1:LRA=11")
+        if update_graph and hasattr(self, "lbl_filter_graph"):
+            self.lbl_filter_graph.setText(filter_graph(vf, af))
         return vf, af
 
     def _do_apply(self):

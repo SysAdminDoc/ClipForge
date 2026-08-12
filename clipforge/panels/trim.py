@@ -168,6 +168,45 @@ class TrimPanel(QWidget):
         self.spn_trim_end.setRange(0, duration)
         self.range_slider.set_limits(0, duration)
 
+    def project_state(self):
+        """Return the reopenable trim and split settings."""
+        return {
+            "start": self.range_slider.low(),
+            "end": self.range_slider.high(),
+            "mode": (
+                "lossless" if self.chk_lossless.isChecked()
+                else "smart" if self.chk_smart.isChecked()
+                else "reencode"
+            ),
+            "format": self.cmb_format.currentText(),
+            "split_interval": self.spn_split_interval.value(),
+            "split_unit": self.cmb_split_unit.currentText(),
+        }
+
+    def restore_project_state(self, state):
+        state = state if isinstance(state, dict) else {}
+        if self._info:
+            duration = float(self._info.get("duration", 0) or 0)
+            start = max(0.0, min(float(state.get("start", 0) or 0), duration))
+            end = max(start, min(float(state.get("end", duration) or duration), duration))
+            self.range_slider.set_range(start, end)
+        mode_control = {
+            "lossless": self.chk_lossless,
+            "smart": self.chk_smart,
+            "reencode": self.chk_reencode,
+        }.get(state.get("mode"))
+        if mode_control:
+            mode_control.setChecked(True)
+        formats = [self.cmb_format.itemText(i) for i in range(self.cmb_format.count())]
+        if state.get("format") in formats:
+            self.cmb_format.setCurrentText(state["format"])
+        self.spn_split_interval.setValue(
+            max(1, min(3600, int(state.get("split_interval", 30) or 30)))
+        )
+        units = [self.cmb_split_unit.itemText(i) for i in range(self.cmb_split_unit.count())]
+        if state.get("split_unit") in units:
+            self.cmb_split_unit.setCurrentText(state["split_unit"])
+
     def _on_range_changed(self, low, high):
         self.spn_trim_start.blockSignals(True)
         self.spn_trim_end.blockSignals(True)
