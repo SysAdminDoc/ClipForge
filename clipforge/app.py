@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QLabel, QStackedWidget, QTextEdit, QSplitter,
     QListWidget, QListWidgetItem, QScrollArea, QStatusBar,
-    QComboBox, QFileDialog, QSizePolicy,
+    QComboBox, QFileDialog, QInputDialog, QSizePolicy,
     QDockWidget,
 )
 from PyQt6.QtCore import Qt, QThread, QTimer
@@ -63,7 +63,8 @@ from .panels.filters import FiltersPanel
 from .panels.audio import AudioPanel
 from .panels.streams import StreamsPanel
 from .panels.batch import BatchPanel
-from .workers import CapabilityProbeWorker
+from .workers import CapabilityProbeWorker, YTDLPWorker
+from .yt_dlp import find_yt_dlp, validate_source_url
 
 
 def apply_application_theme(app, high_contrast=False):
@@ -96,6 +97,8 @@ class MainWindow(QMainWindow):
         self._pending_project_state = None
         self._project_signature = None
         self._preview_dock = None
+        self._yt_dlp_worker = None
+        self._yt_dlp_path = find_yt_dlp()
         # Restore window geometry
         w = self._settings.get("window_width", 1340)
         h = self._settings.get("window_height", 860)
@@ -214,6 +217,12 @@ class MainWindow(QMainWindow):
         self.file_bar = FileInfoBar()
         self.file_bar.fileLoaded.connect(self._on_file_loaded)
         self.file_bar.fileLoadFailed.connect(self._on_file_load_failed)
+        self.file_bar.urlRequested.connect(self._download_url)
+        self.file_bar.btn_open_url.setEnabled(bool(self._yt_dlp_path))
+        if not self._yt_dlp_path:
+            self.file_bar.btn_open_url.setToolTip(
+                "Install yt-dlp locally to import one video from an HTTP(S) URL"
+            )
         content_layout.addWidget(self.file_bar)
 
         # Main splitter: top (player + panels) / bottom (console)
@@ -806,6 +815,69 @@ class MainWindow(QMainWindow):
         path = item.data(Qt.ItemDataRole.UserRole)
         if path and os.path.exists(path):
             self.file_bar.load_file(path)
+
+    def _download_url(self):
+        if not self._yt_dlp_path:
+            self.toast.show_message(
+                "Install yt-dlp locally before importing a URL",
+                C["yellow"],
+                6000,
+            )
+            return
+        url, accepted = QInputDialog.getText(
+            self,
+            "Import Video from URL",
+            "HTTP(S) video URL:",
+        )
+        if not accepted or not url.strip():
+            return
+        try:
+            url = validate_source_url(url)
+        except ValueError as exc:
+            self.toast.show_message(str(exc), C["red"], 6000)
+            return
+        current = self.file_bar.filepath()
+        default_dir = Path(current).parent if current else Path.home()
+        output_dir = QFileDialog.getExistingDirectory(
+            self,
+            "Choose Download Folder",
+            str(default_dir),
+        )
+        if not output_dir:
+            return
+        if self._yt_dlp_worker and self._yt_dlp_worker.isRunning():
+            self.toast.show_message("A URL import is already running", C["yellow"])
+            return
+        worker = YTDLPWorker(
+            self._yt_dlp_path,
+            url,
+            output_dir,
+            parent=self,
+        )
+        self._yt_dlp_worker = worker
+        worker.progress.connect(lambda value: self.status_bar.showMessage(
+            f"Downloading URL… {value:.0f}%"
+        ))
+        worker.log_output.connect(self.console.append)
+        worker.finished_signal.connect(self._on_url_download_done)
+        self.file_bar.btn_open_url.setEnabled(False)
+        self.status_bar.showMessage("Downloading URL…")
+        self.console.append(
+            "[INFO] URL import is restricted to one HTTP(S) video and the chosen folder.\n"
+        )
+        worker.start()
+
+    def _on_url_download_done(self, ok, message, output_path):
+        self._yt_dlp_worker = None
+        self.file_bar.btn_open_url.setEnabled(bool(self._yt_dlp_path))
+        if not ok or not output_path:
+            self.status_bar.showMessage("URL import failed")
+            self.toast.show_message(f"URL import failed: {message}", C["red"], 7000)
+            return
+        self.console.append(f"[INFO] URL import complete: {output_path}\n")
+        self.status_bar.showMessage(f"Imported {Path(output_path).name}", 5000)
+        self.toast.show_message(f"Imported {Path(output_path).name}", C["green"], 5000)
+        self.file_bar.load_file(output_path)
 
     def _on_file_loaded(self, filepath, info):
         self.player.load(filepath, info)

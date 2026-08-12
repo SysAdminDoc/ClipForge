@@ -1199,6 +1199,7 @@ class VideoPlayer(QWidget):
 class FileInfoBar(QWidget):
     fileLoaded = pyqtSignal(str, dict)
     fileLoadFailed = pyqtSignal(str, str)
+    urlRequested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1217,6 +1218,12 @@ class FileInfoBar(QWidget):
         self.btn_open.setAccessibleName("Open video file")
         self.btn_open.clicked.connect(self._open_file)
 
+        self.btn_open_url = QPushButton("Open URL")
+        self.btn_open_url.setFixedWidth(100)
+        self.btn_open_url.setAccessibleName("Import video from URL")
+        self.btn_open_url.setToolTip("Download one video with optional local yt-dlp")
+        self.btn_open_url.clicked.connect(self.urlRequested.emit)
+
         self.lbl_name = QLabel("Open a video to get started")
         self.lbl_name.setProperty("class", "dimLabel")
         self.lbl_info = QLabel("")
@@ -1227,6 +1234,7 @@ class FileInfoBar(QWidget):
         self.btn_cancel_probe.clicked.connect(self.cancel_probe)
 
         layout.addWidget(self.btn_open)
+        layout.addWidget(self.btn_open_url)
         layout.addWidget(self.lbl_name, 1)
         layout.addWidget(self.lbl_info)
         layout.addWidget(self.btn_cancel_probe)

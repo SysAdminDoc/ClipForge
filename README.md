@@ -116,6 +116,7 @@ All-in-one video editor — Trim, Crop, Upscale, Interpolate, Convert, Filter, A
 - **High-contrast theme** option (via `high_contrast` setting)
 - Toast notifications with slide-in/slide-out animations
 - Drag & drop file loading (single file or batch)
+- Optional one-video URL import through local yt-dlp with destination-folder validation
 - Recent files list in sidebar with double-click to reload
 - Embedded console with full FFmpeg output and **placeholder guidance**
 - Bounded severity-filtered console with redacted JSON diagnostics export
@@ -132,7 +133,7 @@ All-in-one video editor — Trim, Crop, Upscale, Interpolate, Convert, Filter, A
 - **Atomic output safety** — validates staged media before replacing the chosen destination
 - **Runtime security policy** — rejects unreviewed FFmpeg branches, keeps NVDEC fail-closed until a reviewed boundary, and requires the patched Qt 6.11.1 runtime
 - **Cross-surface provenance** — release checks record exact versions, SHA-256 hashes, licenses, and lock/source metadata for browser assets, Python distributions, FFmpeg/ffprobe, optional libmpv, and managed AI tools; support diagnostics include the identities used by each desktop job
-- 217-test suite covering utilities, process safety, semantic media validation, generated media, probing, proxy/AI caching, supply-chain validation, diagnostics, persistence, browser modules/jobs, project sessions, filter graphs, OCR, localization, and accessibility contracts
+- 220-test suite covering utilities, process safety, semantic media validation, generated media, probing, proxy/AI caching, supply-chain validation, diagnostics, persistence, browser modules/jobs, project sessions, filter graphs, OCR, URL import, localization, and accessibility contracts
 
 ### Web Editor
 
@@ -183,6 +184,10 @@ Try it in the browser: **[sysadmindoc.github.io/ClipForge](https://sysadmindoc.g
   - Place in ClipForge directory or add to PATH
 - **Whisper** (optional, for auto-captions)
   - `pip install openai-whisper`
+- **Tesseract OCR** (optional, for extracting hardsubs to `.srt`)
+  - Install the native Tesseract executable and its language data locally; ClipForge does not download OCR models
+- **yt-dlp** (optional, for importing one video from an HTTP(S) URL)
+  - Install the native `yt-dlp` executable and keep it on PATH; playlists and embedded URL credentials are rejected
 - **libmpv** (optional, experimental preview backend)
   - Install the wrapper with `python -m pip install --require-hashes -r requirements-mpv.lock`, then install libmpv separately
   - On Windows, place `mpv-2.dll`/`libmpv-2.dll` beside ClipForge or set `CLIPFORGE_LIBMPV_DIR`
@@ -215,7 +220,7 @@ python scripts/release_check.py --build
 Release builds are unsigned and produced locally. `clipforge/version.py` is the
 version source of truth; use `python scripts/sync_version.py --set X.Y.Z` to
 update desktop, web, README, and Windows executable metadata together.
-The release check runs the 217-test Python and headless-Chromium suite, then
+The release check runs the 220-test Python and headless-Chromium suite, then
 generates disposable FFmpeg fixtures for audio/video,
 subtitles, chapters, rotation, VFR, odd filenames, and core edit operations;
 `--build` creates a fresh hash-locked environment, builds the unsigned

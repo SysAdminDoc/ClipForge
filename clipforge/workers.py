@@ -43,6 +43,11 @@ from .diagnostics import DIAGNOSTICS
 from .ai_tools import AIFrameCache
 from .runtime_policy import evaluate_ffmpeg_runtime, evaluate_nvdec
 from .ocr import format_srt, merge_ocr_observations, parse_tesseract_tsv
+from .yt_dlp import (
+    YTDLP_MEDIA_EXTENSIONS,
+    build_yt_dlp_command,
+    validate_download_path,
+)
 
 # ---------------------------------------------------------------------------
 # Probe workers
@@ -406,6 +411,128 @@ class OCRWorker(QThread):
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
             _unregister_temp_dir(tmpdir)
+
+
+class YTDLPWorker(QThread):
+    """Download one user-requested URL into a validated local media folder."""
+
+    progress = pyqtSignal(float)
+    log_output = pyqtSignal(str)
+    outcome_signal = pyqtSignal(object)
+    finished_signal = pyqtSignal(bool, str, str)
+
+    def __init__(self, yt_dlp_path, url, output_dir, parent=None):
+        super().__init__(parent)
+        self.yt_dlp_path = str(yt_dlp_path)
+        self.url = str(url)
+        self.output_dir = Path(output_dir).expanduser().resolve()
+        self._cancel_event = threading.Event()
+        self._output_lines = []
+        self._started_at = 0.0
+
+    def cancel(self):
+        self._cancel_event.set()
+
+    def _line(self, line):
+        line = str(line)
+        self.log_output.emit(line)
+        self._output_lines.append(line.strip())
+        match = re.search(r"(?<!\d)(\d{1,3}(?:\.\d+)?)%", line)
+        if match:
+            self.progress.emit(min(100.0, float(match.group(1))))
+
+    def run(self):
+        self._started_at = _time.time()
+        try:
+            command = build_yt_dlp_command(
+                self.yt_dlp_path,
+                self.url,
+                self.output_dir,
+            )
+        except (OSError, ValueError) as error:
+            self._finish(
+                WorkerOutcome("failed", "invalid_request", str(error))
+            )
+            return
+        self.log_output.emit("[yt-dlp] Importing one video; playlist expansion is disabled\n")
+        result = run_managed_process(
+            command,
+            cancel_event=self._cancel_event,
+            timeout=3600,
+            stdout_callback=self._line,
+            stderr_callback=self._line,
+        )
+        if result.cancelled or self._cancel_event.is_set():
+            self._finish(
+                WorkerOutcome(
+                    "cancelled",
+                    "cancelled",
+                    "URL import cancelled",
+                    cancelled=True,
+                )
+            )
+            return
+        if result.timed_out:
+            self._finish(
+                WorkerOutcome("timed_out", "timed_out", "URL import timed out", timed_out=True)
+            )
+            return
+        if result.returncode != 0:
+            self._finish(
+                WorkerOutcome(
+                    "failed",
+                    "download_failed",
+                    "yt-dlp could not download the requested URL",
+                    returncode=result.returncode,
+                )
+            )
+            return
+        candidates = [
+            validate_download_path(line, self.output_dir)
+            for line in reversed(self._output_lines)
+        ]
+        output_path = next((path for path in candidates if path), None)
+        if output_path is None:
+            try:
+                output_path = max(
+                    (
+                        path
+                        for path in self.output_dir.iterdir()
+                        if path.is_file()
+                        and path.suffix.lower() in YTDLP_MEDIA_EXTENSIONS
+                        and path.stat().st_mtime >= self._started_at
+                    ),
+                    key=lambda path: path.stat().st_mtime,
+                )
+            except (OSError, ValueError):
+                output_path = None
+        if output_path is None:
+            self._finish(
+                WorkerOutcome(
+                    "failed",
+                    "output_missing",
+                    "yt-dlp completed without a validated media output",
+                )
+            )
+            return
+        self.progress.emit(100)
+        self._finish(
+            WorkerOutcome(
+                "succeeded",
+                "completed",
+                f"Downloaded {output_path.name}",
+                output_path=str(output_path),
+            ),
+            str(output_path),
+        )
+
+    def _finish(self, outcome, output_path=""):
+        self.outcome_signal.emit(outcome)
+        self.finished_signal.emit(
+            outcome.state == "succeeded",
+            outcome.message,
+            output_path,
+        )
 
 
 class BatchProbeWorker(QThread):
