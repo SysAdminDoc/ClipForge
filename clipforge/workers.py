@@ -1,6 +1,5 @@
 """Background worker threads for FFmpeg, thumbnails, upscale, and interpolation."""
 
-import sys
 import os
 import re
 import shutil
@@ -25,7 +24,6 @@ from .tools import (
     detect_hw_encoders,
     extract_frame,
     probe_media,
-    probe_video,
     read_ffmpeg_version,
     create_job_temp_dir, _unregister_temp_dir,
 )
@@ -193,6 +191,49 @@ class FrameExtractWorker(QThread):
         )
         self.outcome_signal.emit(outcome)
         self.finished_signal.emit(self.filepath, pixmap)
+
+
+class BatchProbeWorker(QThread):
+    """Probe every batch source off the GUI thread with one shared cancel token."""
+
+    progress = pyqtSignal(float)
+    outcome_signal = pyqtSignal(object)
+    finished_signal = pyqtSignal(object, object)
+
+    def __init__(self, paths, parent=None, *, timeout=15, probe_function=None):
+        super().__init__(parent)
+        self.paths = [str(path) for path in paths]
+        self.timeout = float(timeout)
+        self.probe_function = probe_function or probe_media
+        self._cancel_event = threading.Event()
+
+    def cancel(self):
+        self._cancel_event.set()
+
+    def run(self):
+        results = []
+        for index, path in enumerate(self.paths):
+            if self._cancel_event.is_set():
+                break
+            result = self.probe_function(
+                path,
+                timeout=self.timeout,
+                cancel_event=self._cancel_event,
+            )
+            results.append((path, result))
+            self.progress.emit((index + 1) / max(len(self.paths), 1) * 100)
+            if result.error and result.error.code == "probe_cancelled":
+                break
+        cancelled = self._cancel_event.is_set()
+        outcome = WorkerOutcome(
+            "cancelled" if cancelled else "succeeded",
+            "cancelled" if cancelled else "completed",
+            "Batch inspection cancelled" if cancelled else "Batch inspection complete",
+            cancelled=cancelled,
+            details={"completed": len(results), "requested": len(self.paths)},
+        )
+        self.outcome_signal.emit(outcome)
+        self.finished_signal.emit(results, outcome)
 
 
 # ---------------------------------------------------------------------------
@@ -522,7 +563,7 @@ class FFmpegWorker(QThread):
                     message = friendly
                 else:
                     last_lines = stderr_text.strip().split("\n")[-3:]
-                    hint = " | ".join(l.strip() for l in last_lines if l.strip())[:200]
+                    hint = " | ".join(line.strip() for line in last_lines if line.strip())[:200]
                     message = hint or f"Process exited with code {outcome.returncode}"
                 result = WorkerOutcome(
                     "failed",
@@ -860,7 +901,23 @@ class ThumbnailWorker(QThread):
                 WorkerOutcome("failed", "dependency_missing", "FFmpeg not found")
             )
             return
-        info = probe_video(self.filepath)
+        probe_result = probe_media(
+            self.filepath,
+            timeout=max(15, min(60, self.count * 2)),
+            cancel_event=self._cancel_event,
+        )
+        if probe_result.error and probe_result.error.code == "probe_cancelled":
+            self.outcome_signal.emit(
+                WorkerOutcome(
+                    "cancelled",
+                    "cancelled",
+                    "Thumbnail inspection cancelled",
+                    cancelled=True,
+                    details={"path": self.filepath},
+                )
+            )
+            return
+        info = probe_result.info
         if not info:
             self.outcome_signal.emit(
                 WorkerOutcome(
@@ -1126,7 +1183,22 @@ class UpscaleWorker(QThread):
             tmpdir = create_job_temp_dir("upscale")
             upscaled_dir = os.path.join(tmpdir, "upscaled")
             os.makedirs(upscaled_dir)
-            info = probe_video(self.input_path)
+            probe_result = probe_media(
+                self.input_path,
+                timeout=15,
+                cancel_event=self._cancel_event,
+            )
+            if probe_result.error and probe_result.error.code == "probe_cancelled":
+                _finish_worker(
+                    self,
+                    "cancelled",
+                    "cancelled",
+                    "Cancelled",
+                    output_path=str(final_output),
+                    cancelled=True,
+                )
+                return
+            info = probe_result.info
             if not info:
                 _finish_worker(
                     self,
@@ -1441,7 +1513,22 @@ class InterpolateWorker(QThread):
             tmpdir = create_job_temp_dir("interpolate")
             interp_dir = os.path.join(tmpdir, "interpolated")
             os.makedirs(interp_dir)
-            info = probe_video(self.input_path)
+            probe_result = probe_media(
+                self.input_path,
+                timeout=15,
+                cancel_event=self._cancel_event,
+            )
+            if probe_result.error and probe_result.error.code == "probe_cancelled":
+                _finish_worker(
+                    self,
+                    "cancelled",
+                    "cancelled",
+                    "Cancelled",
+                    output_path=str(final_output),
+                    cancelled=True,
+                )
+                return
+            info = probe_result.info
             if not info:
                 _finish_worker(
                     self,

@@ -128,7 +128,7 @@ All-in-one video editor — Trim, Crop, Upscale, Interpolate, Convert, Filter, A
 - **Atomic output safety** — validates staged media before replacing the chosen destination
 - **Runtime security policy** — rejects unreviewed FFmpeg branches, keeps NVDEC fail-closed until a reviewed boundary, and requires the patched Qt 6.11.1 runtime
 - **Cross-surface provenance** — release checks record exact versions, SHA-256 hashes, licenses, and lock/source metadata for browser assets, Python distributions, FFmpeg/ffprobe, optional libmpv, and managed AI tools; support diagnostics include the identities used by each desktop job
-- 175-test suite covering utilities, process safety, semantic media validation, generated media, probing, proxy/AI caching, supply-chain validation, diagnostics, persistence, browser jobs, and accessibility contracts
+- 176-test suite covering utilities, process safety, semantic media validation, generated media, probing, proxy/AI caching, supply-chain validation, diagnostics, persistence, browser jobs, and accessibility contracts
 
 ### Web Editor
 

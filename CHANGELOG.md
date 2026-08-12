@@ -12,6 +12,7 @@ All notable changes to ClipForge will be documented in this file.
 - Batch conversions and AI reassembly now declare stream maps, intentional subtitle/data drops, metadata/chapter handling, timestamp policy, and persisted ffprobe stream-cardinality contracts; multistream jobs warn before intentional drops.
 - The release gate now runs a deterministic cross-surface media matrix covering desktop/AI contracts, browser export and relinking, VFR/multistream timing, cancellation, interrupted queues, and invalid outputs.
 - Release checks now emit a cross-surface provenance manifest covering the browser SBOM, hash-locked Python distributions, external FFmpeg/ffprobe binaries, optional libmpv, and managed AI tools; desktop job diagnostics retain the exact runtime identities used.
+- Batch source inspection and thumbnail metadata probes now run in cancellable worker threads with bounded FFprobe timeouts; preview background reads no longer block the GUI while waiting for cancellation, and shutdown retains confirmed-worker cleanup diagnostics.
 
 ## [v0.5.2] - 2026-07-29
 

@@ -27,8 +27,8 @@ from ..processes import (
     WorkerOutcome,
     output_contract_for_streams,
 )
-from ..tools import FFMPEG, _confirm_overwrite, probe_video
-from ..workers import FFmpegWorker
+from ..tools import FFMPEG, _confirm_overwrite, probe_media
+from ..workers import BatchProbeWorker, FFmpegWorker
 from ..widgets import FlowLayout
 
 
@@ -123,6 +123,8 @@ class BatchPanel(QWidget):
         self._row_priorities = []
         self._current_job_id = None
         self._queue_paused = False
+        self._preflight_worker = None
+        self._preflight_context = None
         self._outcome_received = False
         self._continue_after_worker = False
         self._setup_ui()
@@ -500,8 +502,9 @@ class BatchPanel(QWidget):
 
     def _refresh_action_state(self):
         active = self._queue.active
+        preflighting = self._preflight_worker is not None
         paused = self._queue.paused
-        editable = not active
+        editable = not active and not preflighting
         self.btn_retry.setEnabled(editable and self._has_retryable_jobs())
         self.spn_priority.setEnabled(editable and self.file_list.currentRow() >= 0)
         self.btn_move_up.setEnabled(editable and self.file_list.currentRow() > 0)
@@ -511,15 +514,17 @@ class BatchPanel(QWidget):
         self.btn_pause.setText("Resume Queue" if paused else "Pause Queue")
 
     def _set_batch_running(self, running):
+        preflighting = self._preflight_worker is not None
         has_new = any(job_id is None for job_id in self._row_job_ids)
         self.btn_start.setEnabled(
             not running
+            and not preflighting
             and self._worker is None
             and (has_new or bool(self._queue.has_pending))
         )
         self.btn_start.setText("Start Queue" if self._queue.jobs else "Start Batch")
-        self.btn_cancel.setVisible(running)
-        self.btn_cancel.setEnabled(running)
+        self.btn_cancel.setVisible(running or preflighting)
+        self.btn_cancel.setEnabled(running or preflighting)
         self.btn_pause.setVisible(running)
         self.btn_pause.setEnabled(running)
         for widget in (
@@ -536,8 +541,8 @@ class BatchPanel(QWidget):
             self.chk_custom_dir,
             self.btn_out_dir,
         ):
-            widget.setEnabled(not running)
-        if not running:
+            widget.setEnabled(not running and not preflighting)
+        if not running and not preflighting:
             self.btn_out_dir.setEnabled(self.chk_custom_dir.isChecked())
         self._refresh_action_state()
 
@@ -687,7 +692,12 @@ class BatchPanel(QWidget):
         return True
 
     def _start_batch(self):
-        if self._queue.active or not self._items or not FFMPEG:
+        if (
+            self._queue.active
+            or self._preflight_worker
+            or not self._items
+            or not FFMPEG
+        ):
             return
         operation = self.cmb_operation.currentText()
         template = self.txt_name_template.text()
@@ -708,7 +718,6 @@ class BatchPanel(QWidget):
             for job in jobs_by_id.values()
         }
         prepared = []
-        stream_warning_shown = False
         for row in new_rows:
             source_path = self._items[row]
             try:
@@ -732,17 +741,6 @@ class BatchPanel(QWidget):
             output_keys.add(output_key)
             if not _confirm_overwrite(self, output_path, source_path):
                 return
-            info = probe_video(source_path) if os.path.exists(source_path) else None
-            if not stream_warning_shown:
-                stream_warning_shown = self._report_stream_policy(
-                    info, operation, source_path
-                )
-            source_duration = float(info.get("duration", 0) or 0) if info else 0.0
-            duration = (
-                min(30.0, source_duration)
-                if operation == "Lossless Trim (first 30s)"
-                else source_duration
-            )
             command = self._build_cmd(source_path, output_path, operation)
             if not command:
                 return
@@ -750,46 +748,127 @@ class BatchPanel(QWidget):
                 "row": row,
                 "source": source_path,
                 "output": output_path,
-                "duration": duration,
-                "contract": self._output_contract(
-                    info, output_path, operation, duration
-                ),
                 "command": command,
                 "overwrite": os.path.exists(output_path),
             })
 
-        out_dir = output_dir or (
-            str(Path(self._items[new_rows[0]]).parent) if new_rows else ""
+        self._preflight_context = {
+            "operation": operation,
+            "template": template,
+            "output_dir": output_dir,
+            "new_rows": new_rows,
+            "prepared": prepared,
+            "post_action": self.cmb_post_action.currentText(),
+        }
+        worker = BatchProbeWorker(
+            [entry["source"] for entry in prepared],
+            parent=self,
+            probe_function=probe_media,
+        )
+        self._preflight_worker = worker
+        worker.progress.connect(
+            lambda value: self.lbl_batch_status.setText(
+                f"Inspecting batch media… {int(value)}%"
+            )
+        )
+        worker.finished_signal.connect(
+            lambda results, outcome, current=worker: self._on_batch_preflight_finished(
+                current, results, outcome
+            )
+        )
+        self.lbl_batch_status.setText("Inspecting batch media…")
+        self._set_batch_running(False)
+        worker.start()
+
+    def _on_batch_preflight_finished(self, worker, results, outcome):
+        if worker is not self._preflight_worker:
+            return
+        context = self._preflight_context or {}
+        self._preflight_worker = None
+        self._preflight_context = None
+        self._set_batch_running(False)
+        if outcome.cancelled:
+            self.lbl_batch_status.setText("Batch inspection cancelled")
+            self._refresh_action_state()
+            return
+        prepared = context.get("prepared", [])
+        if len(results) != len(prepared):
+            self.requestToast.emit(
+                "Batch inspection did not complete for every source", C["red"]
+            )
+            self.lbl_batch_status.setText("Batch inspection failed")
+            return
+
+        operation = context["operation"]
+        stream_warning_shown = False
+        enriched = []
+        for entry, (_path, probe_result) in zip(prepared, results):
+            if probe_result.error:
+                detail = probe_result.error.message
+                if probe_result.error.details:
+                    detail += f" {probe_result.error.details}"
+                self.requestToast.emit(
+                    f"Could not inspect {Path(entry['source']).name}: {detail}",
+                    C["red"],
+                )
+                self.lbl_batch_status.setText("Batch inspection failed")
+                return
+            info = probe_result.info or {}
+            if not stream_warning_shown:
+                stream_warning_shown = self._report_stream_policy(
+                    info, operation, entry["source"]
+                )
+            source_duration = float(info.get("duration", 0) or 0)
+            duration = (
+                min(30.0, source_duration)
+                if operation == "Lossless Trim (first 30s)"
+                else source_duration
+            )
+            enriched.append(
+                {
+                    **entry,
+                    "duration": duration,
+                    "contract": self._output_contract(
+                        info, entry["output"], operation, duration
+                    ),
+                    "info": info,
+                }
+            )
+
+        out_dir = context["output_dir"] or (
+            str(Path(prepared[0]["source"]).parent) if prepared else ""
         )
         if out_dir:
             try:
                 usage = shutil.disk_usage(out_dir)
                 estimated_needed = 0
-                for entry in prepared:
-                    p = entry["source"]
-                    if not os.path.exists(p):
+                for entry in enriched:
+                    source_path = entry["source"]
+                    info = entry["info"]
+                    if not os.path.exists(source_path):
                         continue
-                    info = probe_video(p)
-                    if info and (
-                        "Downscale" in operation or "Convert" in operation
-                    ):
-                        w = info.get("width", 1920)
-                        h = info.get("height", 1080)
-                        dur = info.get("duration", 0)
-                        estimated_needed += estimate_output_size(dur, 18, w, h)
+                    if info and ("Downscale" in operation or "Convert" in operation):
+                        estimated_needed += estimate_output_size(
+                            info.get("duration", 0),
+                            18,
+                            info.get("width", 1920),
+                            info.get("height", 1080),
+                        )
                     else:
-                        estimated_needed += int(os.path.getsize(p) * 1.2)
+                        estimated_needed += int(os.path.getsize(source_path) * 1.2)
                 if usage.free < estimated_needed:
                     self.requestToast.emit(
                         f"Low disk space: {format_size(usage.free)} free, ~{format_size(estimated_needed)} needed",
-                        C["yellow"])
+                        C["yellow"],
+                    )
+                    self.lbl_batch_status.setText("Batch stopped: low disk space")
                     return
             except OSError:
                 pass
 
         records = []
-        post_action = self.cmb_post_action.currentText()
-        for entry in prepared:
+        post_action = context["post_action"]
+        for entry in enriched:
             records.append(JobRecord.create(
                 entry["source"],
                 entry["output"],
@@ -800,8 +879,8 @@ class BatchPanel(QWidget):
                 priority=self._row_priorities[entry["row"]],
                 output_contract=entry["contract"],
                 snapshot={
-                    "template": template,
-                    "output_dir": output_dir or "",
+                    "template": context["template"],
+                    "output_dir": context["output_dir"] or "",
                     "post_action": post_action,
                     "index": entry["row"],
                 },
@@ -818,7 +897,7 @@ class BatchPanel(QWidget):
         self._batch_items = tuple(self._items)
         self._batch_outputs = tuple(job.output_path for job in self._queue.jobs)
         self._batch_operation = operation
-        self._batch_out_dir = output_dir
+        self._batch_out_dir = context["output_dir"]
         self._batch_post_action = post_action
         self._start_queue()
 
@@ -951,6 +1030,11 @@ class BatchPanel(QWidget):
             self._refresh_action_state()
 
     def _cancel(self):
+        if self._preflight_worker and self._preflight_worker.isRunning():
+            self._preflight_worker.cancel()
+            self.btn_cancel.setEnabled(False)
+            self.lbl_batch_status.setText("Cancelling batch inspection…")
+            return
         if not self._queue.active:
             return
         self._cancel_requested = True

@@ -1,12 +1,16 @@
 import os
+import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtWidgets import QApplication, QTextEdit
+from PyQt6.QtTest import QTest
 
 from clipforge.job_queue import JobQueue
 from clipforge.panels import batch as batch_module
 from clipforge.panels.batch import BatchPanel
+from clipforge.tools import ProbeError, ProbeResult
+from clipforge.workers import BatchProbeWorker
 
 
 _QT_APP = QApplication.instance() or QApplication([])
@@ -23,18 +27,32 @@ def _panel(monkeypatch, tmp_path):
     return panel, queue_path
 
 
+def _wait_for_preflight(panel):
+    deadline = time.monotonic() + 3
+    while panel._preflight_worker is not None and time.monotonic() < deadline:
+        QTest.qWait(10)
+    assert panel._preflight_worker is None
+
+
 def test_batch_panel_persists_snapshot_and_restores_queue(monkeypatch, tmp_path):
     source = tmp_path / "source.mp4"
     source.write_bytes(b"source")
     panel, queue_path = _panel(monkeypatch, tmp_path)
     monkeypatch.setattr(batch_module, "FFMPEG", "ffmpeg")
-    monkeypatch.setattr(batch_module, "probe_video", lambda _path: None)
+    monkeypatch.setattr(
+        batch_module,
+        "probe_media",
+        lambda _path, **_kwargs: ProbeResult(
+            info={"duration": 1.0, "width": 320, "height": 180, "streams": []}
+        ),
+    )
     monkeypatch.setattr(batch_module, "_confirm_overwrite", lambda *args: True)
     monkeypatch.setattr(BatchPanel, "_start_queue", lambda _self: None)
 
     panel.txt_name_template.setText("{index}-{name}{suffix}{ext}")
     panel.add_paths([source])
     panel._start_batch()
+    _wait_for_preflight(panel)
 
     assert queue_path.exists()
     jobs = panel._queue.jobs
@@ -60,12 +78,19 @@ def test_batch_panel_reorders_and_prioritizes_saved_jobs(monkeypatch, tmp_path):
     second.write_bytes(b"second")
     panel, _ = _panel(monkeypatch, tmp_path)
     monkeypatch.setattr(batch_module, "FFMPEG", "ffmpeg")
-    monkeypatch.setattr(batch_module, "probe_video", lambda _path: None)
+    monkeypatch.setattr(
+        batch_module,
+        "probe_media",
+        lambda _path, **_kwargs: ProbeResult(
+            info={"duration": 1.0, "width": 320, "height": 180, "streams": []}
+        ),
+    )
     monkeypatch.setattr(batch_module, "_confirm_overwrite", lambda *args: True)
     monkeypatch.setattr(BatchPanel, "_start_queue", lambda _self: None)
 
     panel.add_paths([first, second])
     panel._start_batch()
+    _wait_for_preflight(panel)
     jobs = panel._queue.jobs
     panel.file_list.setCurrentRow(1)
     panel._move_selected(-1)
@@ -102,3 +127,25 @@ def test_batch_panel_warns_before_dropping_subtitle_or_data_streams(
     assert "subtitle" in panel.console.toPlainText()
     assert notices and "drop" in notices[0]
     panel.deleteLater()
+
+
+def test_batch_preflight_cancels_without_blocking_the_gui(tmp_path):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+
+    def delayed_probe(_path, *, cancel_event, **_kwargs):
+        while not cancel_event.is_set():
+            time.sleep(0.01)
+        return ProbeResult(error=ProbeError("probe_cancelled", "cancelled"))
+
+    outcomes = []
+    worker = BatchProbeWorker([source], probe_function=delayed_probe)
+    worker.outcome_signal.connect(outcomes.append)
+    worker.start()
+    QTest.qWait(50)
+    started = time.monotonic()
+    worker.cancel()
+    assert worker.wait(3000)
+    assert time.monotonic() - started < 2
+    QTest.qWait(50)
+    assert outcomes and outcomes[-1].cancelled

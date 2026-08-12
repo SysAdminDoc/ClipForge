@@ -15,7 +15,7 @@ from PyQt6.QtCore import (
     pyqtSignal,
 )
 from PyQt6.QtGui import (
-    QPainter, QPen, QColor, QPixmap, QPolygonF,
+    QPainter, QPen, QColor, QPolygonF,
 )
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 from PyQt6.QtMultimediaWidgets import QVideoWidget
@@ -25,7 +25,7 @@ from clipforge_utils import (
     validate_media_path,
 )
 from .constants import C
-from .tools import FFMPEG, probe_video, extract_frame
+from .tools import FFMPEG
 from .settings import add_recent
 from .workers import FFmpegWorker, MediaProbeWorker, ThumbnailWorker
 from .proxy import ProxyCache
@@ -524,6 +524,7 @@ class VideoPlayer(QWidget):
         self._mpv_widget = None
         self._mpv_capability = probe_mpv()
         self._thumb_worker = None
+        self._background_workers = set()
         self._fps = 30.0
         self._last_player_error = None
 
@@ -557,6 +558,8 @@ class VideoPlayer(QWidget):
                     wrapper_version=self._mpv_capability.wrapper_version,
                     reason=str(error),
                     library_path=self._mpv_capability.library_path,
+                    library_file=self._mpv_capability.library_file,
+                    native_version=self._mpv_capability.native_version,
                 )
         layout.addWidget(self.video_stack)
 
@@ -802,13 +805,10 @@ class VideoPlayer(QWidget):
         )
 
     def _cancel_background_reads(self):
-        if self._thumb_worker and self._thumb_worker.isRunning():
-            self._thumb_worker.cancel()
-            self._thumb_worker.wait(5000)
+        for worker in tuple(self._background_workers):
+            if worker.isRunning() and hasattr(worker, "cancel"):
+                worker.cancel()
         self._thumb_worker = None
-        if self._proxy_worker and self._proxy_worker.isRunning():
-            self._proxy_worker.cancel()
-            self._proxy_worker.wait(5000)
         self._proxy_worker = None
 
     def _set_playback_source(self, path):
@@ -835,16 +835,19 @@ class VideoPlayer(QWidget):
         self.btn_toggle_proxy.setText("Use Original" if using_proxy else "Use Proxy")
         if self._thumb_worker and self._thumb_worker.isRunning():
             self._thumb_worker.cancel()
-            self._thumb_worker.wait(5000)
         self.thumb_strip.set_thumbnails([])
         worker = ThumbnailWorker(self._playback_path, 16)
         self._thumb_worker = worker
+        self._background_workers.add(worker)
         worker.thumbnails_ready.connect(
             lambda thumbs, active_worker=worker: (
                 self.thumb_strip.set_thumbnails(thumbs)
                 if self._thumb_worker is active_worker
                 else None
             )
+        )
+        worker.finished.connect(
+            lambda current=worker: self._background_workers.discard(current)
         )
         worker.start()
 
@@ -868,12 +871,16 @@ class VideoPlayer(QWidget):
             parent=self,
         )
         self._proxy_worker = worker
+        self._background_workers.add(worker)
         worker.progress.connect(lambda value: self.proxy_progress.setValue(int(value)))
         worker.log_output.connect(self.proxyLog.emit)
         worker.finished_signal.connect(
             lambda ok, message, active_worker=worker, source=source_path: (
                 self._on_proxy_finished(active_worker, source, ok, message)
             )
+        )
+        worker.finished.connect(
+            lambda current=worker: self._background_workers.discard(current)
         )
         self.proxy_progress.setValue(0)
         self.proxy_progress.show()
