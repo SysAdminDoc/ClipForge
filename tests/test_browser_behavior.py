@@ -614,6 +614,130 @@ def test_proof_locale_translates_static_controls_without_layout_overflow(
         context.close()
 
 
+def test_timeline_drag_actions_have_keyboard_alternatives(browser_page):
+    browser_page.locator("#fileInput").set_input_files(
+        {"name": "keyboard-timeline.png", "mimeType": "image/png", "buffer": PNG_BYTES}
+    )
+    browser_page.locator(".media-item").dblclick()
+    clip = browser_page.locator(".clip").first
+    clip.wait_for()
+
+    before_move = browser_page.evaluate(
+        "() => window.buildResolvedTimelinePlan().videoSegments[0]"
+    )
+    clip.focus()
+    clip.press("ArrowRight")
+    browser_page.wait_for_function(
+        "before => window.buildResolvedTimelinePlan().videoSegments[0].timelineStart > before",
+        arg=before_move["timelineStart"],
+    )
+    moved = browser_page.evaluate(
+        "() => window.buildResolvedTimelinePlan().videoSegments[0]"
+    )
+    assert moved["timelineStart"] > before_move["timelineStart"]
+    assert clip.get_attribute("aria-keyshortcuts")
+
+    clip.click()
+    browser_page.evaluate("window.updateClipProperty('duration', 2)")
+    browser_page.evaluate("window.setTool('slip')")
+    slip_before = browser_page.evaluate(
+        "() => window.buildResolvedTimelinePlan().videoSegments[0]"
+    )
+    browser_page.locator(".clip").first.focus()
+    browser_page.locator(".clip").first.press("ArrowRight")
+    browser_page.wait_for_function(
+        "before => window.buildResolvedTimelinePlan().videoSegments[0].sourceStart > before",
+        arg=slip_before["sourceStart"],
+    )
+    slipped = browser_page.evaluate(
+        "() => window.buildResolvedTimelinePlan().videoSegments[0]"
+    )
+    assert slipped["timelineStart"] == slip_before["timelineStart"]
+    assert slipped["sourceStart"] > slip_before["sourceStart"]
+
+    browser_page.evaluate("window.setTool('select')")
+    left_handle = browser_page.locator(".clip").first.locator(".clip-handle.left")
+    left_handle.focus()
+    left_handle.press("ArrowRight")
+    browser_page.wait_for_function(
+        "before => window.buildResolvedTimelinePlan().videoSegments[0].sourceStart > before",
+        arg=moved["sourceStart"],
+    )
+    trimmed = browser_page.evaluate(
+        "() => window.buildResolvedTimelinePlan().videoSegments[0]"
+    )
+    assert trimmed["sourceStart"] > moved["sourceStart"]
+    assert left_handle.get_attribute("role") == "slider"
+
+    tracks = browser_page.locator("#tracksContainer")
+    browser_page.evaluate("document.getElementById('tracksContainer').scrollLeft = 0")
+    tracks.focus()
+    tracks.press("Shift+ArrowRight")
+    assert browser_page.evaluate(
+        "() => document.getElementById('tracksContainer').scrollLeft"
+    ) > 0
+
+
+def test_export_and_edit_menus_restore_focus_and_trap_keyboard_navigation(browser_page):
+    browser_page.locator("#fileInput").set_input_files(
+        {"name": "menu-focus.png", "mimeType": "image/png", "buffer": PNG_BYTES}
+    )
+    browser_page.locator(".media-item").dblclick()
+    browser_page.locator(".clip").first.click()
+    edit_button = browser_page.locator('[data-action="show-edit-menu"]')
+    edit_button.focus()
+    edit_button.press("Enter")
+    assert browser_page.evaluate("document.activeElement?.id") == "editUndo"
+    browser_page.keyboard.press("Tab")
+    assert browser_page.evaluate("document.activeElement?.id") == "editCut"
+    browser_page.keyboard.press("Escape")
+    assert browser_page.evaluate("document.activeElement?.dataset.action") == "show-edit-menu"
+
+    browser_page.locator("#exportButton").click()
+    browser_page.locator("#exportModal").wait_for()
+    browser_page.keyboard.press("Shift+Tab")
+    assert browser_page.evaluate("document.activeElement?.dataset.action") == "hide-export"
+    browser_page.keyboard.press("Escape")
+    assert browser_page.evaluate("document.activeElement?.id") == "exportButton"
+
+
+def test_forced_colors_keeps_focus_visible_and_layout_inside_small_viewport(
+    chromium_browser,
+    browser_app_url,
+):
+    context = chromium_browser.new_context(
+        viewport={"width": 900, "height": 700},
+        forced_colors="active",
+    )
+    page = context.new_page()
+    page.goto(browser_app_url, wait_until="domcontentloaded")
+    page.wait_for_function("() => window.clipforgeEditorReady === true")
+    try:
+        for _ in range(24):
+            if page.evaluate("document.activeElement?.id") == "exportButton":
+                break
+            page.keyboard.press("Tab")
+        assert page.evaluate("document.activeElement?.id") == "exportButton"
+        layout = page.evaluate(
+            """
+            () => {
+                const button = document.getElementById('exportButton');
+                const style = getComputedStyle(button);
+                return {
+                    documentWidth: document.documentElement.scrollWidth,
+                    viewportWidth: innerWidth,
+                    outlineStyle: style.outlineStyle,
+                    outlineWidth: style.outlineWidth,
+                };
+            }
+            """
+        )
+        assert layout["documentWidth"] <= layout["viewportWidth"]
+        assert layout["outlineStyle"] == "solid"
+    finally:
+        context.close()
+
+
 def test_media_clips_and_context_actions_are_keyboard_operable(browser_page):
     browser_page.locator("#fileInput").set_input_files(
         {"name": "keyboard.png", "mimeType": "image/png", "buffer": PNG_BYTES}

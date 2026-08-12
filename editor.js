@@ -626,6 +626,7 @@ function setupEventListeners() {
     tracksContainer.addEventListener('mouseup', onTimelineMouseUp);
     tracksContainer.addEventListener('mouseleave', onTimelineMouseUp);
     tracksContainer.addEventListener('wheel', onTimelineWheel, { passive: false });
+    tracksContainer.addEventListener('keydown', onTimelineKeyboard);
     
     // Ruler click for playhead
     document.getElementById('timelineRuler').addEventListener('mousedown', onRulerClick);
@@ -1558,6 +1559,7 @@ function renderTimeline() {
             `${clip.name}, ${clip.track} track, starts ${formatTimecode(clip.startTime)}, `
             + `duration ${formatTimecode(clip.duration)}`,
         );
+        clipEl.setAttribute('aria-keyshortcuts', 'ArrowLeft ArrowRight Shift+ArrowLeft Shift+ArrowRight');
         clipEl.addEventListener('keydown', event => {
             if (event.key === 'Enter' || event.key === ' ') {
                 event.preventDefault();
@@ -1568,6 +1570,12 @@ function renderTimeline() {
                 event.stopPropagation();
                 const rect = clipEl.getBoundingClientRect();
                 openContextMenu(clipEl, rect.left + 12, rect.top + 12);
+            } else if (['ArrowLeft', 'ArrowRight'].includes(event.key)) {
+                event.preventDefault();
+                event.stopPropagation();
+                const direction = event.key === 'ArrowRight' ? 1 : -1;
+                const step = event.shiftKey ? 1 : 1 / 30;
+                adjustClipFromKeyboard(clip, direction * step);
             }
         });
         
@@ -1599,8 +1607,36 @@ function renderTimeline() {
         }
         const leftHandle = document.createElement('div');
         leftHandle.className = 'clip-handle left';
+        leftHandle.setAttribute('role', 'slider');
+        leftHandle.tabIndex = 0;
+        leftHandle.setAttribute('aria-label', `Trim start of ${clip.name}; use Arrow keys`);
+        leftHandle.setAttribute('aria-keyshortcuts', 'ArrowLeft ArrowRight Shift+ArrowLeft Shift+ArrowRight');
+        leftHandle.setAttribute('aria-valuemin', '0');
+        leftHandle.setAttribute('aria-valuemax', String(Math.max(0, clip.outPoint - 0.1)));
+        leftHandle.setAttribute('aria-valuenow', String(clip.inPoint));
         const rightHandle = document.createElement('div');
         rightHandle.className = 'clip-handle right';
+        rightHandle.setAttribute('role', 'slider');
+        rightHandle.tabIndex = 0;
+        rightHandle.setAttribute('aria-label', `Trim end of ${clip.name}; use Arrow keys`);
+        rightHandle.setAttribute('aria-keyshortcuts', 'ArrowLeft ArrowRight Shift+ArrowLeft Shift+ArrowRight');
+        rightHandle.setAttribute('aria-valuemin', String(Math.max(0.1, clip.inPoint + 0.1)));
+        rightHandle.setAttribute('aria-valuemax', String(Math.max(clip.inPoint + 0.1, clip.outPoint + Math.max(0, clip.duration))));
+        rightHandle.setAttribute('aria-valuenow', String(clip.outPoint));
+        leftHandle.addEventListener('keydown', event => {
+            if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+            event.preventDefault();
+            event.stopPropagation();
+            const direction = event.key === 'ArrowRight' ? 1 : -1;
+            adjustClipTrimFromKeyboard(clip, 'left', direction * (event.shiftKey ? 1 : 1 / 30));
+        });
+        rightHandle.addEventListener('keydown', event => {
+            if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+            event.preventDefault();
+            event.stopPropagation();
+            const direction = event.key === 'ArrowRight' ? 1 : -1;
+            adjustClipTrimFromKeyboard(clip, 'right', direction * (event.shiftKey ? 1 : 1 / 30));
+        });
         clipEl.append(header, content, leftHandle, rightHandle);
         
         track.appendChild(clipEl);
@@ -1992,6 +2028,66 @@ function onTimelineWheel(e) {
         document.getElementById('zoomSlider').value = newZoom;
         setZoom(newZoom);
     }
+}
+
+function onTimelineKeyboard(event) {
+    if (!event.shiftKey || !['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+    const tracksContainer = event.currentTarget;
+    const direction = event.key === 'ArrowRight' ? 1 : -1;
+    event.preventDefault();
+    event.stopPropagation();
+    tracksContainer.scrollLeft = Math.max(0, tracksContainer.scrollLeft + direction * 80);
+}
+
+function updateLinkedClipTiming(clip) {
+    if (!clip.linkedTo) return;
+    const linked = clips.find(item => item.id === clip.linkedTo);
+    if (!linked) return;
+    linked.startTime = clip.startTime;
+    linked.duration = clip.duration;
+    linked.inPoint = clip.inPoint;
+    linked.outPoint = clip.outPoint;
+}
+
+function adjustClipFromKeyboard(clip, delta) {
+    if (!clip || trackStates[clip.track]?.locked) return;
+    pushUndo();
+    if (currentTool === 'slip') {
+        const media = mediaItems.find(item => item.id === clip.mediaId);
+        const maxIn = Math.max(0, (media?.duration || Infinity) - clip.duration);
+        clip.inPoint = Math.max(0, Math.min(maxIn, clip.inPoint + delta));
+        clip.outPoint = clip.inPoint + clip.duration;
+    } else {
+        clip.startTime = Math.max(0, clip.startTime + delta);
+    }
+    updateLinkedClipTiming(clip);
+    updateDuration();
+    renderTimeline();
+    requestAnimationFrame(() => findRenderedClip(clip.id)?.focus());
+}
+
+function adjustClipTrimFromKeyboard(clip, side, delta) {
+    if (!clip || trackStates[clip.track]?.locked) return;
+    pushUndo();
+    if (side === 'left') {
+        const maxStart = clip.startTime + clip.duration - 0.1;
+        const nextStart = Math.max(0, Math.min(maxStart, clip.startTime + delta));
+        const applied = nextStart - clip.startTime;
+        clip.startTime = nextStart;
+        clip.inPoint = Math.max(0, Math.min(clip.outPoint - 0.1, clip.inPoint + applied));
+        clip.duration -= applied;
+    } else {
+        const media = mediaItems.find(item => item.id === clip.mediaId);
+        const maxDuration = media?.duration
+            ? Math.max(0.1, media.duration - clip.inPoint)
+            : Math.max(0.1, clip.duration + delta);
+        clip.duration = Math.max(0.1, Math.min(maxDuration, clip.duration + delta));
+        clip.outPoint = clip.inPoint + clip.duration;
+    }
+    updateLinkedClipTiming(clip);
+    updateDuration();
+    renderTimeline();
+    requestAnimationFrame(() => findRenderedClip(clip.id)?.querySelector(`.clip-handle.${side}`)?.focus());
 }
 
 function onRulerClick(e) {

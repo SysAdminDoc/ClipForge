@@ -737,6 +737,7 @@
         }
         .tracks-container[data-tool="hand"] { cursor: grab; }
         .tracks-container[data-tool="hand"].panning { cursor: grabbing; }
+        .tracks-container:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
         .tracks-scroll {
             position: relative;
             height: 100%;
@@ -901,7 +902,7 @@
         }
         
         /* Toast */
-        .toast-container {
+        .toast-container { 
             position: fixed;
             bottom: 24px;
             right: 24px;
@@ -1099,6 +1100,34 @@
         ::-webkit-scrollbar-track { background: var(--bg-0); }
         ::-webkit-scrollbar-thumb { background: var(--bg-4); border-radius: 4px; }
         ::-webkit-scrollbar-thumb:hover { background: var(--bg-5); }
+
+        @media (forced-colors: active) {
+            :root {
+                --bg-0: Canvas;
+                --bg-1: Canvas;
+                --bg-2: Canvas;
+                --bg-3: Canvas;
+                --bg-4: Canvas;
+                --bg-5: CanvasText;
+                --text-0: CanvasText;
+                --text-1: CanvasText;
+                --text-2: CanvasText;
+                --text-3: GrayText;
+                --border: CanvasText;
+                --accent: Highlight;
+                --accent-solid: Highlight;
+            }
+            :focus-visible {
+                outline: 2px solid Highlight;
+                outline-offset: 2px;
+                box-shadow: none !important;
+            }
+            .btn, .menu-item, .edit-menu-item, .transport-btn, .tool-btn,
+            .track-btn, .context-item, .panel-tab, .drop-zone, .clip,
+            .clip-handle, .transition-item {
+                forced-color-adjust: none;
+            }
+        }
     </style>
 </head>
 <body>
@@ -1288,7 +1317,7 @@
                             </div>
                         </div>
                         
-                        <div class="tracks-container" id="tracksContainer" data-tool="select">
+                        <div class="tracks-container" id="tracksContainer" data-tool="select" tabindex="0" role="region" aria-label="Timeline. Use Shift+Arrow keys to pan." aria-keyshortcuts="Shift+ArrowLeft Shift+ArrowRight">
                             <div class="tracks-scroll" id="tracksScroll">
                                 <div class="track" id="videoTrack" data-track="video"></div>
                                 <div class="track audio" id="audioTrack" data-track="audio"></div>
@@ -1403,7 +1432,7 @@
         <div class="modal-content">
             <div class="modal-header">
                 <span class="modal-title" id="exportModalTitle">Export Video</span>
-                <button class="modal-close" data-action="hide-export" aria-label="Close export dialog">✕</button>
+                        <button class="modal-close" data-action="hide-export" aria-label="Close export dialog">✕</button>
             </div>
             <div class="modal-body">
                 <div class="export-preflight" id="exportPreflight" role="status" aria-live="polite"></div>
