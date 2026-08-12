@@ -39,6 +39,7 @@ def test_project_round_trip_preserves_external_media_and_editing_state(tmp_path)
     assert loaded["schema"] == PROJECT_SCHEMA
     assert loaded["trim"]["start"] == 1.25
     assert loaded["filters"]["silence_segments"] == [[2, 3]]
+    assert loaded["media_tools"] == {}
     assert resolve_project_input(loaded, saved) == media.resolve()
 
     media.unlink()

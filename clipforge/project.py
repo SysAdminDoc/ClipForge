@@ -141,6 +141,7 @@ def normalize_project(raw: Any) -> dict[str, Any]:
         ),
         "trim": _normalize_map(raw.get("trim"), "trim"),
         "filters": _normalize_map(raw.get("filters"), "filters"),
+        "media_tools": _normalize_map(raw.get("media_tools"), "media_tools"),
         "preset": _normalize_map(raw.get("preset"), "preset"),
         "active_panel": max(0, min(int(_finite(raw.get("active_panel"))), 100)),
         "unsupported_features": [
@@ -159,6 +160,7 @@ def build_project(
     media_info: dict[str, Any] | None = None,
     trim: dict[str, Any] | None = None,
     filters: dict[str, Any] | None = None,
+    media_tools: dict[str, Any] | None = None,
     preset: dict[str, Any] | None = None,
     active_input: int = 0,
     active_panel: int = 0,
@@ -178,6 +180,7 @@ def build_project(
         "active_input": active_input,
         "trim": dict(trim or {}),
         "filters": dict(filters or {}),
+        "media_tools": dict(media_tools or {}),
         "preset": dict(preset or {}),
         "active_panel": active_panel,
         "unsupported_features": [

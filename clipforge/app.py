@@ -466,6 +466,7 @@ class MainWindow(QMainWindow):
             media_info=self.file_bar.info() or {},
             trim=self.trim_panel.project_state(),
             filters=self.filters_panel.project_state(),
+            media_tools=self.streams_panel.project_state(),
             preset=self.convert_panel.project_state(),
             active_panel=self.stack.currentIndex(),
             name=Path(self._project_path).stem if self._project_path else None,
@@ -577,6 +578,7 @@ class MainWindow(QMainWindow):
             return
         self.trim_panel.restore_project_state(payload.get("trim"))
         self.filters_panel.restore_project_state(payload.get("filters"))
+        self.streams_panel.restore_project_state(payload.get("media_tools"))
         self.convert_panel.restore_project_state(payload.get("preset"))
         panel = payload.get("active_panel")
         if isinstance(panel, int) and 0 <= panel < len(self._panels):

@@ -1159,6 +1159,16 @@ class VideoPlayer(QWidget):
             else:
                 self.player.setPosition(position_ms)
 
+    def seek_seconds(self, seconds):
+        """Seek the active preview backend to an absolute time in seconds."""
+        if self._duration <= 0:
+            return
+        position_ms = max(0, min(self._duration, int(float(seconds) * 1000)))
+        if self._backend_name == "mpv" and self._mpv_widget:
+            self._mpv_widget.seek(position_ms / 1000)
+        else:
+            self.player.setPosition(position_ms)
+
     def _on_thumb_click(self, ratio):
         if self._duration > 0:
             position_ms = int(ratio * self._duration)

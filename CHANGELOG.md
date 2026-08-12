@@ -30,6 +30,7 @@ All notable changes to ClipForge will be documented in this file.
 - Filters now support dependency-free, keyframe-editable motion-tracked blur regions with bounded FFmpeg crop/overlay expressions; project sessions persist the redaction controls.
 - Added optional local Tesseract hardsub OCR: cancellable FFmpeg frame sampling, confidence-filtered TSV parsing, stable observation merging, and atomic `.srt` export; Whisper captions remain separate.
 - Added optional local yt-dlp URL import with HTTP(S)-only validation, single-video/no-playlist policy, restricted filenames, chosen-folder containment checks, cancellation, and automatic media inspection after download.
+- Scene detection now exposes FFmpeg scene-score results as editable, jumpable review markers persisted in project sessions; it never changes cuts automatically.
 
 ## [v0.5.2] - 2026-07-29
 

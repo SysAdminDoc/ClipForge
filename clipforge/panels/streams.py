@@ -7,9 +7,9 @@ import tempfile
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
+    QApplication, QWidget, QVBoxLayout, QPushButton, QLabel,
     QGroupBox, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox, QTextEdit,
-    QProgressBar, QFileDialog,
+    QProgressBar, QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 
@@ -24,6 +24,7 @@ from ..tools import (
 )
 from ..workers import FFmpegWorker, MediaProbeWorker, QualityMetricsWorker
 from ..widgets import FlowLayout
+from ..scene_detection import normalize_scene_markers, parse_scene_markers
 
 
 class StreamsPanel(QWidget):
@@ -41,6 +42,9 @@ class StreamsPanel(QWidget):
         self._quality_path = None
         self._quality_info = None
         self._quality_report = None
+        self._scene_worker = None
+        self._scene_log = []
+        self._scene_markers = []
         self._setup_ui()
 
     def _setup_ui(self):
@@ -192,6 +196,59 @@ class StreamsPanel(QWidget):
         cs_layout.addLayout(cs_btn_row)
         layout.addWidget(cs_grp)
 
+        scene_grp = QGroupBox("Scene-change Markers (review only)")
+        scene_layout = QVBoxLayout(scene_grp)
+        scene_opts = FlowLayout()
+        scene_opts.addWidget(QLabel("Sensitivity:"))
+        self.spn_scene_threshold = QDoubleSpinBox()
+        self.spn_scene_threshold.setRange(0.05, 0.95)
+        self.spn_scene_threshold.setDecimals(2)
+        self.spn_scene_threshold.setSingleStep(0.05)
+        self.spn_scene_threshold.setValue(0.35)
+        self.spn_scene_threshold.setAccessibleName("Scene detection sensitivity")
+        self.spn_scene_threshold.setToolTip(
+            "FFmpeg scene score threshold; lower values produce more review markers"
+        )
+        scene_opts.addWidget(self.spn_scene_threshold)
+        self.lbl_scene_result = QLabel("No scene scan yet")
+        self.lbl_scene_result.setProperty("class", "dimLabel")
+        scene_opts.addWidget(self.lbl_scene_result, 1)
+        scene_layout.addLayout(scene_opts)
+        self.tbl_scene_markers = QTableWidget(0, 2)
+        self.tbl_scene_markers.setAccessibleName("Reviewable scene markers")
+        self.tbl_scene_markers.setHorizontalHeaderLabels(["Keep", "Time (seconds)"])
+        self.tbl_scene_markers.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.tbl_scene_markers.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.Stretch
+        )
+        self.tbl_scene_markers.setMaximumHeight(150)
+        self.tbl_scene_markers.itemChanged.connect(
+            lambda _item: self._sync_scene_markers()
+        )
+        self.tbl_scene_markers.cellDoubleClicked.connect(
+            lambda row, _column: self._jump_to_scene_marker(row)
+        )
+        scene_layout.addWidget(self.tbl_scene_markers)
+        scene_btn_row = FlowLayout()
+        self.btn_detect_scenes = QPushButton("Detect Scenes")
+        self.btn_detect_scenes.setObjectName("primaryBtn")
+        self.btn_detect_scenes.setEnabled(False)
+        self.btn_detect_scenes.clicked.connect(self._do_detect_scenes)
+        self.btn_cancel_scenes = QPushButton("Cancel")
+        self.btn_cancel_scenes.setEnabled(False)
+        self.btn_cancel_scenes.clicked.connect(self._cancel_scene_detection)
+        self.btn_jump_scene = QPushButton("Jump to Selected")
+        self.btn_jump_scene.setEnabled(False)
+        self.btn_jump_scene.clicked.connect(self._jump_to_selected_scene)
+        scene_btn_row.addStretch()
+        scene_btn_row.addWidget(self.btn_jump_scene)
+        scene_btn_row.addWidget(self.btn_cancel_scenes)
+        scene_btn_row.addWidget(self.btn_detect_scenes)
+        scene_layout.addLayout(scene_btn_row)
+        layout.addWidget(scene_grp)
+
         # Chapter file
         chap_grp = QGroupBox("Chapter Metadata")
         chap_layout = QVBoxLayout(chap_grp)
@@ -225,13 +282,174 @@ class StreamsPanel(QWidget):
     def load_file(self, filepath, info):
         self._filepath = filepath
         self._info = info
+        if self._scene_worker and self._scene_worker.isRunning():
+            self._scene_worker.cancel()
         has_ffmpeg = bool(FFMPEG)
         self.btn_remux.setEnabled(has_ffmpeg)
         self.btn_snapshot.setEnabled(has_ffmpeg)
         self.btn_contact_sheet.setEnabled(has_ffmpeg)
+        self.btn_detect_scenes.setEnabled(has_ffmpeg)
+        self.btn_cancel_scenes.setEnabled(False)
+        self._scene_log = []
+        self._populate_scene_markers([])
+        self.lbl_scene_result.setText("No scene scan yet")
         self.btn_mux_chapters.setEnabled(has_ffmpeg and self._chapter_path is not None)
         self.btn_compare_quality.setEnabled(has_ffmpeg and self._quality_path is not None)
         self._update_info()
+
+    def project_state(self):
+        """Return the scene threshold and review markers for session files."""
+
+        return {
+            "scene_threshold": self.spn_scene_threshold.value(),
+            "scene_markers": [
+                {"time": marker.time, "keep": marker.keep}
+                for marker in self._scene_markers
+            ],
+        }
+
+    def restore_project_state(self, state):
+        state = state if isinstance(state, dict) else {}
+        try:
+            self.spn_scene_threshold.setValue(
+                max(0.05, min(0.95, float(state.get("scene_threshold", 0.35))))
+            )
+        except (TypeError, ValueError):
+            self.spn_scene_threshold.setValue(0.35)
+        self._populate_scene_markers(state.get("scene_markers"))
+
+    def _scene_marker_rows(self):
+        rows = []
+        for row in range(self.tbl_scene_markers.rowCount()):
+            keep_item = self.tbl_scene_markers.item(row, 0)
+            time_item = self.tbl_scene_markers.item(row, 1)
+            try:
+                time_sec = float(time_item.text())
+            except (AttributeError, TypeError, ValueError):
+                continue
+            rows.append({
+                "time": time_sec,
+                "keep": bool(
+                    keep_item
+                    and keep_item.checkState() == Qt.CheckState.Checked
+                ),
+            })
+        duration = float((self._info or {}).get("duration") or 0)
+        return normalize_scene_markers(rows, duration=duration)
+
+    def _sync_scene_markers(self):
+        if not hasattr(self, "tbl_scene_markers"):
+            return
+        self._scene_markers = self._scene_marker_rows()
+        total = self.tbl_scene_markers.rowCount()
+        kept = sum(marker.keep for marker in self._scene_markers)
+        if total:
+            self.lbl_scene_result.setText(
+                f"{kept} of {total} marker(s) retained for review; "
+                "no cuts are changed automatically"
+            )
+        self.btn_jump_scene.setEnabled(bool(self._scene_markers))
+
+    def _populate_scene_markers(self, markers):
+        duration = float((self._info or {}).get("duration") or 0)
+        normalized = normalize_scene_markers(markers, duration=duration)
+        self.tbl_scene_markers.blockSignals(True)
+        self.tbl_scene_markers.setRowCount(0)
+        for marker in normalized:
+            row = self.tbl_scene_markers.rowCount()
+            self.tbl_scene_markers.insertRow(row)
+            keep_item = QTableWidgetItem()
+            keep_item.setFlags(keep_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            keep_item.setCheckState(
+                Qt.CheckState.Checked if marker.keep else Qt.CheckState.Unchecked
+            )
+            self.tbl_scene_markers.setItem(row, 0, keep_item)
+            self.tbl_scene_markers.setItem(
+                row,
+                1,
+                QTableWidgetItem(f"{marker.time:.3f}"),
+            )
+        self.tbl_scene_markers.blockSignals(False)
+        self._scene_markers = normalized
+        self._sync_scene_markers()
+
+    def _on_scene_log(self, text):
+        self._scene_log.append(str(text))
+        self.console.append(text)
+
+    def _do_detect_scenes(self):
+        if not self._filepath or not FFMPEG or not self._info:
+            return
+        if self._scene_worker and self._scene_worker.isRunning():
+            return
+        threshold = self.spn_scene_threshold.value()
+        duration = float(self._info.get("duration") or 0)
+        if duration <= 0:
+            self.requestToast.emit("Cannot detect scenes: unknown duration", C["red"])
+            return
+        command = [
+            FFMPEG,
+            "-hide_banner",
+            "-i",
+            self._filepath,
+            "-vf",
+            f"select='gt(scene,{threshold:.3f})',showinfo",
+            "-an",
+            "-f",
+            "null",
+            "-",
+        ]
+        self._scene_log = []
+        self._scene_worker = FFmpegWorker(
+            command,
+            duration,
+            parse_progress=False,
+            parent=self,
+        )
+        self._scene_worker.log_output.connect(self._on_scene_log)
+        self._scene_worker.finished_signal.connect(self._on_scenes_detected)
+        self.btn_detect_scenes.setEnabled(False)
+        self.btn_cancel_scenes.setEnabled(True)
+        self.lbl_scene_result.setText("Scanning scene changes…")
+        self._scene_worker.start()
+
+    def _cancel_scene_detection(self):
+        if self._scene_worker and self._scene_worker.isRunning():
+            self._scene_worker.cancel()
+            self.btn_cancel_scenes.setEnabled(False)
+            self.lbl_scene_result.setText("Cancelling scene scan…")
+
+    def _on_scenes_detected(self, ok, message):
+        self.btn_detect_scenes.setEnabled(bool(FFMPEG) and bool(self._filepath))
+        self.btn_cancel_scenes.setEnabled(False)
+        if not ok:
+            self.lbl_scene_result.setText("Scene scan failed")
+            self.requestToast.emit(f"Scene detection failed: {message}", C["red"])
+            return
+        duration = float((self._info or {}).get("duration") or 0)
+        markers = parse_scene_markers(
+            "".join(self._scene_log),
+            duration=duration,
+        )
+        self._populate_scene_markers(markers)
+        if markers:
+            self.requestToast.emit(
+                f"Detected {len(markers)} scene marker(s); review before editing",
+                C["green"],
+            )
+        else:
+            self.lbl_scene_result.setText("No scene changes crossed the threshold")
+
+    def _jump_to_selected_scene(self):
+        row = self.tbl_scene_markers.currentRow()
+        if row >= 0:
+            self._jump_to_scene_marker(row)
+
+    def _jump_to_scene_marker(self, row):
+        if not 0 <= row < len(self._scene_markers):
+            return
+        if self._player and hasattr(self._player, "seek_seconds"):
+            self._player.seek_seconds(self._scene_markers[row].time)
 
     def _update_info(self):
         if not self._info:
