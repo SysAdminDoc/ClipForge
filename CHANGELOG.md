@@ -20,6 +20,7 @@ All notable changes to ClipForge will be documented in this file.
 - The browser editor now loads project schema, timeline planning, jobs, cache predicates, preview state, export preflight, and diagnostics redaction through narrow ES modules with DOM-free Node coverage; browser behavior and the media matrix serve `.mjs` with the correct module MIME type.
 - Release provenance now recognizes the SPDX licenses used by current Colorama, Pygments, and typing-extensions license files, keeping clean build verification fail-closed without treating valid metadata as missing.
 - The browser Edit menu now performs undo/redo, clipboard, select-all, and delete actions with keyboard focus handling; Slip edits source timing without moving clips and Hand provides timeline panning with pointer coverage.
+- Added an isolated Mediabunny 1.53.0 + WebCodecs benchmark page/CLI with a pinned MPL-2.0 artifact, codec capability report, timing/heap/output measurements, duration/track parity checks, and explicit FFmpeg.wasm fallback/trim limitations; production export is unchanged.
 
 ## [v0.5.2] - 2026-07-29
 

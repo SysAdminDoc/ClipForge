@@ -1,0 +1,11 @@
+{
+  "name": "mediabunny",
+  "version": "1.53.0",
+  "license": "MPL-2.0",
+  "source": "https://registry.npmjs.org/mediabunny/-/mediabunny-1.53.0.tgz",
+  "sourceSha256": "f15cf601d4528d1172866b39d2c5170dabfe2f547404292633f07af2dbb11c80",
+  "artifact": "vendor/mediabunny/mediabunny-1.53.0.min.mjs",
+  "artifactSha256": "29cf21f0f46102a63d246a3b0c63f7421ddde93fcbadc20d66b9319d0a508b38",
+  "licenseFile": "vendor/mediabunny/LICENSE-MPL-2.0.txt",
+  "purpose": "Evaluation-only browser benchmark; not part of the production editor runtime."
+}

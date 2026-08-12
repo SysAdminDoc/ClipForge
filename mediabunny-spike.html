@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'">
+    <title>ClipForge Mediabunny Spike</title>
+    <script src="bootstrap.js" defer></script>
+    <style>
+        :root { color-scheme: dark; font-family: system-ui, sans-serif; background: #0c0c0e; color: #f0f0f4; }
+        body { max-width: 960px; margin: 0 auto; padding: 28px; }
+        h1 { margin: 0 0 8px; font-size: 24px; }
+        p { color: #b0b0b8; line-height: 1.5; }
+        .card { margin-top: 18px; padding: 18px; background: #19191d; border: 1px solid #26262e; border-radius: 8px; }
+        .controls { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; }
+        label { display: grid; gap: 5px; color: #b0b0b8; font-size: 12px; }
+        input, button { min-height: 34px; border: 1px solid #34343e; border-radius: 5px; background: #222228; color: #f0f0f4; padding: 6px 10px; font: inherit; }
+        button { background: #595cdb; cursor: pointer; }
+        button:disabled { opacity: .55; cursor: wait; }
+        #status { min-height: 24px; margin-top: 12px; color: #b0b0b8; }
+        pre { overflow: auto; max-height: 560px; margin: 0; padding: 14px; background: #0a0a0c; border-radius: 5px; white-space: pre-wrap; word-break: break-word; }
+        .warning { color: #f59e0b; }
+    </style>
+</head>
+<body>
+    <h1>Mediabunny / FFmpeg.wasm evaluation spike</h1>
+    <p>
+        Disposable benchmark only. It never changes the production browser export path.
+        It measures an MP4 trim/transcode through Mediabunny + WebCodecs against the current
+        pinned FFmpeg.wasm runtime, including output metadata, duration parity, bytes, and
+        optional precise heap samples.
+    </p>
+    <div class="card">
+        <div class="controls">
+            <label>Source video<input id="sourceFile" type="file" accept="video/*"></label>
+            <label>Start (seconds)<input id="trimStart" type="number" min="0" step="0.01" value="0"></label>
+            <label>End (seconds)<input id="trimEnd" type="number" min="0" step="0.01" placeholder="source end"></label>
+            <button id="runBenchmark" type="button">Run benchmark</button>
+        </div>
+        <div id="status" role="status" aria-live="polite">Choose a short local MP4 to begin.</div>
+    </div>
+    <div class="card">
+        <div class="warning">Use short fixtures first: BufferTarget intentionally keeps each output in memory.</div>
+        <pre id="results" aria-label="Benchmark results">No benchmark has run.</pre>
+    </div>
+    <script type="module" src="mediabunny-spike-page.mjs"></script>
+</body>
+</html>
