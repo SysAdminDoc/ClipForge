@@ -12,6 +12,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QStackedWidget, QTextEdit, QSplitter,
     QListWidget, QListWidgetItem, QScrollArea, QStatusBar,
     QComboBox, QFileDialog, QSizePolicy,
+    QDockWidget,
 )
 from PyQt6.QtCore import Qt, QThread, QTimer
 from PyQt6.QtGui import QAction, QColor, QPalette, QDragEnterEvent, QDropEvent
@@ -94,6 +95,7 @@ class MainWindow(QMainWindow):
         self._project_dirty = False
         self._pending_project_state = None
         self._project_signature = None
+        self._preview_dock = None
         # Restore window geometry
         w = self._settings.get("window_width", 1340)
         h = self._settings.get("window_height", 860)
@@ -389,6 +391,62 @@ class MainWindow(QMainWindow):
         policy_action = QAction("Project files store external media references", self)
         policy_action.setEnabled(False)
         menu.addAction(policy_action)
+
+        view_menu = self.menuBar().addMenu("View")
+        self.preview_detach_action = QAction("Detach Preview", self)
+        self.preview_detach_action.setCheckable(True)
+        self.preview_detach_action.setToolTip(
+            "Move the preview pane into a separate window for multi-monitor editing"
+        )
+        self.preview_detach_action.triggered.connect(self._set_preview_detached)
+        view_menu.addAction(self.preview_detach_action)
+
+    def _set_preview_detached(self, detached):
+        """Move the existing preview widget into or out of a floating dock."""
+        if detached:
+            if self._preview_dock is not None:
+                return
+            self.player.setParent(None)
+            dock = QDockWidget("ClipForge Preview", self)
+            dock.setObjectName("previewDock")
+            dock.setAllowedAreas(Qt.DockWidgetArea.AllDockWidgetAreas)
+            dock.setFeatures(
+                QDockWidget.DockWidgetFeature.DockWidgetClosable
+                | QDockWidget.DockWidgetFeature.DockWidgetMovable
+                | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+            )
+            dock.setWidget(self.player)
+            dock.visibilityChanged.connect(
+                lambda visible, active_dock=dock: (
+                    self._set_preview_detached(False)
+                    if not visible and self._preview_dock is active_dock
+                    else None
+                )
+            )
+            self._preview_dock = dock
+            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+            dock.resize(560, 440)
+            dock.setFloating(True)
+            dock.show()
+            self.preview_detach_action.setChecked(True)
+            self.status_bar.showMessage(
+                "Preview detached — close the preview window to reattach it", 5000
+            )
+            return
+
+        dock = self._preview_dock
+        if dock is None:
+            self.preview_detach_action.setChecked(False)
+            return
+        self._preview_dock = None
+        dock.blockSignals(True)
+        dock.setWidget(None)
+        self.top_splitter.insertWidget(0, self.player)
+        self.player.show()
+        dock.close()
+        dock.deleteLater()
+        self.preview_detach_action.setChecked(False)
+        self.status_bar.showMessage("Preview reattached", 3000)
 
     def _project_payload(self):
         source = self.file_bar.filepath()
@@ -820,6 +878,11 @@ class MainWindow(QMainWindow):
         if hasattr(self, "_project_autosave_timer"):
             self._project_autosave_timer.stop()
         self._worker_status_timer.stop()
+        if self._preview_dock is not None:
+            self._preview_dock.blockSignals(True)
+            self._preview_dock.setWidget(None)
+            self._preview_dock.deleteLater()
+            self._preview_dock = None
         self.player.release()
         active_workers = self._active_workers()
         for worker in active_workers:

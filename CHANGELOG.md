@@ -26,6 +26,7 @@ All notable changes to ClipForge will be documented in this file.
 - Added versioned desktop `.cfproj` session files with external media identities, relative-path relinking, atomic writes, `.bak` recovery copies, trim/filter/preset state, and an explicit unsupported-feature policy; the browser editor now saves `.cfproj` while accepting legacy `.clipforge` files.
 - Added an ordered desktop filter stack with drag/up/down reordering and a live FFmpeg video/audio graph preview; project sessions persist the stack order.
 - Silence detection now presents persisted, editable review markers so users can adjust boundaries or exclude individual ranges before removal.
+- Video clips now render bounded full-duration thumbnail strips with hover scrubbing, and the desktop View menu can float the preview pane for multi-monitor editing.
 
 ## [v0.5.2] - 2026-07-29
 

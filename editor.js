@@ -19,6 +19,8 @@ const BROWSER_PROXY_CACHE_MAX_BYTES = 512 * 1024 * 1024;
 const BROWSER_PROXY_QUOTA_HEADROOM = 8 * 1024 * 1024;
 const MEDIA_METADATA_TIMEOUT_MS =
     Number(globalThis.CLIPFORGE_METADATA_TIMEOUT_MS) || 10000;
+const MEDIA_THUMBNAIL_COUNT = 6;
+const MEDIA_THUMBNAIL_SEEK_TIMEOUT_MS = 1200;
 let recoveryDbPromise = null;
 let recoverySaveTimer = null;
 let recoverySnapshot = null;
@@ -62,6 +64,8 @@ let draggingClip = null;
 let draggingHandle = null;
 let timelinePan = null;
 let isDraggingPlayhead = false;
+let hoverScrub = null;
+let hoverScrubFrame = null;
 let contextMenuReturnFocus = null;
 let editMenuReturnFocus = null;
 
@@ -803,6 +807,7 @@ async function handleFileDrop(files) {
             type,
             duration: 0,
             thumbnail: null,
+            thumbnails: [],
             waveform: null,
             url: URL.createObjectURL(file)
         };
@@ -823,6 +828,7 @@ async function handleFileDrop(files) {
         } else if (type === 'image') {
             media.duration = 5; // Default 5 seconds for images
             media.thumbnail = media.url;
+            media.thumbnails = [media.url];
         }
         
         mediaItems.push(media);
@@ -850,25 +856,22 @@ async function loadMediaMetadata(media) {
     return new Promise((resolve, reject) => {
         const element = media.type === 'video' ? document.createElement('video') : document.createElement('audio');
         element.src = media.url;
-        element.preload = 'metadata';
+        element.preload = 'auto';
         
         element.onloadedmetadata = async () => {
-            media.duration = element.duration;
+            media.duration = Number.isFinite(element.duration) ? element.duration : 0;
             
             if (media.type === 'video') {
-                // Generate thumbnail
-                element.currentTime = Math.min(1, element.duration / 4);
-                element.onseeked = () => {
-                    const canvas = document.createElement('canvas');
-                    canvas.width = 160;
-                    canvas.height = 90;
-                    const ctx = canvas.getContext('2d');
-                    ctx.drawImage(element, 0, 0, canvas.width, canvas.height);
-                    media.thumbnail = canvas.toDataURL();
-                    media.width = element.videoWidth;
-                    media.height = element.videoHeight;
-                    resolve();
-                };
+                media.width = element.videoWidth;
+                media.height = element.videoHeight;
+                try {
+                    media.thumbnails = await captureVideoThumbnails(element, media.duration);
+                    media.thumbnail = media.thumbnails[0] || null;
+                } catch (error) {
+                    console.warn('Video thumbnail generation failed:', error);
+                    media.thumbnails = [];
+                }
+                resolve();
             } else {
                 // Generate waveform for audio
                 try {
@@ -885,6 +888,54 @@ async function loadMediaMetadata(media) {
             reject(new Error('the browser could not decode its metadata'));
         };
     });
+}
+
+function seekMediaElement(element, target) {
+    return new Promise(resolve => {
+        let settled = false;
+        const finish = () => {
+            if (settled) return;
+            settled = true;
+            element.removeEventListener('seeked', finish);
+            resolve();
+        };
+        element.addEventListener('seeked', finish, { once: true });
+        try {
+            element.currentTime = Math.max(0, target);
+        } catch (_error) {
+            finish();
+            return;
+        }
+        if (element.readyState >= 2 && Math.abs(element.currentTime - target) < 0.01) {
+            setTimeout(finish, 0);
+        }
+        setTimeout(finish, MEDIA_THUMBNAIL_SEEK_TIMEOUT_MS);
+    });
+}
+
+async function captureVideoThumbnails(element, mediaDuration) {
+    if (!Number.isFinite(mediaDuration) || mediaDuration <= 0) return [];
+    const canvas = document.createElement('canvas');
+    canvas.width = 160;
+    canvas.height = 90;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return [];
+    const lastFrameTime = Math.max(0, mediaDuration - Math.min(0.05, mediaDuration / 100));
+    const thumbnails = [];
+    for (let index = 0; index < MEDIA_THUMBNAIL_COUNT; index += 1) {
+        const fraction = MEDIA_THUMBNAIL_COUNT === 1
+            ? 0
+            : index / (MEDIA_THUMBNAIL_COUNT - 1);
+        const target = lastFrameTime * fraction;
+        await seekMediaElement(element, target);
+        try {
+            ctx.drawImage(element, 0, 0, canvas.width, canvas.height);
+            thumbnails.push(canvas.toDataURL('image/jpeg', 0.72));
+        } catch (error) {
+            console.warn('Video frame capture failed:', error);
+        }
+    }
+    return thumbnails;
 }
 
 async function generateWaveform(file) {
@@ -1035,6 +1086,7 @@ function addToTimeline(mediaId) {
         name: media.name,
         type: media.type,
         thumbnail: media.thumbnail,
+        thumbnails: media.thumbnails ? [...media.thumbnails] : [],
         waveform: media.waveform,
         url: media.proxyUrl || media.url,
         proxyActive: Boolean(media.proxyUrl),
@@ -1593,12 +1645,25 @@ function renderTimeline() {
         header.textContent = clip.name;
         const content = document.createElement('div');
         content.className = 'clip-content';
-        if (clip.thumbnail && clip.type === 'video') {
-            const image = document.createElement('img');
-            image.className = 'clip-thumbnail';
-            image.src = clip.thumbnail;
-            image.alt = '';
-            content.appendChild(image);
+        if (clip.type === 'video') {
+            const thumbnails = Array.isArray(clip.thumbnails) && clip.thumbnails.length > 0
+                ? clip.thumbnails
+                : (clip.thumbnail ? [clip.thumbnail] : []);
+            if (thumbnails.length > 0) {
+                const strip = document.createElement('div');
+                strip.className = 'clip-thumbnail-strip';
+                strip.setAttribute('aria-hidden', 'true');
+                thumbnails.forEach(source => {
+                    const image = document.createElement('img');
+                    image.className = 'clip-thumbnail';
+                    image.src = source;
+                    image.alt = '';
+                    image.loading = 'lazy';
+                    image.decoding = 'async';
+                    strip.appendChild(image);
+                });
+                content.appendChild(strip);
+            }
         }
         if (clip.waveform) {
             const canvas = document.createElement('canvas');
@@ -1639,6 +1704,8 @@ function renderTimeline() {
             adjustClipTrimFromKeyboard(clip, 'right', direction * (event.shiftKey ? 1 : 1 / 30));
         });
         clipEl.append(header, content, leftHandle, rightHandle);
+        clipEl.addEventListener('mousemove', event => queueClipHoverPreview(clip, clipEl, event));
+        clipEl.addEventListener('mouseleave', () => clearClipHoverPreview(clipEl));
         
         track.appendChild(clipEl);
         
@@ -1883,6 +1950,17 @@ function onTimelineMouseMove(e) {
     const x = e.clientX - rect.left + tracksContainer.scrollLeft;
     const y = e.clientY - rect.top;
 
+    if (hoverScrub && !e.target.closest?.('.clip')) {
+        const renderedClip = [...document.querySelectorAll('.clip')].find(
+            element => element.dataset.id == hoverScrub.clipId,
+        );
+        if (renderedClip) clearClipHoverPreview(renderedClip);
+        else {
+            delete document.documentElement.dataset.hoverPreviewTime;
+            hoverScrub = null;
+        }
+    }
+
     if (timelinePan) {
         tracksContainer.scrollLeft = Math.max(
             0,
@@ -2020,6 +2098,40 @@ function onTimelineMouseUp() {
     document.getElementById('tracksContainer')?.classList.remove('panning');
 }
 
+function queueClipHoverPreview(clip, clipEl, event) {
+    if (clip.type !== 'video' || isPlaying || currentTool === 'hand') return;
+    if (draggingClip || draggingHandle || timelinePan || isDraggingPlayhead) return;
+    const rect = clipEl.getBoundingClientRect();
+    if (!rect.width) return;
+    const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+    const time = Math.max(
+        0,
+        Math.min(duration, clip.startTime + ratio * clip.duration),
+    );
+    hoverScrub = { clipId: clip.id, time };
+    const formattedTime = formatTimecode(time);
+    clipEl.dataset.hoverTime = formattedTime;
+    document.documentElement.dataset.hoverPreviewTime = formattedTime;
+    if (hoverScrubFrame !== null) return;
+    hoverScrubFrame = requestAnimationFrame(() => {
+        hoverScrubFrame = null;
+        if (!hoverScrub || isPlaying || draggingClip || draggingHandle || timelinePan) return;
+        const current = clips.find(item => item.id === hoverScrub.clipId);
+        if (current) syncPreviewAtTime(hoverScrub.time);
+    });
+}
+
+function clearClipHoverPreview(clipEl) {
+    delete clipEl.dataset.hoverTime;
+    delete document.documentElement.dataset.hoverPreviewTime;
+    if (hoverScrubFrame !== null) {
+        cancelAnimationFrame(hoverScrubFrame);
+        hoverScrubFrame = null;
+    }
+    hoverScrub = null;
+    if (!isPlaying) syncPreviewAtTime(currentTime);
+}
+
 function onTimelineWheel(e) {
     if (e.ctrlKey) {
         // Zoom
@@ -2154,6 +2266,14 @@ function openContextMenu(returnFocus, clientX, clientY) {
     if (items[0]) {
         items[0].tabIndex = 0;
         items[0].focus();
+        requestAnimationFrame(() => {
+            if (
+                menu.classList.contains('visible')
+                && !menu.contains(document.activeElement)
+            ) {
+                items[0].focus();
+            }
+        });
     }
 }
 
@@ -3119,6 +3239,17 @@ async function handleRelinkFileInput(event) {
         media.name = file.name;
         if (media.type === 'image') {
             media.thumbnail = media.url;
+            media.thumbnails = [media.url];
+        } else {
+            try {
+                await withTimeout(
+                    loadMediaMetadata(media),
+                    MEDIA_METADATA_TIMEOUT_MS,
+                    `Metadata relink for ${file.name}`,
+                );
+            } catch (error) {
+                console.warn(`Metadata relink failed for ${file.name}:`, error);
+            }
         }
         await restoreBrowserProxy(media);
         clips.filter(clip => clip.mediaId == media.id).forEach(clip => {
@@ -3126,6 +3257,7 @@ async function handleRelinkFileInput(event) {
             clip.proxyActive = Boolean(media.proxyUrl);
             clip.name = media.name;
             if (media.thumbnail) clip.thumbnail = media.thumbnail;
+            if (media.thumbnails?.length) clip.thumbnails = [...media.thumbnails];
         });
         relinked += 1;
     }

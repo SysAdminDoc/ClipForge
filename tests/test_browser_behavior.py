@@ -678,6 +678,59 @@ def test_timeline_drag_actions_have_keyboard_alternatives(browser_page):
     ) > 0
 
 
+@pytest.mark.skipif(not FFMPEG, reason="FFmpeg is required for thumbnail coverage")
+def test_video_timeline_renders_full_thumbnail_strip_and_hover_scrub(
+    browser_page,
+    tmp_path,
+):
+    source = tmp_path / "thumbnail-strip.mp4"
+    result = subprocess.run(
+        [
+            FFMPEG,
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=320x180:rate=24:duration=3",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            str(source),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+
+    browser_page.locator("#fileInput").set_input_files(str(source))
+    browser_page.locator(".media-item").wait_for(timeout=15000)
+    browser_page.locator(".media-item").dblclick()
+    clip = browser_page.locator("#videoTrack .clip").first
+    clip.wait_for()
+    assert clip.locator(".clip-thumbnail-strip img").count() == 6
+
+    bounds = clip.bounding_box()
+    assert bounds
+    browser_page.mouse.move(
+        bounds["x"] + bounds["width"] * 0.75,
+        bounds["y"] + bounds["height"] / 2,
+    )
+    browser_page.wait_for_function(
+        "() => Boolean(document.documentElement.dataset.hoverPreviewTime)"
+    )
+    assert browser_page.locator("html").get_attribute("data-hover-preview-time")
+
+    browser_page.mouse.move(
+        bounds["x"] + bounds["width"] + 20,
+        bounds["y"] + bounds["height"] / 2,
+    )
+    browser_page.wait_for_function(
+        "() => !document.documentElement.dataset.hoverPreviewTime"
+    )
+
+
 def test_export_and_edit_menus_restore_focus_and_trap_keyboard_navigation(browser_page):
     browser_page.locator("#fileInput").set_input_files(
         {"name": "menu-focus.png", "mimeType": "image/png", "buffer": PNG_BYTES}

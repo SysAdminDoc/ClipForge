@@ -96,3 +96,29 @@ def test_main_window_exposes_project_actions_and_payload(monkeypatch, tmp_path):
     finally:
         window.close()
         _QT_APP.processEvents()
+
+
+def test_main_window_can_detach_and_reattach_preview(monkeypatch):
+    from clipforge.app import MainWindow
+
+    monkeypatch.setattr("clipforge.app.load_settings", lambda: {})
+    monkeypatch.setattr(MainWindow, "_check_deps", lambda self: None)
+    monkeypatch.setattr(MainWindow, "_start_capability_probe", lambda self: None)
+    monkeypatch.setattr(MainWindow, "_load_recent", lambda self: None)
+    monkeypatch.setattr(MainWindow, "_show_persistence_notices", lambda self: None)
+    window = MainWindow()
+    try:
+        window._set_preview_detached(True)
+        _QT_APP.processEvents()
+        assert window._preview_dock is not None
+        assert window._preview_dock.widget() is window.player
+        assert window.preview_detach_action.isChecked()
+
+        window._set_preview_detached(False)
+        _QT_APP.processEvents()
+        assert window._preview_dock is None
+        assert window.top_splitter.indexOf(window.player) == 0
+        assert not window.preview_detach_action.isChecked()
+    finally:
+        window.close()
+        _QT_APP.processEvents()

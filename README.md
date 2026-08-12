@@ -105,6 +105,7 @@ All-in-one video editor — Trim, Crop, Upscale, Interpolate, Convert, Filter, A
 - Playback speed control (0.25x - 2x)
 - A-B loop for segment preview
 - Thumbnail filmstrip with click-to-seek
+- Detachable preview pane from the View menu for multi-monitor editing
 - Cancellable 720p preview proxies with metadata-keyed atomic cache, source-change invalidation, size estimates, and original/proxy switching; exports always use the original
 - Timecode display (current / total)
 
@@ -129,7 +130,7 @@ All-in-one video editor — Trim, Crop, Upscale, Interpolate, Convert, Filter, A
 - **Atomic output safety** — validates staged media before replacing the chosen destination
 - **Runtime security policy** — rejects unreviewed FFmpeg branches, keeps NVDEC fail-closed until a reviewed boundary, and requires the patched Qt 6.11.1 runtime
 - **Cross-surface provenance** — release checks record exact versions, SHA-256 hashes, licenses, and lock/source metadata for browser assets, Python distributions, FFmpeg/ffprobe, optional libmpv, and managed AI tools; support diagnostics include the identities used by each desktop job
-- 210-test suite covering utilities, process safety, semantic media validation, generated media, probing, proxy/AI caching, supply-chain validation, diagnostics, persistence, browser modules/jobs, project sessions, filter graphs, localization, and accessibility contracts
+- 212-test suite covering utilities, process safety, semantic media validation, generated media, probing, proxy/AI caching, supply-chain validation, diagnostics, persistence, browser modules/jobs, project sessions, filter graphs, localization, and accessibility contracts
 
 ### Web Editor
 
@@ -137,6 +138,7 @@ Try it in the browser: **[sysadmindoc.github.io/ClipForge](https://sysadmindoc.g
 
 - Timeline-based NLE with video, audio, and music tracks
 - Import video, audio, and image files via drag & drop
+- Full-duration video thumbnail strips with throttled hover scrubbing back to the playhead when the pointer leaves
 - Clip splitting, trimming, moving, and snapping
 - Transitions (cross dissolve, fade, wipe, zoom)
 - Per-clip color correction and rotation
@@ -211,7 +213,7 @@ python scripts/release_check.py --build
 Release builds are unsigned and produced locally. `clipforge/version.py` is the
 version source of truth; use `python scripts/sync_version.py --set X.Y.Z` to
 update desktop, web, README, and Windows executable metadata together.
-The release check runs the 210-test Python and headless-Chromium suite, then
+The release check runs the 212-test Python and headless-Chromium suite, then
 generates disposable FFmpeg fixtures for audio/video,
 subtitles, chapters, rotation, VFR, odd filenames, and core edit operations;
 `--build` creates a fresh hash-locked environment, builds the unsigned
