@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QListWidget, QListWidgetItem, QAbstractItemView,
     QTableWidget, QTableWidgetItem, QHeaderView,
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QSize, pyqtSignal
 from PyQt6.QtGui import QPixmap
 
 from clipforge_utils import format_duration_short, format_size
@@ -33,6 +33,27 @@ from ..filter_stack import (
     normalize_filter_order,
     reorder_filter_stack,
 )
+from ..redaction import (
+    DEFAULT_REDACTION,
+    build_redaction_filter,
+    normalize_redaction_state,
+)
+
+
+class _CompactDoubleSpinBox(QDoubleSpinBox):
+    """Keep the two-keyframe editor usable inside the narrow panel column."""
+
+    def __init__(self, compact_width, parent=None):
+        super().__init__(parent)
+        self._compact_width = compact_width
+
+    def minimumSizeHint(self):
+        size = super().minimumSizeHint()
+        return QSize(self._compact_width, size.height())
+
+    def sizeHint(self):
+        size = super().sizeHint()
+        return QSize(self._compact_width, size.height())
 
 
 class FiltersPanel(QWidget):
@@ -99,6 +120,100 @@ class FiltersPanel(QWidget):
         row2.addWidget(self.chk_deinterlace)
         pl.addLayout(row2)
         layout.addWidget(proc_grp)
+
+        redaction_grp = QGroupBox("Motion-tracked Redaction")
+        redaction_layout = QVBoxLayout(redaction_grp)
+        self.chk_redaction = QCheckBox("Blur tracked region")
+        self.chk_redaction.setAccessibleName("Enable motion-tracked redaction")
+        redaction_layout.addWidget(self.chk_redaction)
+        redaction_help = QLabel(
+            "Times are seconds; X/Y/width/height are frame percentages. "
+            "The rectangle is linearly tracked between keyframes before blur."
+        )
+        redaction_help.setWordWrap(True)
+        redaction_help.setFixedWidth(300)
+        redaction_help.setProperty("class", "dimLabel")
+        redaction_layout.addWidget(redaction_help)
+        redaction_grid = QGridLayout()
+
+        def _time_spin(name, value):
+            control = _CompactDoubleSpinBox(78)
+            control.setRange(0.0, 86400.0)
+            control.setDecimals(3)
+            control.setSingleStep(0.1)
+            control.setValue(value)
+            control.setAccessibleName(name)
+            control.setFixedWidth(78)
+            return control
+
+        def _percent_spin(name, value):
+            control = _CompactDoubleSpinBox(58)
+            control.setRange(0.1, 99.9)
+            control.setDecimals(1)
+            control.setSingleStep(1.0)
+            control.setValue(value)
+            control.setAccessibleName(name)
+            control.setFixedWidth(58)
+            return control
+
+        self.spn_redaction_start = _time_spin("Redaction start time", 0.0)
+        self.spn_redaction_start_x = _percent_spin("Redaction start X", 35.0)
+        self.spn_redaction_start_y = _percent_spin("Redaction start Y", 25.0)
+        self.spn_redaction_start_w = _percent_spin("Redaction start width", 30.0)
+        self.spn_redaction_start_h = _percent_spin("Redaction start height", 30.0)
+        self.spn_redaction_end = _time_spin("Redaction end time", 1.0)
+        self.spn_redaction_end_x = _percent_spin("Redaction end X", 35.0)
+        self.spn_redaction_end_y = _percent_spin("Redaction end Y", 25.0)
+        self.spn_redaction_end_w = _percent_spin("Redaction end width", 30.0)
+        self.spn_redaction_end_h = _percent_spin("Redaction end height", 30.0)
+        for row, label, controls in (
+            (
+                0,
+                "Start",
+                (
+                    self.spn_redaction_start,
+                    self.spn_redaction_start_x,
+                    self.spn_redaction_start_y,
+                    self.spn_redaction_start_w,
+                    self.spn_redaction_start_h,
+                ),
+            ),
+            (
+                1,
+                "End",
+                (
+                    self.spn_redaction_end,
+                    self.spn_redaction_end_x,
+                    self.spn_redaction_end_y,
+                    self.spn_redaction_end_w,
+                    self.spn_redaction_end_h,
+                ),
+            ),
+        ):
+            redaction_grid.addWidget(QLabel(label), row, 0)
+            for column, control in enumerate(controls, start=1):
+                redaction_grid.addWidget(control, row, column)
+                control.valueChanged.connect(lambda _value: self._refresh_filter_graph())
+        redaction_layout.addLayout(redaction_grid)
+        redaction_options = FlowLayout()
+        redaction_options.addWidget(QLabel("Blur radius:"))
+        self.spn_redaction_blur = QSpinBox()
+        self.spn_redaction_blur.setRange(1, 8)
+        self.spn_redaction_blur.setValue(6)
+        self.spn_redaction_blur.setSuffix(" px")
+        self.spn_redaction_blur.setAccessibleName("Redaction blur radius")
+        self.spn_redaction_blur.valueChanged.connect(
+            lambda _value: self._refresh_filter_graph()
+        )
+        redaction_options.addWidget(self.spn_redaction_blur)
+        self.lbl_redaction_status = QLabel("Disabled — no redaction")
+        self.lbl_redaction_status.setProperty("class", "dimLabel")
+        redaction_options.addWidget(self.lbl_redaction_status, 1)
+        redaction_layout.addLayout(redaction_options)
+        self.chk_redaction.stateChanged.connect(
+            lambda _state: self._refresh_filter_graph()
+        )
+        layout.addWidget(redaction_grp)
 
         stack_grp = QGroupBox("Filter Stack (drag to reorder)")
         stack_layout = QVBoxLayout(stack_grp)
@@ -326,6 +441,7 @@ class FiltersPanel(QWidget):
         self.lbl_sub_file.setText("No subtitle selected")
         self._lut_path = None
         self.lbl_lut_file.setText("No LUT selected")
+        self._restore_redaction_controls(normalize_redaction_state(DEFAULT_REDACTION))
         self.spn_silence_db.setValue(-30)
         self.spn_silence_dur.setValue(0.5)
         self._silence_segments = []
@@ -343,6 +459,57 @@ class FiltersPanel(QWidget):
         defaults = {"brightness": 0, "contrast": 0, "saturation": 100, "hue": 0, "gamma": 100}
         for name, slider in self._sliders.items():
             slider.setValue(defaults.get(name, 0))
+
+    def _redaction_state_from_controls(self):
+        return normalize_redaction_state({
+            "enabled": self.chk_redaction.isChecked(),
+            "start": self.spn_redaction_start.value(),
+            "end": self.spn_redaction_end.value(),
+            "blur_radius": self.spn_redaction_blur.value(),
+            "keyframes": [
+                {
+                    "time": self.spn_redaction_start.value(),
+                    "x": self.spn_redaction_start_x.value() / 100,
+                    "y": self.spn_redaction_start_y.value() / 100,
+                    "width": self.spn_redaction_start_w.value() / 100,
+                    "height": self.spn_redaction_start_h.value() / 100,
+                },
+                {
+                    "time": self.spn_redaction_end.value(),
+                    "x": self.spn_redaction_end_x.value() / 100,
+                    "y": self.spn_redaction_end_y.value() / 100,
+                    "width": self.spn_redaction_end_w.value() / 100,
+                    "height": self.spn_redaction_end_h.value() / 100,
+                },
+            ],
+        })
+
+    def _restore_redaction_controls(self, state):
+        state = normalize_redaction_state(state)
+        start = state["keyframes"][0]
+        end = state["keyframes"][-1]
+        controls = (
+            (self.chk_redaction, state["enabled"]),
+            (self.spn_redaction_start, state["start"]),
+            (self.spn_redaction_start_x, start["x"] * 100),
+            (self.spn_redaction_start_y, start["y"] * 100),
+            (self.spn_redaction_start_w, start["width"] * 100),
+            (self.spn_redaction_start_h, start["height"] * 100),
+            (self.spn_redaction_end, state["end"]),
+            (self.spn_redaction_end_x, end["x"] * 100),
+            (self.spn_redaction_end_y, end["y"] * 100),
+            (self.spn_redaction_end_w, end["width"] * 100),
+            (self.spn_redaction_end_h, end["height"] * 100),
+            (self.spn_redaction_blur, state["blur_radius"]),
+        )
+        for control, value in controls:
+            control.blockSignals(True)
+            if isinstance(control, QCheckBox):
+                control.setChecked(bool(value))
+            else:
+                control.setValue(value)
+            control.blockSignals(False)
+        self._refresh_filter_graph()
 
     def _browse_sub(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -408,6 +575,7 @@ class FiltersPanel(QWidget):
                 for start, end, remove in self._silence_marker_rows()
             ],
             "filter_stack_order": list(self._filter_stack_order),
+            "redaction": self._redaction_state_from_controls(),
         }
 
     def restore_project_state(self, state):
@@ -446,6 +614,7 @@ class FiltersPanel(QWidget):
                 markers.append((item.get("start", 0), item.get("end", 0), bool(item.get("remove", True))))
         self._populate_silence_markers(markers or [(start, end, True) for start, end in segments])
         self.btn_remove_silence.setEnabled(bool(segments))
+        self._restore_redaction_controls(state.get("redaction"))
         self._filter_stack_order = normalize_filter_order(state.get("filter_stack_order"))
         self._populate_filter_stack()
 
@@ -491,10 +660,19 @@ class FiltersPanel(QWidget):
             "chk_normalize",
             "_sub_path",
             "_lut_path",
+            "chk_redaction",
         )
         if all(hasattr(self, name) for name in required):
             vf, af = self._build_filters(update_graph=False)
             self.lbl_filter_graph.setText(filter_graph(vf, af))
+            if self.chk_redaction.isChecked() and build_redaction_filter(
+                self._redaction_state_from_controls()
+            ):
+                self.lbl_redaction_status.setText(
+                    "Enabled — tracked blur"
+                )
+            else:
+                self.lbl_redaction_status.setText("Disabled — no redaction")
 
     def _silence_marker_rows(self):
         rows = []
@@ -813,6 +991,9 @@ class FiltersPanel(QWidget):
             elif filter_id == "subtitles" and self._sub_path:
                 escaped = escape_ffmpeg_filter_value(self._sub_path)
                 vf.append(f"subtitles=filename={escaped}")
+        redaction_filter = build_redaction_filter(self._redaction_state_from_controls())
+        if redaction_filter:
+            vf.append(redaction_filter)
         if self.chk_normalize.isChecked():
             target_text = self.cmb_loudness_target.currentText()
             lufs_map = {

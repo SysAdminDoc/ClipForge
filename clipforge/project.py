@@ -182,7 +182,6 @@ def build_project(
         "active_panel": active_panel,
         "unsupported_features": [
             "multi-source timeline",
-            "motion-tracked regions",
             "browser-only transitions",
         ],
         "media_info": dict(media_info or {}),
