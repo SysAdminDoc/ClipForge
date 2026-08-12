@@ -73,6 +73,8 @@ def test_ai_manager_rejects_unknown_tools_and_verifies_managed_executable(tmp_pa
 
     assert manager.managed_path("realesrgan") == executable
     assert manager.status("realesrgan")["verified"] is True
+    assert manager.status("realesrgan")["availability"] == "verified-managed"
+    assert manager.status("realesrgan")["executable_sha256"] == executable_hash
     executable.write_bytes(b"tampered")
     assert manager.managed_path("realesrgan") is None
 

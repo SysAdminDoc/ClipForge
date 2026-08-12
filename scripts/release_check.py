@@ -189,6 +189,23 @@ def run_gui_smoke():
         run([sys.executable, "-c", code], timeout=30, env=env)
 
 
+def run_provenance_gate():
+    """Build a disposable inventory from the runtimes used by this checkout."""
+    with tempfile.TemporaryDirectory(prefix="clipforge-release-provenance-") as temp:
+        env = os.environ.copy()
+        env["CLIPFORGE_CONFIG_DIR"] = str(Path(temp) / "config")
+        run(
+            [
+                sys.executable,
+                "scripts/verify_provenance.py",
+                "--output",
+                Path(temp) / "provenance.json",
+            ],
+            timeout=120,
+            env=env,
+        )
+
+
 def remove_tree_with_retries(path, *, attempts=20):
     path = Path(path)
     for attempt in range(attempts):
@@ -226,6 +243,20 @@ def run_build_smoke():
                 ROOT / "requirements-dev.lock",
             ],
             timeout=300,
+        )
+        build_env = os.environ.copy()
+        build_env["CLIPFORGE_CONFIG_DIR"] = str(temp_path / "build-config")
+        run(
+            [
+                environment_python,
+                ROOT / "scripts" / "verify_provenance.py",
+                "--strict-lock",
+                ROOT / "requirements-dev.lock",
+                "--output",
+                temp_path / "build-provenance.json",
+            ],
+            timeout=120,
+            env=build_env,
         )
         run([
             environment_python, "-m", "PyInstaller", "--noconfirm", "--clean",
@@ -284,6 +315,7 @@ def main():
     if not args.media_only:
         run([sys.executable, "scripts/sync_version.py", "--check"])
         run([sys.executable, "scripts/verify_browser_runtime.py"])
+        run_provenance_gate()
         run([sys.executable, "-m", "pytest", "-q"])
         run([sys.executable, "-m", "compileall", "-q", "clipforge", "scripts", "tests"])
         run(["node", "--check", "editor.js"])

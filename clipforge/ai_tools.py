@@ -153,6 +153,17 @@ class AIToolManager:
         spec = self.spec(tool_id)
         managed = self.managed_path(tool_id)
         path = managed or (Path(discovered_path) if discovered_path else None)
+        install_dir = self.install_dir(tool_id)
+        manifest_path = install_dir / "install.json"
+        invalid_install = manifest_path.is_file() and not managed
+        if managed:
+            availability = "verified-managed"
+        elif invalid_install:
+            availability = "invalid_managed_install"
+        elif path:
+            availability = "external-unverified"
+        else:
+            availability = "unavailable"
         return {
             "tool_id": tool_id,
             "name": spec.name,
@@ -167,6 +178,11 @@ class AIToolManager:
             "unpacked_size": spec.unpacked_size,
             "models": list(spec.models),
             "install_supported": sys.platform == "win32",
+            "availability": availability,
+            "install_manifest_sha256": (
+                _sha256(manifest_path) if manifest_path.is_file() else None
+            ),
+            "executable_sha256": _sha256(path) if path and path.is_file() else None,
         }
 
     def archive_path(self, tool_id):

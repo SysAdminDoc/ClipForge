@@ -21,11 +21,12 @@ class MpvCapability:
     wrapper_version: str | None = None
     reason: str = ""
     library_path: str | None = None
+    library_file: str | None = None
+    native_version: str | None = None
 
 
-def _prepare_windows_dll_search():
-    if sys.platform != "win32" or not hasattr(os, "add_dll_directory"):
-        return None
+def find_native_library():
+    """Find the native libmpv file without loading it."""
     candidates = []
     configured = os.environ.get("CLIPFORGE_LIBMPV_DIR")
     if configured:
@@ -36,34 +37,107 @@ def _prepare_windows_dll_search():
             Path(sys.executable).resolve().parent,
         ]
     )
-    for candidate in candidates:
-        if (candidate / "mpv-2.dll").is_file() or (candidate / "libmpv-2.dll").is_file():
-            handle = os.add_dll_directory(str(candidate))
-            _DLL_DIRECTORY_HANDLES.append(handle)
-            current_path = os.environ.get("PATH", "")
-            entries = current_path.split(os.pathsep)
-            if str(candidate) not in entries:
-                os.environ["PATH"] = str(candidate) + os.pathsep + current_path
-            return str(candidate)
+    library_names = (
+        ("mpv-2.dll", "libmpv-2.dll")
+        if sys.platform == "win32"
+        else ("libmpv.so", "libmpv.dylib", "libmpv.so.2")
+    )
+    seen = set()
+    for directory in candidates:
+        directory = directory.expanduser()
+        try:
+            resolved = directory.resolve()
+        except OSError:
+            continue
+        if resolved in seen or not resolved.is_dir():
+            continue
+        seen.add(resolved)
+        for name in library_names:
+            path = resolved / name
+            if path.is_file():
+                return str(path)
+    return None
+
+
+def _native_file_version(path):
+    if not path or sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+
+        class _FixedFileInfo(ctypes.Structure):
+            _fields_ = [
+                ("signature", ctypes.c_uint32),
+                ("struct_version", ctypes.c_uint32),
+                ("file_version_ms", ctypes.c_uint32),
+                ("file_version_ls", ctypes.c_uint32),
+            ]
+
+        version = ctypes.windll.version
+        size = version.GetFileVersionInfoSizeW(str(path), None)
+        if not size:
+            return None
+        buffer = ctypes.create_string_buffer(size)
+        if not version.GetFileVersionInfoW(str(path), 0, size, buffer):
+            return None
+        value = ctypes.c_void_p()
+        length = ctypes.c_uint()
+        if not version.VerQueryValueW(
+            buffer, "\\", ctypes.byref(value), ctypes.byref(length)
+        ):
+            return None
+        info = ctypes.cast(value, ctypes.POINTER(_FixedFileInfo)).contents
+        return ".".join(
+            (
+                str(info.file_version_ms >> 16),
+                str(info.file_version_ms & 0xFFFF),
+                str(info.file_version_ls >> 16),
+                str(info.file_version_ls & 0xFFFF),
+            )
+        )
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+
+
+def _prepare_windows_dll_search():
+    if sys.platform != "win32" or not hasattr(os, "add_dll_directory"):
+        return None
+    native = find_native_library()
+    if native:
+        candidate = Path(native).parent
+        handle = os.add_dll_directory(str(candidate))
+        _DLL_DIRECTORY_HANDLES.append(handle)
+        current_path = os.environ.get("PATH", "")
+        entries = current_path.split(os.pathsep)
+        if str(candidate) not in entries:
+            os.environ["PATH"] = str(candidate) + os.pathsep + current_path
+        return str(candidate)
     return None
 
 
 def probe_mpv():
     library_path = _prepare_windows_dll_search()
+    library_file = find_native_library()
+    if library_path is None and library_file:
+        library_path = str(Path(library_file).parent)
     try:
-        import mpv  # noqa: F401
+        import mpv  # noqa: F401 - importing the wrapper validates native loading
 
         version = importlib.metadata.version("mpv")
         return MpvCapability(
             available=True,
             wrapper_version=version,
             library_path=library_path,
+            library_file=library_file,
+            native_version=_native_file_version(library_file),
         )
     except (ImportError, OSError, RuntimeError, importlib.metadata.PackageNotFoundError) as error:
         return MpvCapability(
             available=False,
             reason=str(error),
             library_path=library_path,
+            library_file=library_file,
+            native_version=_native_file_version(library_file),
         )
 
 

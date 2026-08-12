@@ -206,17 +206,27 @@ def _kill_process_tree(proc):
 
 def _start_worker_diagnostics(worker, kind, command, *, context=None):
     runner = command[0] if command else None
+    identities = {
+        "ffmpeg": DIAGNOSTICS.tool_identity("ffmpeg", FFMPEG),
+        "ffprobe": DIAGNOSTICS.tool_identity("ffprobe", FFPROBE),
+    }
     tools = {
-        "ffmpeg": DIAGNOSTICS.tool_version("ffmpeg", FFMPEG),
-        "ffprobe": DIAGNOSTICS.tool_version("ffprobe", FFPROBE),
+        name: identity.get("version") or identity.get("status", "unavailable")
+        for name, identity in identities.items()
     }
     if runner and (Path(str(runner)).is_file() or shutil.which(str(runner))):
-        tools[Path(str(runner)).name] = DIAGNOSTICS.tool_version("runner", runner)
+        runner_identity = DIAGNOSTICS.tool_identity("runner", runner)
+        identities[Path(str(runner)).name] = runner_identity
+        tools[Path(str(runner)).name] = (
+            runner_identity.get("version") or runner_identity.get("status", "unavailable")
+        )
+    job_context = dict(context or {})
+    job_context["runtime_identities"] = identities
     job_id = DIAGNOSTICS.start_job(
         kind,
         command,
         tools=tools,
-        context=context,
+        context=job_context,
     )
     if hasattr(worker, "log_output"):
         worker.log_output.connect(

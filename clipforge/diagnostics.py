@@ -6,7 +6,6 @@ import json
 import os
 import platform
 import re
-import subprocess
 import sys
 import threading
 import uuid
@@ -15,6 +14,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import APP_NAME, APP_VERSION
+from .provenance import (
+    PROVENANCE_SCHEMA,
+    PROVENANCE_SCHEMA_VERSION,
+    REVIEWED_DATE,
+    executable_identity,
+)
 from .runtime_policy import (
     evaluate_qt_runtime,
     policy_manifest,
@@ -72,6 +77,7 @@ class DiagnosticsStore:
         self._jobs = OrderedDict()
         self._events = deque(maxlen=max_events)
         self._tool_versions = {}
+        self._tool_identities = {}
         self._runtime_policy = {}
         self._lock = threading.RLock()
 
@@ -79,6 +85,7 @@ class DiagnosticsStore:
         with self._lock:
             self._jobs.clear()
             self._events.clear()
+            self._tool_identities.clear()
             self._runtime_policy.clear()
 
     def record_runtime_policy(self, component, decision, *, identity=None):
@@ -90,32 +97,21 @@ class DiagnosticsStore:
             self._runtime_policy[str(component)] = payload
 
     def tool_version(self, name, executable):
-        key = (name, str(executable or ""))
+        identity = self.tool_identity(name, executable)
+        return identity.get("version") or identity.get("status", "unavailable")
+
+    def tool_identity(self, name, executable, *, license=None):
+        key = (name, str(executable or ""), license)
         with self._lock:
-            if key in self._tool_versions:
-                return self._tool_versions[key]
-        if not executable:
-            version = "unavailable"
-        else:
-            try:
-                result = subprocess.run(
-                    [str(executable), "-version"],
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=5,
-                    creationflags=(
-                        subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0
-                    ),
-                )
-                lines = (result.stdout or result.stderr).splitlines()
-                version = lines[0] if lines else f"exit {result.returncode}"
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                version = f"unavailable: {exc}"
+            if key in self._tool_identities:
+                return dict(self._tool_identities[key])
+        identity = executable_identity(executable, name=name, license=license)
         with self._lock:
-            self._tool_versions[key] = version
-        return version
+            self._tool_identities[key] = dict(identity)
+            self._tool_versions[(name, str(executable or ""))] = (
+                identity.get("version") or identity.get("status", "unavailable")
+            )
+        return dict(identity)
 
     def start_job(self, kind, command, *, tools=None, context=None):
         job_id = uuid.uuid4().hex[:12]
@@ -199,6 +195,7 @@ class DiagnosticsStore:
     def snapshot(self, *, redact=True):
         qt_identity = qt_runtime_identity()
         qt_policy = evaluate_qt_runtime(qt_identity.get("qt"))
+        python_identity = executable_identity(sys.executable, name="python")
         with self._lock:
             jobs = []
             for record in self._jobs.values():
@@ -221,9 +218,16 @@ class DiagnosticsStore:
                 "application": {"name": APP_NAME, "version": APP_VERSION},
                 "runtime": {
                     "python": platform.python_version(),
+                    "python_identity": python_identity,
                     "platform": platform.platform(),
                     "frozen": bool(getattr(sys, "frozen", False)),
                     "policy": policy_manifest(),
+                    "provenance": {
+                        "schema": PROVENANCE_SCHEMA,
+                        "schema_version": PROVENANCE_SCHEMA_VERSION,
+                        "reviewed_date": REVIEWED_DATE,
+                        "job_identities_included": True,
+                    },
                     "components": runtime_policy,
                 },
                 "privacy": {

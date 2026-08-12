@@ -111,6 +111,13 @@ def test_worker_records_success_and_failure_without_losing_failure_logs():
 
     assert jobs[-2]["state"] == "succeeded"
     assert jobs[-2]["result"]["exit_code"] == 0
+    assert jobs[-2]["context"]["runtime_identities"]["ffmpeg"]["sha256"]
+    assert jobs[-2]["context"]["runtime_identities"]["ffprobe"]["status"] in {
+        "missing",
+        "unavailable",
+        "available",
+        "unusable",
+    }
     assert jobs[-1]["state"] == "failed"
     assert jobs[-1]["result"]["exit_code"] == 3
     assert any("fatal detail" in entry["message"] for entry in jobs[-1]["logs"])
