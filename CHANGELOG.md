@@ -2,7 +2,7 @@
 
 All notable changes to ClipForge will be documented in this file.
 
-## [Unreleased]
+## [v0.5.3] - 2026-08-12
 
 ### Changed
 - Centralized external FFmpeg, NVDEC, and Qt security decisions in a versioned runtime policy; capability probes and redacted diagnostics now report the actual runtime identity and policy state.
