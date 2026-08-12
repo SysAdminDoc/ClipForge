@@ -638,6 +638,79 @@ def test_media_clips_and_context_actions_are_keyboard_operable(browser_page):
     browser_page.get_by_text("Copied to clipboard").wait_for()
 
 
+def test_edit_menu_actions_and_timeline_tools_are_truthful(browser_page):
+    browser_page.locator("#fileInput").set_input_files(
+        {"name": "tools.png", "mimeType": "image/png", "buffer": PNG_BYTES}
+    )
+    browser_page.locator(".media-item").dblclick()
+    clip = browser_page.locator(".clip").first
+    clip.wait_for()
+    clip.click()
+
+    edit_button = browser_page.locator('[data-action="show-edit-menu"]')
+    menu = browser_page.locator("#editMenu")
+    edit_button.click()
+    assert menu.get_attribute("aria-hidden") == "false"
+    assert not browser_page.locator("#editUndo").is_disabled()
+    assert not browser_page.locator("#editCopy").is_disabled()
+    assert browser_page.evaluate("document.activeElement?.id") == "editUndo"
+    browser_page.keyboard.press("ArrowDown")
+    assert browser_page.evaluate("document.activeElement?.id") == "editCut"
+    browser_page.keyboard.press("Escape")
+    assert menu.get_attribute("aria-hidden") == "true"
+    assert browser_page.evaluate("document.activeElement?.dataset.action") == "show-edit-menu"
+
+    edit_button.click()
+    browser_page.locator("#editCopy").click()
+    browser_page.get_by_text("Copied to clipboard").wait_for()
+    edit_button.click()
+    assert not browser_page.locator("#editPaste").is_disabled()
+    browser_page.locator("#editPaste").click()
+    assert browser_page.locator(".clip").count() == 2
+
+    browser_page.locator('[data-tool="slip"]').click()
+    browser_page.locator(".clip").last.click()
+    browser_page.evaluate("window.updateClipProperty('duration', 3)")
+    before = browser_page.evaluate(
+        "window.serializeProject().clips.filter(clip => clip.track === 'video').at(-1)"
+    )
+    slip_clip = browser_page.locator(".clip").last
+    bounds = slip_clip.bounding_box()
+    assert bounds
+    browser_page.mouse.move(bounds["x"] + bounds["width"] / 2, bounds["y"] + 12)
+    browser_page.mouse.down()
+    browser_page.mouse.move(bounds["x"] + bounds["width"] / 2 + 50, bounds["y"] + 12)
+    browser_page.mouse.up()
+    after = browser_page.evaluate(
+        "window.serializeProject().clips.filter(clip => clip.track === 'video').at(-1)"
+    )
+    assert after["startTime"] == before["startTime"]
+    assert after["duration"] == before["duration"]
+    assert after["inPoint"] > before["inPoint"]
+    assert after["outPoint"] == after["inPoint"] + after["duration"]
+
+    browser_page.locator('[data-tool="hand"]').click()
+    browser_page.locator("#zoomSlider").evaluate(
+        "el => { el.value = '200'; el.dispatchEvent(new Event('input', { bubbles: true })); }"
+    )
+    container = browser_page.locator("#tracksContainer")
+    assert browser_page.evaluate(
+        "() => { const el = document.querySelector('#tracksContainer'); return el.scrollWidth > el.clientWidth; }"
+    )
+    container_bounds = container.bounding_box()
+    assert container_bounds
+    start_x = container_bounds["x"] + container_bounds["width"] / 2
+    start_y = container_bounds["y"] + 20
+    browser_page.mouse.move(start_x, start_y)
+    browser_page.mouse.down()
+    assert browser_page.locator("#tracksContainer").evaluate(
+        "el => el.classList.contains('panning')"
+    )
+    browser_page.mouse.move(start_x - 100, start_y)
+    browser_page.mouse.up()
+    assert browser_page.locator("#tracksContainer").evaluate("el => el.scrollLeft > 0")
+
+
 @pytest.mark.skipif(not FFMPEG, reason="FFmpeg is required for browser job media")
 def test_media_job_exclusion_and_cancel_recover_engine(
     browser_page,

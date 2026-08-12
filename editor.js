@@ -57,8 +57,10 @@ let pixelsPerSecond = 50; // Zoom level
 let timelineOffset = 0;
 let draggingClip = null;
 let draggingHandle = null;
+let timelinePan = null;
 let isDraggingPlayhead = false;
 let contextMenuReturnFocus = null;
+let editMenuReturnFocus = null;
 
 // Undo/redo history
 const undoStack = [];
@@ -524,7 +526,9 @@ function setupEventListeners() {
     const actions = {
         'open-project': () => document.getElementById('projectFileInput').click(),
         'export-browser-diagnostics': () => exportBrowserDiagnostics(),
-        'show-edit-menu': event => showEditMenu(event),
+        'show-edit-menu': (event, control) => showEditMenu(event, control),
+        'undo': () => { closeEditMenu(); undo(); },
+        'redo': () => { closeEditMenu(); redo(); },
         'save-project': () => saveProject(),
         'show-export': () => showExportModal(),
         'import-media': () => document.getElementById('fileInput').click(),
@@ -541,14 +545,15 @@ function setupEventListeners() {
         'toggle-mute': () => toggleMute(),
         'set-tool': (_event, control) => setTool(control.dataset.tool),
         'split-clip': () => splitClip(),
-        'delete-selected': () => deleteSelected(),
+        'delete-selected': () => { closeEditMenu(); deleteSelected(); },
         'add-transition': () => addTransition(),
         'select-transition': (_event, control) => selectTransitionType(
             control.dataset.transition
         ),
-        'cut-clip': () => cutClip(),
-        'copy-clip': () => copyClip(),
-        'paste-clip': () => pasteClip(),
+        'cut-clip': () => { closeEditMenu(); cutClip(); },
+        'copy-clip': () => { closeEditMenu(); copyClip(); },
+        'paste-clip': () => { closeEditMenu(); pasteClip(); },
+        'select-all': () => { closeEditMenu(); selectAllClips(); },
         'unlink-audio': () => unlinkAudio(),
         'hide-export': () => hideExportModal(),
         'export-video': () => exportVideo(),
@@ -557,9 +562,13 @@ function setupEventListeners() {
     };
     document.addEventListener('click', event => {
         const control = event.target.closest?.('[data-action]');
-        if (!control) return;
+        if (!control) {
+            closeEditMenu();
+            return;
+        }
         const handler = actions[control.dataset.action];
         if (handler) handler(event, control);
+        else closeEditMenu();
     });
     document.addEventListener('input', event => {
         const control = event.target.closest?.('[data-input-action]');
@@ -697,6 +706,32 @@ function handleKeyboard(e) {
             }
         }
         return;
+    }
+    const editMenu = document.getElementById('editMenu');
+    if (editMenu && !editMenu.hidden) {
+        const items = [...editMenu.querySelectorAll('[role="menuitem"]:not([disabled])')];
+        if (e.key === 'Escape') {
+            e.preventDefault();
+            closeEditMenu();
+            return;
+        }
+        if (items.length > 0 && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) {
+            e.preventDefault();
+            const activeIndex = Math.max(0, items.indexOf(document.activeElement));
+            const nextIndex = e.key === 'Home'
+                ? 0
+                : e.key === 'End'
+                    ? items.length - 1
+                    : (activeIndex + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length;
+            items[nextIndex].focus();
+            return;
+        }
+        if (e.key === 'Tab') {
+            e.preventDefault();
+            const activeIndex = Math.max(0, items.indexOf(document.activeElement));
+            items[(activeIndex + (e.shiftKey ? -1 : 1) + items.length) % items.length]?.focus();
+            return;
+        }
     }
     if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
     
@@ -1661,9 +1696,18 @@ function renderRuler() {
 
 // ==================== TIMELINE INTERACTIONS ====================
 function onTimelineMouseDown(e) {
-    const rect = document.getElementById('tracksContainer').getBoundingClientRect();
+    const tracksContainer = document.getElementById('tracksContainer');
+    const rect = tracksContainer.getBoundingClientRect();
     const x = e.clientX - rect.left + document.getElementById('tracksContainer').scrollLeft;
     const y = e.clientY - rect.top;
+    if (currentTool === 'hand') {
+        timelinePan = {
+            startX: e.clientX,
+            startScrollLeft: tracksContainer.scrollLeft,
+        };
+        tracksContainer.classList.add('panning');
+        return;
+    }
     const targetClip = e.target.closest('.clip');
     if (targetClip) {
         const target = clips.find(c => c.id == targetClip.dataset.id);
@@ -1710,6 +1754,23 @@ function onTimelineMouseDown(e) {
                 splitClipAt(clip, x / pixelsPerSecond);
                 return;
             }
+
+            if (currentTool === 'slip') {
+                if (!selectedClips.includes(clip)) selectedClips = [clip];
+                pushUndo();
+                const media = mediaItems.find(item => item.id == clip.mediaId);
+                draggingClip = {
+                    mode: 'slip',
+                    clip,
+                    startX: x,
+                    originalIn: finiteNumber(clip.inPoint),
+                    originalDuration: Math.max(0.1, finiteNumber(clip.duration)),
+                    mediaDuration: media?.duration > 0 ? media.duration : Infinity,
+                };
+                updateClipPropertiesPanel(clip);
+                renderTimeline();
+                return;
+            }
             
             // Selection
             if (!e.shiftKey && !selectedClips.includes(clip)) {
@@ -1730,6 +1791,7 @@ function onTimelineMouseDown(e) {
 
             pushUndo();
             draggingClip = {
+                mode: 'move',
                 clip,
                 startX: x,
                 startY: y,
@@ -1761,9 +1823,18 @@ function onTimelineMouseDown(e) {
 }
 
 function onTimelineMouseMove(e) {
-    const rect = document.getElementById('tracksContainer').getBoundingClientRect();
-    const x = e.clientX - rect.left + document.getElementById('tracksContainer').scrollLeft;
+    const tracksContainer = document.getElementById('tracksContainer');
+    const rect = tracksContainer.getBoundingClientRect();
+    const x = e.clientX - rect.left + tracksContainer.scrollLeft;
     const y = e.clientY - rect.top;
+
+    if (timelinePan) {
+        tracksContainer.scrollLeft = Math.max(
+            0,
+            timelinePan.startScrollLeft - (e.clientX - timelinePan.startX),
+        );
+        return;
+    }
     
     // Dragging playhead
     if (isDraggingPlayhead) {
@@ -1812,6 +1883,30 @@ function onTimelineMouseMove(e) {
         return;
     }
     
+    // Slip-editing the source window without moving the timeline item
+    if (draggingClip?.mode === 'slip') {
+        const delta = (x - draggingClip.startX) / pixelsPerSecond;
+        const maxIn = Math.max(
+            0,
+            draggingClip.mediaDuration - draggingClip.originalDuration,
+        );
+        const newIn = Math.max(
+            0,
+            Math.min(maxIn, draggingClip.originalIn + delta),
+        );
+        draggingClip.clip.inPoint = newIn;
+        draggingClip.clip.outPoint = newIn + draggingClip.originalDuration;
+        if (draggingClip.clip.linkedTo) {
+            const linked = clips.find(c => c.id === draggingClip.clip.linkedTo);
+            if (linked) {
+                linked.inPoint = newIn;
+                linked.outPoint = newIn + draggingClip.originalDuration;
+            }
+        }
+        renderTimeline();
+        return;
+    }
+
     // Dragging clip
     if (draggingClip) {
         const delta = (x - draggingClip.startX) / pixelsPerSecond;
@@ -1865,6 +1960,9 @@ function onTimelineMouseUp() {
     isDraggingPlayhead = false;
     draggingClip = null;
     draggingHandle = null;
+    timelinePan = null;
+    timelinePan = null;
+    document.getElementById('tracksContainer')?.classList.remove('panning');
 }
 
 function onTimelineWheel(e) {
@@ -2000,12 +2098,15 @@ function onMediaDragStart(e) {
 
 // ==================== TIMELINE TOOLS ====================
 function setTool(tool) {
-    currentTool = tool;
+    const supportedTools = new Set(['select', 'razor', 'slip', 'hand']);
+    currentTool = supportedTools.has(tool) ? tool : 'select';
     document.querySelectorAll('.tool-btn').forEach(btn => {
-        const active = btn.dataset.tool === tool;
+        const active = btn.dataset.tool === currentTool;
         btn.classList.toggle('active', active);
         btn.setAttribute('aria-pressed', String(active));
     });
+    const tracksContainer = document.getElementById('tracksContainer');
+    if (tracksContainer) tracksContainer.dataset.tool = currentTool;
 }
 
 function toggleTrackControl(button) {
@@ -2825,6 +2926,7 @@ function resetProjectRuntimeState() {
     document.getElementById('playBtn').textContent = '▶';
     document.getElementById('currentTime').textContent = '00:00:00:00';
     document.getElementById('contextMenu').style.display = 'none';
+    closeEditMenu({ restoreFocus: false });
     const exportModal = document.getElementById('exportModal');
     exportModal.classList.add('hidden');
     exportModal.setAttribute('aria-hidden', 'true');
@@ -3089,8 +3191,54 @@ function redo() {
     toast('info', 'Redo');
 }
 
-function showEditMenu(e) {
-    // Could show a dropdown menu
+function updateEditMenuState() {
+    const disabled = {
+        editUndo: undoStack.length === 0,
+        editRedo: redoStack.length === 0,
+        editCut: selectedClips.length === 0,
+        editCopy: selectedClips.length === 0,
+        editPaste: !clipboard || clipboard.length === 0,
+        editSelectAll: clips.length === 0,
+        editDelete: selectedClips.length === 0,
+    };
+    Object.entries(disabled).forEach(([id, value]) => {
+        const item = document.getElementById(id);
+        if (item) item.disabled = value;
+    });
+}
+
+function showEditMenu(_event, control) {
+    const menu = document.getElementById('editMenu');
+    if (!menu) return;
+    if (!menu.hidden) {
+        closeEditMenu();
+        return;
+    }
+    updateEditMenuState();
+    editMenuReturnFocus = control?.isConnected ? control : null;
+    menu.hidden = false;
+    menu.setAttribute('aria-hidden', 'false');
+    control?.setAttribute('aria-expanded', 'true');
+    const bounds = control?.getBoundingClientRect();
+    if (bounds) {
+        menu.style.left = `${Math.max(4, bounds.left)}px`;
+        menu.style.top = `${bounds.bottom + 4}px`;
+    }
+    menu.querySelector('[role="menuitem"]:not([disabled])')?.focus();
+}
+
+function closeEditMenu({ restoreFocus = true } = {}) {
+    const menu = document.getElementById('editMenu');
+    if (!menu || menu.hidden) return;
+    menu.hidden = true;
+    menu.setAttribute('aria-hidden', 'true');
+    document.querySelector('[data-action="show-edit-menu"]')?.setAttribute(
+        'aria-expanded',
+        'false',
+    );
+    const returnFocus = editMenuReturnFocus;
+    editMenuReturnFocus = null;
+    if (restoreFocus && returnFocus?.isConnected) returnFocus.focus();
 }
 
 // ==================== UTILITIES ====================

@@ -19,6 +19,7 @@ All notable changes to ClipForge will be documented in this file.
 - Hardware encoder choices now run bounded real FFmpeg encode probes off the GUI thread, cache results per FFmpeg binary/device signature, disable unusable choices with driver reasons, and record capability results in diagnostics; native libmpv versions below 0.41.0 fall back to Qt Multimedia.
 - The browser editor now loads project schema, timeline planning, jobs, cache predicates, preview state, export preflight, and diagnostics redaction through narrow ES modules with DOM-free Node coverage; browser behavior and the media matrix serve `.mjs` with the correct module MIME type.
 - Release provenance now recognizes the SPDX licenses used by current Colorama, Pygments, and typing-extensions license files, keeping clean build verification fail-closed without treating valid metadata as missing.
+- The browser Edit menu now performs undo/redo, clipboard, select-all, and delete actions with keyboard focus handling; Slip edits source timing without moving clips and Hand provides timeline panning with pointer coverage.
 
 ## [v0.5.2] - 2026-07-29
 
