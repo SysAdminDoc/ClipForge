@@ -93,6 +93,7 @@ All-in-one video editor — Trim, Crop, Upscale, Interpolate, Convert, Filter, A
 - Per-file progress tracking with status indicators
 - Durable queue processing with restart recovery, reorder/move controls, per-job priority, pause/resume, cancellation, and retry-failed support
 - Explicit batch stream mapping, metadata/chapter policy, timestamp handling, and semantic multistream output validation
+- Release-gated desktop/browser media contract matrix with VFR, multistream, relink, cancellation, recovery, and invalid-output coverage
 - Post-completion actions (do nothing, open folder, notification sound)
 - **Pre-flight disk-space check** with per-file size estimation
 - **Overwrite confirmation dialog**

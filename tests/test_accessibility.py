@@ -356,6 +356,11 @@ def test_browser_project_and_export_contract_is_explicit():
     assert "Unlinked audio and music tracks are not yet mixed" in script
     assert "sanitizeDownloadName" in script
     assert "job.engine?.terminate()" in script
+    assert "'-map', '0:v:0'" in script
+    assert "'-map_metadata', '0'" in script
+    assert "'-map_chapters', '0'" in script
+    assert "'-fps_mode', 'passthrough'" in script
+    assert "buildExportPreflight" in script
 
 
 def test_browser_csp_has_no_inline_handlers_or_remote_runtime():

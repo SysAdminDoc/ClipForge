@@ -277,6 +277,9 @@ def main():
 
     if sys.version_info < (3, 11):
         raise RuntimeError("ClipForge release checks require Python 3.11 or newer")
+    from scripts.media_contract_matrix import run_matrix
+
+    run_matrix(include_browser=not args.media_only)
     run_media_gate()
     if not args.media_only:
         run([sys.executable, "scripts/sync_version.py", "--check"])

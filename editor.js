@@ -2318,7 +2318,14 @@ async function exportVideo() {
                     if (clip.inPoint > 0) args.push('-ss', String(clip.inPoint));
                     args.push('-i', inputName);
                     args.push('-t', String(clip.duration));
-                    args.push('-map', '0:v:0', '-map', '0:a?');
+                    args.push(
+                        '-map', '0:v:0',
+                        '-map', '0:a?',
+                        '-sn', '-dn',
+                        '-map_metadata', '0',
+                        '-map_chapters', '0',
+                        '-fps_mode', 'passthrough',
+                    );
 
                     const filters = [];
                     if (resolution && resolution !== 'original') {
@@ -2359,14 +2366,23 @@ async function exportVideo() {
                     finalOutput = segmentFiles[0];
                 } else if (segmentFiles.length === 1) {
                     const outputName = job.path('output', `.${format}`);
-                    const args = ['-i', segmentFiles[0]];
+                    const args = [
+                        '-i', segmentFiles[0],
+                        '-map', '0:v:0',
+                        '-sn', '-dn',
+                        '-map_metadata', '0',
+                        '-map_chapters', '0',
+                    ];
                     if (format === 'webm') {
                         args.push(
+                            '-map', '0:a?',
+                            '-fps_mode', 'passthrough',
                             '-c:v', 'libvpx-vp9', '-crf', quality, '-b:v', '0',
                             '-c:a', 'libopus',
                         );
                     } else {
                         args.push(
+                            '-an',
                             '-vf', 'fps=15,scale=480:-1:flags=lanczos',
                             '-loop', '0',
                         );
@@ -2386,7 +2402,15 @@ async function exportVideo() {
                         new TextEncoder().encode(concatList),
                     );
                     document.getElementById('loadingText').textContent = 'Joining clips...';
-                    const args = ['-f', 'concat', '-safe', '0', '-i', concatName];
+                    const args = [
+                        '-f', 'concat', '-safe', '0', '-i', concatName,
+                        '-map', '0:v:0',
+                        '-map', '0:a?',
+                        '-sn', '-dn',
+                        '-map_metadata', '0',
+                        '-map_chapters', '0',
+                        '-fps_mode', 'passthrough',
+                    ];
                     if (format === 'mp4') {
                         args.push('-c', 'copy', '-movflags', '+faststart');
                     } else if (format === 'webm') {
@@ -2396,6 +2420,7 @@ async function exportVideo() {
                         );
                     } else {
                         args.push(
+                            '-an',
                             '-vf', 'fps=15,scale=480:-1:flags=lanczos',
                             '-loop', '0',
                         );
@@ -3034,6 +3059,7 @@ Object.assign(window, {
     setTool, setZoom, splitClip, deleteSelected, copyClip, cutClip, pasteClip,
     selectAllClips, addTransition, selectTransitionType, unlinkAudio,
     setVolume, toggleMute, showExportModal, hideExportModal, exportVideo,
+    buildExportPreflight, serializeProject, normalizeProject,
     cancelExport, saveProject, recoverLastProject, discardRecoveryProject,
     applyProjectSnapshot, showEditMenu,
     generateBrowserProxy, updateClipProperty, applyQuickEffect,

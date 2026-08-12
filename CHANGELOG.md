@@ -10,6 +10,7 @@ All notable changes to ClipForge will be documented in this file.
 - Desktop media workers now emit typed terminal outcomes with reason codes, cancellation/timeout state, output validation, and bounded log references while preserving existing panel signals.
 - The desktop batch panel now runs from the durable queue journal, restoring interrupted work and exposing reorder, priority, pause/resume, cancellation, and retry-failed controls.
 - Batch conversions and AI reassembly now declare stream maps, intentional subtitle/data drops, metadata/chapter handling, timestamp policy, and persisted ffprobe stream-cardinality contracts; multistream jobs warn before intentional drops.
+- The release gate now runs a deterministic cross-surface media matrix covering desktop/AI contracts, browser export and relinking, VFR/multistream timing, cancellation, interrupted queues, and invalid outputs.
 
 ## [v0.5.2] - 2026-07-29
 
