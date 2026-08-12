@@ -9,6 +9,7 @@ from clipforge.processes import (
     run_managed_process,
     staging_output_path,
     validate_output,
+    WorkerOutcome,
 )
 from clipforge.tools import (
     _cleanup_temp_dirs,
@@ -125,6 +126,31 @@ def test_managed_process_times_out():
         timeout=0.2,
     )
     assert outcome.timed_out
+
+
+def test_worker_outcome_serializes_terminal_state_for_queue_adapters():
+    outcome = WorkerOutcome(
+        "validation_failed",
+        "output_invalid",
+        "Output failed semantic validation",
+        output_path="C:/exports/clip.mp4",
+        returncode=0,
+        output_valid=False,
+        details={"validator": "ffprobe"},
+    )
+    assert outcome.succeeded is False
+    assert outcome.as_dict() == {
+        "state": "validation_failed",
+        "reason_code": "output_invalid",
+        "message": "Output failed semantic validation",
+        "output_path": "C:/exports/clip.mp4",
+        "returncode": 0,
+        "output_valid": False,
+        "cancelled": False,
+        "timed_out": False,
+        "full_log_path": None,
+        "details": {"validator": "ffprobe"},
+    }
 
 
 def test_managed_process_uses_requested_working_directory(tmp_path):

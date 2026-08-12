@@ -84,3 +84,25 @@ def test_ffmpeg_worker_refuses_unconfirmed_overwrite(tmp_path):
     assert not ok
     assert message == "Output already exists"
     assert output.read_bytes() == b"original"
+
+
+def test_ffmpeg_worker_emits_typed_outcome_without_changing_legacy_signal(tmp_path):
+    output = tmp_path / "existing.mp4"
+    output.write_bytes(b"original")
+    outcomes = []
+    worker = FFmpegWorker(
+        [FFMPEG, "-y", "-f", "lavfi", "-i", "color=c=black", str(output)],
+        1,
+        output_path=str(output),
+        overwrite=False,
+    )
+    worker.outcome_signal.connect(outcomes.append)
+    ok, message = run_worker(worker)
+
+    assert not ok
+    assert message == "Output already exists"
+    assert len(outcomes) == 1
+    outcome = outcomes[0]
+    assert outcome.state == "failed"
+    assert outcome.reason_code == "output_exists"
+    assert outcome.output_path == str(output)

@@ -7,6 +7,7 @@ All notable changes to ClipForge will be documented in this file.
 ### Changed
 - Centralized external FFmpeg, NVDEC, and Qt security decisions in a versioned runtime policy; capability probes and redacted diagnostics now report the actual runtime identity and policy state.
 - Raised the PyQt6 dependency floor to the Qt 6.11.1 security baseline and made the browser runtime SBOM reject stale policy metadata.
+- Desktop media workers now emit typed terminal outcomes with reason codes, cancellation/timeout state, output validation, and bounded log references while preserving existing panel signals.
 
 ## [v0.5.2] - 2026-07-29
 

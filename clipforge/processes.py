@@ -13,7 +13,7 @@ import threading
 import time
 import uuid
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable
 
@@ -31,6 +31,40 @@ class ProcessOutcome:
     stdout_truncated: bool = False
     stderr_truncated: bool = False
     full_log_path: str | None = None
+
+
+@dataclass(frozen=True)
+class WorkerOutcome:
+    """Stable terminal result shared by desktop media workers and the queue."""
+
+    state: str
+    reason_code: str
+    message: str
+    output_path: str | None = None
+    returncode: int | None = None
+    output_valid: bool | None = None
+    cancelled: bool = False
+    timed_out: bool = False
+    full_log_path: str | None = None
+    details: dict[str, object] = field(default_factory=dict)
+
+    @property
+    def succeeded(self):
+        return self.state == "succeeded"
+
+    def as_dict(self):
+        return {
+            "state": self.state,
+            "reason_code": self.reason_code,
+            "message": self.message,
+            "output_path": self.output_path,
+            "returncode": self.returncode,
+            "output_valid": self.output_valid,
+            "cancelled": self.cancelled,
+            "timed_out": self.timed_out,
+            "full_log_path": self.full_log_path,
+            "details": dict(self.details),
+        }
 
 
 @dataclass(frozen=True)

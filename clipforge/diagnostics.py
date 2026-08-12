@@ -160,22 +160,30 @@ class DiagnosticsStore:
             if record is not None:
                 record["result"].update(result)
 
-    def finish(self, job_id, ok, message):
-        message_text = str(message)
-        if ok:
-            state = "succeeded"
-        elif "cancel" in message_text.lower():
-            state = "cancelled"
-        elif "timed out" in message_text.lower():
-            state = "timed_out"
+    def finish(self, job_id, ok=None, message="", *, outcome=None):
+        if outcome is not None:
+            message_text = str(outcome.message)
+            state = outcome.state
+            outcome_payload = outcome.as_dict()
         else:
-            state = "failed"
+            message_text = str(message)
+            if ok:
+                state = "succeeded"
+            elif "cancel" in message_text.lower():
+                state = "cancelled"
+            elif "timed out" in message_text.lower():
+                state = "timed_out"
+            else:
+                state = "failed"
+            outcome_payload = None
         with self._lock:
             record = self._jobs.get(job_id)
             if record is not None:
                 record["state"] = state
                 record["ended_at"] = _utc_now()
                 record["result"]["message"] = message_text
+                if outcome_payload is not None:
+                    record["result"]["outcome"] = outcome_payload
 
     def event(self, severity, message, *, context=None):
         with self._lock:
