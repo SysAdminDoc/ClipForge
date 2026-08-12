@@ -15,6 +15,7 @@ All notable changes to ClipForge will be documented in this file.
 - Batch source inspection and thumbnail metadata probes now run in cancellable worker threads with bounded FFprobe timeouts; preview background reads no longer block the GUI while waiting for cancellation, and shutdown retains confirmed-worker cleanup diagnostics.
 - Browser preview and export now share a resolved timeline plan for clip boundaries, source in-points, transforms, and track audio state; browser behavior tests cover the same plan at both surfaces.
 - Browser proxy and desktop preview/AI caches now use bounded sampled-content identities, byte-based lifecycle limits, corruption/incomplete-entry validation, quota/disk preflight, usage reporting, LRU pruning, and explicit purge controls.
+- Desktop and browser diagnostics exports now include bounded capability, storage, job, and error reports; default redaction removes local paths, URL credentials/tokens, secret command options, and private media metadata.
 
 ## [v0.5.2] - 2026-07-29
 

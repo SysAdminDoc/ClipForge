@@ -64,6 +64,10 @@ def test_support_export_redacts_paths_and_never_includes_media(tmp_path):
     assert "<redacted-path>" in payload_text
     assert payload["privacy"] == {
         "paths_redacted": True,
+        "url_credentials_redacted": True,
+        "url_tokens_redacted": True,
+        "secret_options_redacted": True,
+        "private_media_metadata_included": False,
         "media_contents_included": False,
     }
 
@@ -88,6 +92,41 @@ def test_diagnostics_snapshot_includes_runtime_policy_and_qt_identity():
 def test_url_is_not_mistaken_for_local_path():
     url = "https://ffmpeg.org/download.html"
     assert redact_text(url) == url
+
+
+def test_support_redaction_removes_url_secrets_options_and_private_metadata(tmp_path):
+    store = DiagnosticsStore()
+    job_id = store.start_job(
+        "download",
+        [
+            "ffmpeg",
+            "-headers",
+            "Authorization: Bearer command-secret",
+            "-i",
+            "https://user:password@example.com/input.mp4?token=url-secret&keep=visible",
+        ],
+        context={
+            "source_url": "https://example.com/source?api_key=context-secret",
+            "private_metadata": {"title": "private-title"},
+        },
+    )
+    store.log(job_id, "Fetched https://user:password@example.com/file?access_token=log-secret")
+    output = tmp_path / "support.json"
+
+    store.export(output)
+    payload_text = output.read_text(encoding="utf-8")
+
+    for secret in (
+        "command-secret",
+        "password",
+        "url-secret",
+        "context-secret",
+        "private-title",
+        "log-secret",
+    ):
+        assert secret not in payload_text
+    assert "<redacted-secret>" in payload_text
+    assert "visible" in payload_text
 
 
 def test_worker_records_success_and_failure_without_losing_failure_logs():

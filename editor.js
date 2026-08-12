@@ -30,6 +30,12 @@ let browserProxyJob = null;
 let browserFfmpegJob = null;
 let lastBrowserFfmpegJob = null;
 let ffmpegInitPromise = null;
+const browserDiagnosticErrors = [];
+const BROWSER_DIAGNOSTIC_MAX_ERRORS = 50;
+const BROWSER_SECRET_KEY_PATTERN = /(?:password|passwd|token|secret|api[_-]?key|authorization|credential|cookie|signature|session)/i;
+const BROWSER_PRIVATE_KEY_PATTERN = /^(?:file(?:name|path)?|local_path|media(?:_name|_path)?|private_metadata|title|artist|album|comment|location|tags)$/i;
+const BROWSER_URL_PATTERN = /\b(?:https?|ftp):\/\/[^\s"'<>]+/gi;
+const BROWSER_PATH_PATTERN = /(?<![\w])(?:[a-z]:\\|\\\\)[^\r\n"']+|(?<![\w:/])\/(?:[^\/\r\n"']+\/)+[^\/\r\n"']*/gi;
 const trackStates = {
     video: { visible: true, locked: false },
     audio: { muted: false, solo: false },
@@ -72,6 +78,75 @@ function setProjectDirty(dirty) {
         || 'Untitled Project';
     document.title = `${projectDirty ? '* ' : ''}${projectName} — ClipForge`;
 }
+
+function recordBrowserDiagnosticError(error, context = 'runtime') {
+    const message = String(error?.message || error || 'Unknown browser error')
+        .slice(0, 2048);
+    browserDiagnosticErrors.push({
+        at: new Date().toISOString(),
+        context: String(context).slice(0, 80),
+        message,
+    });
+    while (browserDiagnosticErrors.length > BROWSER_DIAGNOSTIC_MAX_ERRORS) {
+        browserDiagnosticErrors.shift();
+    }
+}
+
+function redactBrowserUrlMatch(match) {
+    let raw = match;
+    let trailing = '';
+    while (raw && '.,;:)]}>'.includes(raw.at(-1))) {
+        trailing = raw.at(-1) + trailing;
+        raw = raw.slice(0, -1);
+    }
+    try {
+        const url = new URL(raw);
+        if (url.username || url.password) {
+            url.username = '<redacted-secret>';
+            url.password = '<redacted-secret>';
+        }
+        for (const key of [...url.searchParams.keys()]) {
+            if (BROWSER_SECRET_KEY_PATTERN.test(key)) {
+                url.searchParams.set(key, '<redacted-secret>');
+            }
+        }
+        if (url.hash) url.hash = '#<redacted-secret>';
+        return url.toString() + trailing;
+    } catch (_error) {
+        return '<redacted-url>' + trailing;
+    }
+}
+
+function redactBrowserText(value) {
+    return String(value)
+        .replace(BROWSER_URL_PATTERN, redactBrowserUrlMatch)
+        .replace(BROWSER_PATH_PATTERN, '<redacted-path>');
+}
+
+function redactBrowserValue(value, key = '') {
+    const keyText = String(key);
+    const controlKey = /(?:redacted|included)$/i.test(keyText);
+    if (!controlKey && BROWSER_SECRET_KEY_PATTERN.test(keyText)) return '<redacted-secret>';
+    if (!controlKey && BROWSER_PRIVATE_KEY_PATTERN.test(keyText)) return '<redacted-private-metadata>';
+    if (typeof value === 'string') return redactBrowserText(value);
+    if (Array.isArray(value)) return value.map(item => redactBrowserValue(item));
+    if (value && typeof value === 'object') {
+        return Object.fromEntries(
+            Object.entries(value).map(([itemKey, item]) => [
+                itemKey,
+                redactBrowserValue(item, itemKey),
+            ]),
+        );
+    }
+    return value;
+}
+
+window.addEventListener('error', event => {
+    recordBrowserDiagnosticError(event.error || event.message, 'window.error');
+});
+window.addEventListener('unhandledrejection', event => {
+    recordBrowserDiagnosticError(event.reason, 'unhandledrejection');
+});
 
 // Audio context for waveforms
 let audioContext = null;
@@ -315,6 +390,7 @@ async function runBrowserFfmpegJob(type, options, runner) {
         job.state = 'succeeded';
         return result;
     } catch (error) {
+        recordBrowserDiagnosticError(error, `job.${type}`);
         if (job.cancelRequested || error instanceof BrowserJobCancelledError) {
             job.state = 'cancelled';
             throw new BrowserJobCancelledError(`${job.label} cancelled`);
@@ -432,6 +508,7 @@ async function initializeFFmpeg({ successToast = true, timeoutMs = 30000 } = {})
     } catch (e) {
         ffmpegLoaded = false;
         const errMsg = (e && (e.message || e.toString())) || 'Unknown error';
+        recordBrowserDiagnosticError(e, 'ffmpeg.initialize');
         console.error('FFmpeg load error:', e);
         document.getElementById('statusText').textContent = 'Engine unavailable';
         const overlay = document.getElementById('loadingOverlay');
@@ -461,6 +538,7 @@ async function initializeFFmpeg({ successToast = true, timeoutMs = 30000 } = {})
 function setupEventListeners() {
     const actions = {
         'open-project': () => document.getElementById('projectFileInput').click(),
+        'export-browser-diagnostics': () => exportBrowserDiagnostics(),
         'show-edit-menu': event => showEditMenu(event),
         'save-project': () => saveProject(),
         'show-export': () => showExportModal(),
@@ -560,6 +638,10 @@ function setupEventListeners() {
     previewVideo.addEventListener('loadedmetadata', onVideoLoaded);
     previewVideo.addEventListener('ended', onVideoEnded);
     previewVideo.addEventListener('error', () => {
+        recordBrowserDiagnosticError(
+            new Error('Preview could not decode selected media'),
+            'preview.decode',
+        );
         document.getElementById('previewPlaceholder').style.display = 'flex';
         document.querySelector('.preview-placeholder-text').textContent =
             'Preview could not decode this media. Try another browser or export with the desktop app.';
@@ -1159,6 +1241,7 @@ async function restoreBrowserProxy(media) {
         await refreshBrowserProxyCacheStatus();
         return true;
     } catch (error) {
+        recordBrowserDiagnosticError(error, 'proxy.restore');
         console.warn('Browser proxy restore failed:', error);
         return false;
     }
@@ -1242,6 +1325,7 @@ async function pruneBrowserProxyCache({ requiredBytes = 0, protectKey = null } =
         }
         return await browserProxyCacheStats();
     } catch (error) {
+        recordBrowserDiagnosticError(error, 'proxy.prune');
         console.warn('Browser proxy pruning failed:', error);
         throw error;
     }
@@ -1299,6 +1383,7 @@ async function purgeBrowserProxyCache() {
         await refreshBrowserProxyCacheStatus();
         toast('success', `Purged ${records.length} browser proxy record${records.length === 1 ? '' : 's'}`);
     } catch (error) {
+        recordBrowserDiagnosticError(error, 'proxy.purge');
         console.error('Browser proxy purge failed:', error);
         toast('error', `Could not purge browser proxy cache: ${error.message}`);
     }
@@ -1392,6 +1477,7 @@ async function generateBrowserProxy(mediaId) {
         );
         toast('success', 'Proxy cached and selected for preview; export still uses the original');
     } catch (error) {
+        recordBrowserDiagnosticError(error, 'proxy.generate');
         if (error instanceof BrowserJobCancelledError) {
             toast('info', 'Proxy cancelled; FFmpeg is ready for the next job');
         } else {
@@ -3316,6 +3402,7 @@ function scheduleProjectRecovery({ markDirty = true } = {}) {
             recoverySnapshot = snapshot;
             recoveryWarningShown = false;
         } catch (error) {
+            recordBrowserDiagnosticError(error, 'recovery.save');
             console.warn('Project recovery save failed:', error);
             if (!recoveryWarningShown) {
                 recoveryWarningShown = true;
@@ -3337,6 +3424,7 @@ async function initProjectRecovery() {
                 `Recover "${recoverySnapshot.name || 'Untitled Project'}" from ${recoverySnapshot.savedAt || 'browser storage'}.`;
         }
     } catch (error) {
+        recordBrowserDiagnosticError(error, 'recovery.load');
         console.warn('Project recovery is unavailable:', error);
     }
 }
@@ -3361,6 +3449,7 @@ async function discardRecoveryProject() {
         document.getElementById('recoveryBar').hidden = true;
         toast('info', 'Recovery snapshot discarded');
     } catch (error) {
+        recordBrowserDiagnosticError(error, 'recovery.discard');
         toast('error', `Could not discard recovery snapshot: ${error.message}`);
     }
 }
@@ -3450,6 +3539,98 @@ function formatBytes(bytes) {
     return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GiB`;
 }
 
+function browserDiagnosticJobSummary(job) {
+    if (!job) return null;
+    return {
+        id: job.id,
+        type: job.type,
+        state: job.state,
+        progress: finiteNumber(job.progress),
+        stage: job.stage || null,
+        error: job.error || null,
+        engineReusable: job.engineReusable ?? null,
+        startedAt: job.startedAt || null,
+        finishedAt: job.finishedAt || null,
+    };
+}
+
+async function buildBrowserDiagnostics({ redact = true } = {}) {
+    const storage = await browserStorageEstimate();
+    let proxyCache;
+    try {
+        proxyCache = await browserProxyCacheStats();
+    } catch (error) {
+        proxyCache = { available: false, error: String(error?.message || error) };
+    }
+    const appVersion = document.querySelector('.menu-bar .menu-item:last-child')?.textContent
+        ?.trim()?.replace(/^v/i, '') || 'unknown';
+    const payload = {
+        schema: 'clipforge.browser-diagnostics',
+        schemaVersion: 1,
+        generatedAt: new Date().toISOString(),
+        application: {
+            name: 'ClipForge',
+            version: appVersion,
+            runtime: 'static-browser-editor',
+        },
+        capabilities: {
+            crossOriginIsolated: Boolean(window.crossOriginIsolated),
+            ffmpegLoaded: Boolean(ffmpegLoaded),
+            indexedDb: 'indexedDB' in window,
+            storageEstimate: typeof navigator.storage?.estimate === 'function',
+            serviceWorker: 'serviceWorker' in navigator,
+            webCodecs: 'VideoDecoder' in window && 'VideoEncoder' in window,
+            userAgent: navigator.userAgent,
+            language: navigator.language || null,
+        },
+        storage: {
+            estimate: storage,
+            proxyCache,
+        },
+        project: {
+            dirty: projectDirty,
+            mediaCount: mediaItems.length,
+            missingMediaCount: mediaItems.filter(media => media.missing).length,
+            clipCount: clips.length,
+            proxyMediaCount: mediaItems.filter(media => media.proxyKey).length,
+            timelineDurationSeconds: finiteNumber(duration),
+        },
+        jobs: {
+            active: browserDiagnosticJobSummary(browserFfmpegJob),
+            last: browserDiagnosticJobSummary(lastBrowserFfmpegJob),
+        },
+        errors: browserDiagnosticErrors.slice(-BROWSER_DIAGNOSTIC_MAX_ERRORS),
+        privacy: {
+            redacted: Boolean(redact),
+            localPathsIncluded: false,
+            mediaContentsIncluded: false,
+            privateMediaMetadataIncluded: false,
+            urlCredentialsIncluded: false,
+            urlTokensIncluded: false,
+        },
+    };
+    return redact ? redactBrowserValue(payload) : payload;
+}
+
+async function exportBrowserDiagnostics() {
+    try {
+        const payload = await buildBrowserDiagnostics({ redact: true });
+        const blob = new Blob([JSON.stringify(payload, null, 2) + '\n'], {
+            type: 'application/json',
+        });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = 'clipforge-browser-diagnostics.json';
+        anchor.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        toast('success', 'Redacted browser diagnostics downloaded');
+    } catch (error) {
+        recordBrowserDiagnosticError(error, 'diagnostics.export');
+        toast('error', `Browser diagnostics export failed: ${error.message}`);
+    }
+}
+
 function toast(type, message) {
     const container = document.getElementById('toastContainer');
     const el = document.createElement('div');
@@ -3483,6 +3664,7 @@ Object.assign(window, {
     serializeProject, normalizeProject,
     browserProxyKey, browserProxyCacheStats, pruneBrowserProxyCache,
     refreshBrowserProxyCacheStatus, purgeBrowserProxyCache,
+    buildBrowserDiagnostics, exportBrowserDiagnostics,
     cancelExport, saveProject, recoverLastProject, discardRecoveryProject,
     applyProjectSnapshot, showEditMenu,
     generateBrowserProxy, updateClipProperty, applyQuickEffect,

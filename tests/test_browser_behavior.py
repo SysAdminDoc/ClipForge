@@ -507,6 +507,35 @@ def test_browser_proxy_cache_uses_sampled_identity_and_explicit_purge(browser_pa
     assert browser_page.evaluate("async () => (await window.browserProxyCacheStats()).bytes") == 0
 
 
+def test_browser_diagnostics_are_bounded_and_redacted(browser_page):
+    browser_page.evaluate(
+        """
+        () => window.dispatchEvent(new ErrorEvent('error', {
+            message: 'Could not fetch https://user:password@example.com/media.mp4?token=browser-secret',
+            error: new Error('Could not fetch https://user:password@example.com/media.mp4?token=browser-secret'),
+        }))
+        """
+    )
+    diagnostics = browser_page.evaluate(
+        "async () => window.buildBrowserDiagnostics()"
+    )
+    serialized = json.dumps(diagnostics)
+    assert "browser-secret" not in serialized
+    assert "password" not in serialized
+    assert diagnostics["schema"] == "clipforge.browser-diagnostics"
+    assert diagnostics["privacy"] == {
+        "redacted": True,
+        "localPathsIncluded": False,
+        "mediaContentsIncluded": False,
+        "privateMediaMetadataIncluded": False,
+        "urlCredentialsIncluded": False,
+        "urlTokensIncluded": False,
+    }
+    assert "capabilities" in diagnostics
+    assert "storage" in diagnostics
+    assert len(diagnostics["errors"]) <= 50
+
+
 def test_every_track_is_reachable_at_900_by_700(browser_page):
     layout = browser_page.evaluate(
         """
