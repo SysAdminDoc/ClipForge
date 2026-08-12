@@ -27,7 +27,12 @@ from ..processes import (
     WorkerOutcome,
     output_contract_for_streams,
 )
-from ..tools import FFMPEG, _confirm_overwrite, probe_media
+from ..tools import (
+    FFMPEG,
+    HW_ENCODER_CAPABILITIES,
+    _confirm_overwrite,
+    probe_media,
+)
 from ..workers import BatchProbeWorker, FFmpegWorker
 from ..widgets import FlowLayout
 
@@ -110,6 +115,8 @@ class BatchPanel(QWidget):
         self.console = console
         self._items = []
         self._worker = None
+        self._workers = {}
+        self._worker_outcomes = set()
         self._current_idx = 0
         self._cancel_requested = False
         self._batch_overwrite = {}
@@ -182,6 +189,27 @@ class BatchPanel(QWidget):
         priority_row.addWidget(QLabel("Higher values run first"))
         priority_row.addStretch()
         layout.addLayout(priority_row)
+
+        concurrency_row = FlowLayout()
+        concurrency_row.addWidget(QLabel("Concurrent encodes:"))
+        self.spn_concurrency = QSpinBox()
+        cpu_cap = max(1, min(4, (os.cpu_count() or 2) // 2))
+        self.spn_concurrency.setRange(1, cpu_cap)
+        self.spn_concurrency.setValue(min(2, cpu_cap))
+        self.spn_concurrency.setAccessibleName("Concurrent batch encodes")
+        self.spn_concurrency.setToolTip(
+            "Maximum simultaneous encodes; the effective cap also respects CPU and "
+            "usable hardware-encoder capability probes"
+        )
+        concurrency_row.addWidget(self.spn_concurrency)
+        self.lbl_concurrency_cap = QLabel()
+        self.lbl_concurrency_cap.setProperty("class", "dimLabel")
+        concurrency_row.addWidget(self.lbl_concurrency_cap, 1)
+        layout.addLayout(concurrency_row)
+        self._refresh_concurrency_label()
+        self.spn_concurrency.valueChanged.connect(
+            lambda _value: self._refresh_concurrency_label()
+        )
 
         op_grp = QGroupBox("Batch Operation")
         ol = FlowLayout(op_grp)
@@ -294,6 +322,36 @@ class BatchPanel(QWidget):
             self._row_priorities.append(0)
             self.file_list.addItem(self._format_row(source, None, 0))
         self._refresh_action_state()
+
+    def _effective_worker_cap(self):
+        requested = self.spn_concurrency.value()
+        cpu_cap = self.spn_concurrency.maximum()
+        usable_hardware = sum(
+            capability.get("status") == "usable"
+            for capability in HW_ENCODER_CAPABILITIES.values()
+            if isinstance(capability, dict)
+        )
+        encoder_cap = usable_hardware if usable_hardware else cpu_cap
+        return max(1, min(requested, cpu_cap, encoder_cap))
+
+    def _refresh_concurrency_label(self):
+        if not hasattr(self, "lbl_concurrency_cap"):
+            return
+        requested = self.spn_concurrency.value()
+        effective = self._effective_worker_cap()
+        hardware_count = sum(
+            capability.get("status") == "usable"
+            for capability in HW_ENCODER_CAPABILITIES.values()
+            if isinstance(capability, dict)
+        )
+        basis = f"{hardware_count} usable encoder probe(s)" if hardware_count else "CPU safety cap"
+        self.lbl_concurrency_cap.setText(
+            f"Effective cap: {effective} ({basis}; requested {requested})"
+        )
+
+    def refresh_concurrency_cap(self):
+        """Refresh the displayed cap after the asynchronous capability probe."""
+        self._refresh_concurrency_label()
 
     @staticmethod
     def _format_row(source, state, priority):
@@ -519,7 +577,7 @@ class BatchPanel(QWidget):
         self.btn_start.setEnabled(
             not running
             and not preflighting
-            and self._worker is None
+            and not self._workers
             and (has_new or bool(self._queue.has_pending))
         )
         self.btn_start.setText("Start Queue" if self._queue.jobs else "Start Batch")
@@ -540,6 +598,7 @@ class BatchPanel(QWidget):
             self.txt_name_template,
             self.chk_custom_dir,
             self.btn_out_dir,
+            self.spn_concurrency,
         ):
             widget.setEnabled(not running and not preflighting)
         if not running and not preflighting:
@@ -907,6 +966,7 @@ class BatchPanel(QWidget):
             return
         self._cancel_requested = False
         self._current_job_id = None
+        self._worker_outcomes.clear()
         self._queue_paused = False
         self._queue.activate()
         self.progress.setValue(0)
@@ -914,65 +974,97 @@ class BatchPanel(QWidget):
         self._process_next()
 
     def _process_next(self):
-        if not self._queue.active or self._queue.paused:
+        if not self._queue.active or self._queue.paused or self._cancel_requested:
             self._refresh_queue_rows()
             return
-        job = self._queue.claim_next()
+        cap = self._effective_worker_cap()
+        while len(self._workers) < cap:
+            job = self._queue.claim_next()
+            if not job:
+                break
+            self._start_worker(job)
         self._refresh_queue_rows()
-        if not job:
-            if not self._queue.has_pending:
-                self._finish_queue()
-            return
+        if not self._workers and not self._queue.has_pending:
+            self._finish_queue()
+        elif self._workers:
+            self.lbl_batch_status.setText(
+                f"Processing {len(self._workers)} job(s) with cap {cap}"
+            )
 
-        self._current_job_id = job.job_id
-        self._current_idx = self._row_index(job.job_id)
-        src = job.source_path
-        out_path = job.output_path
-
-        self.lbl_batch_status.setText(
-            f"Processing {self._current_idx + 1}/{len(self._row_job_ids)}: {Path(src).name}"
-        )
-        self.progress.setValue(0)
-
-        self._worker = FFmpegWorker(
+    def _start_worker(self, job):
+        worker = FFmpegWorker(
             job.command,
             job.duration,
-            output_path=out_path,
+            output_path=job.output_path,
             overwrite=job.overwrite,
             output_contract=job.output_contract,
         )
-        self._worker.progress.connect(self._on_item_progress)
-        self._worker.log_output.connect(self.console.append)
-        self._outcome_received = False
-        self._continue_after_worker = False
-        self._worker.finished.connect(self._on_worker_thread_finished)
-        if hasattr(self._worker, "outcome_signal"):
-            self._worker.outcome_signal.connect(self._on_item_outcome)
+        job_id = job.job_id
+        self._workers[job_id] = worker
+        self._worker = worker
+        self._worker_outcomes.discard(job_id)
+        worker.progress.connect(
+            lambda pct, current_job_id=job_id: self._on_item_progress(
+                current_job_id,
+                pct,
+            )
+        )
+        worker.log_output.connect(self.console.append)
+        worker.finished.connect(
+            lambda current_job_id=job_id: self._on_worker_thread_finished(
+                current_job_id,
+            )
+        )
+        if hasattr(worker, "outcome_signal"):
+            worker.outcome_signal.connect(
+                lambda outcome, current_job_id=job_id: self._on_item_outcome(
+                    current_job_id,
+                    outcome,
+                )
+            )
         else:
-            self._worker.finished_signal.connect(self._on_item_done)
-        self._worker.start()
+            worker.finished_signal.connect(
+                lambda ok, message, current_job_id=job_id: self._on_item_done(
+                    current_job_id,
+                    ok,
+                    message,
+                )
+            )
+        worker.start()
 
-    def _on_item_progress(self, pct):
+    def _on_item_progress(self, job_id, pct):
         total = max(1, len(self._queue.jobs))
         completed = sum(job.state == "succeeded" for job in self._queue.jobs)
-        overall = (completed + max(0.0, min(100.0, pct)) / 100) / total * 100
+        active_progress = sum(
+            max(0.0, min(100.0, job.progress))
+            for job in self._queue.jobs
+            if job.state in {"running", "cancelling"}
+        )
+        previous = next(
+            (job.progress for job in self._queue.jobs if job.job_id == job_id),
+            0.0,
+        )
+        active_progress += max(0.0, min(100.0, pct)) - previous
+        overall = (completed + active_progress / 100) / total * 100
         self.progress.setValue(int(overall))
-        if self._current_job_id:
-            try:
-                self._queue.update_progress(self._current_job_id, pct)
-            except QueueError:
-                pass
+        try:
+            self._queue.update_progress(job_id, pct)
+        except QueueError:
+            pass
 
-    def _on_item_outcome(self, outcome):
+    def _on_item_outcome(self, job_id, outcome):
         if not isinstance(outcome, WorkerOutcome):
             return
-        self._outcome_received = True
-        self._complete_current_job(outcome)
-
-    def _on_item_done(self, ok, msg):
-        if self._outcome_received:
+        if job_id in self._worker_outcomes:
             return
-        self._complete_current_job(WorkerOutcome(
+        self._worker_outcomes.add(job_id)
+        self._complete_job(job_id, outcome)
+
+    def _on_item_done(self, job_id, ok, msg):
+        if job_id in self._worker_outcomes:
+            return
+        self._worker_outcomes.add(job_id)
+        self._complete_job(job_id, WorkerOutcome(
             "succeeded" if ok else "failed",
             "completed" if ok else "process_failed",
             msg,
@@ -980,10 +1072,7 @@ class BatchPanel(QWidget):
             cancelled=self._cancel_requested and not ok,
         ))
 
-    def _complete_current_job(self, outcome):
-        job_id = self._current_job_id
-        if not job_id:
-            return
+    def _complete_job(self, job_id, outcome):
         try:
             completed = self._queue.complete(
                 job_id,
@@ -1001,33 +1090,29 @@ class BatchPanel(QWidget):
             self.file_list.setCurrentRow(row)
         if completed.state in {"failed", "interrupted"}:
             self.console.append(f"[ERROR] {outcome.message}\n")
-        self._current_job_id = None
         self._refresh_queue_rows()
         if self._cancel_requested:
-            self._cancel_requested = False
-            self._continue_after_worker = False
-            self._finish_queue(cancelled=True)
-        elif self._queue.paused:
-            self._continue_after_worker = False
             self.lbl_batch_status.setText(
-                "Queue paused; resume when you are ready for the next job"
+                f"Cancelling {len(self._workers)} active job(s)…"
             )
-            self._refresh_action_state()
         else:
-            self._continue_after_worker = True
-            if self._worker is None:
-                self._continue_after_worker = False
-                self._process_next()
-
-    def _on_worker_thread_finished(self):
-        self._worker = None
-        if self._continue_after_worker:
-            self._continue_after_worker = False
             self._process_next()
-        elif not self._queue.active:
+        self._refresh_action_state()
+
+    def _on_worker_thread_finished(self, job_id):
+        self._workers.pop(job_id, None)
+        self._worker = next(iter(self._workers.values()), None)
+        if self._cancel_requested:
+            if not self._workers:
+                self._cancel_requested = False
+                self._finish_queue(cancelled=True)
+            return
+        if not self._queue.active:
             self._set_batch_running(False)
-        else:
+        elif self._queue.paused:
             self._refresh_action_state()
+        else:
+            self._process_next()
 
     def _cancel(self):
         if self._preflight_worker and self._preflight_worker.isRunning():
@@ -1040,16 +1125,17 @@ class BatchPanel(QWidget):
         self._cancel_requested = True
         self.btn_cancel.setEnabled(False)
         try:
-            if self._current_job_id:
-                self._queue.cancel(self._current_job_id)
-            if self._worker:
-                self._worker.cancel()
-            else:
+            for job_id, worker in tuple(self._workers.items()):
+                self._queue.cancel(job_id)
+                worker.cancel()
+            if not self._workers:
                 self._finish_queue(cancelled=True)
         except QueueError as exc:
             self.requestToast.emit(f"Could not cancel batch: {exc}", C["red"])
             self._finish_queue(cancelled=True)
-        self.lbl_batch_status.setText("Cancelling current job...")
+        self.lbl_batch_status.setText(
+            f"Cancelling {len(self._workers)} active job(s)…"
+        )
 
     def _finish_queue(self, *, cancelled=False):
         try:

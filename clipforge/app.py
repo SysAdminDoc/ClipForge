@@ -727,6 +727,7 @@ class MainWindow(QMainWindow):
         tools_module.FFMPEG_VERSION_OUTPUT = result.get("version") or ""
         tools_module.CUDA_NVDEC_SAFE = bool(result.get("nvdec_safe"))
         self.convert_panel.refresh_hw_encoders()
+        self.batch_panel.refresh_concurrency_cap()
         usable = [
             label for label, encoder in HW_ENCODERS.items()
             if HW_ENCODER_CAPABILITIES.get(encoder, {}).get("status") == "usable"

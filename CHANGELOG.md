@@ -31,6 +31,7 @@ All notable changes to ClipForge will be documented in this file.
 - Added optional local Tesseract hardsub OCR: cancellable FFmpeg frame sampling, confidence-filtered TSV parsing, stable observation merging, and atomic `.srt` export; Whisper captions remain separate.
 - Added optional local yt-dlp URL import with HTTP(S)-only validation, single-video/no-playlist policy, restricted filenames, chosen-folder containment checks, cancellation, and automatic media inspection after download.
 - Scene detection now exposes FFmpeg scene-score results as editable, jumpable review markers persisted in project sessions; it never changes cuts automatically.
+- Batch processing now starts multiple durable queue jobs up to a configurable CPU-safe cap, reduced when hardware encoder probes report fewer usable encoder capabilities; progress, cancellation, output validation, and recovery remain journaled per job.
 
 ## [v0.5.2] - 2026-07-29
 

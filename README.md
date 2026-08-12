@@ -95,6 +95,7 @@ All-in-one video editor — Trim, Crop, Upscale, Interpolate, Convert, Filter, A
 - Output filename template system with variables
 - Per-file progress tracking with status indicators
 - Durable queue processing with restart recovery, reorder/move controls, per-job priority, pause/resume, cancellation, and retry-failed support
+- Configurable concurrent encodes with a CPU-safe effective cap reduced by usable hardware-encoder capability probes
 - Explicit batch stream mapping, metadata/chapter policy, timestamp handling, and semantic multistream output validation
 - Release-gated desktop/browser media contract matrix with VFR, multistream, relink, cancellation, recovery, and invalid-output coverage
 - Post-completion actions (do nothing, open folder, notification sound)
@@ -134,7 +135,7 @@ All-in-one video editor — Trim, Crop, Upscale, Interpolate, Convert, Filter, A
 - **Atomic output safety** — validates staged media before replacing the chosen destination
 - **Runtime security policy** — rejects unreviewed FFmpeg branches, keeps NVDEC fail-closed until a reviewed boundary, and requires the patched Qt 6.11.1 runtime
 - **Cross-surface provenance** — release checks record exact versions, SHA-256 hashes, licenses, and lock/source metadata for browser assets, Python distributions, FFmpeg/ffprobe, optional libmpv, and managed AI tools; support diagnostics include the identities used by each desktop job
-- 222-test suite covering utilities, process safety, semantic media validation, generated media, probing, proxy/AI caching, supply-chain validation, diagnostics, persistence, browser modules/jobs, project sessions, filter graphs, OCR, URL import, scene review, localization, and accessibility contracts
+- 223-test suite covering utilities, process safety, semantic media validation, generated media, probing, proxy/AI caching, supply-chain validation, diagnostics, persistence, browser modules/jobs, project sessions, filter graphs, OCR, URL import, scene review, localization, accessibility, and batch concurrency contracts
 
 ### Web Editor
 
@@ -221,7 +222,7 @@ python scripts/release_check.py --build
 Release builds are unsigned and produced locally. `clipforge/version.py` is the
 version source of truth; use `python scripts/sync_version.py --set X.Y.Z` to
 update desktop, web, README, and Windows executable metadata together.
-The release check runs the 222-test Python and headless-Chromium suite, then
+The release check runs the 223-test Python and headless-Chromium suite, then
 generates disposable FFmpeg fixtures for audio/video,
 subtitles, chapters, rotation, VFR, odd filenames, and core edit operations;
 `--build` creates a fresh hash-locked environment, builds the unsigned

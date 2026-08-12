@@ -1,8 +1,10 @@
 import os
 import time
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtWidgets import QApplication, QTextEdit
 from PyQt6.QtTest import QTest
 
@@ -101,6 +103,61 @@ def test_batch_panel_reorders_and_prioritizes_saved_jobs(monkeypatch, tmp_path):
     assert panel._queue.jobs[0].priority == 7
     assert panel.file_list.item(0).text().startswith("○")
     assert "priority 7" in panel.file_list.item(0).text()
+    panel.deleteLater()
+
+
+def test_batch_panel_starts_up_to_the_configured_concurrency_cap(monkeypatch, tmp_path):
+    class FakeWorker(QObject):
+        progress = pyqtSignal(float)
+        log_output = pyqtSignal(str)
+        outcome_signal = pyqtSignal(object)
+        finished_signal = pyqtSignal(bool, str)
+        finished = pyqtSignal()
+
+        def __init__(self, *args, **kwargs):
+            super().__init__()
+
+        def start(self):
+            return None
+
+        def cancel(self):
+            return None
+
+    panel, _ = _panel(monkeypatch, tmp_path)
+    monkeypatch.setattr(batch_module, "HW_ENCODER_CAPABILITIES", {})
+    panel.spn_concurrency.setValue(min(2, panel.spn_concurrency.maximum()))
+    sources = []
+    jobs = []
+    for index in range(3):
+        source = tmp_path / f"source-{index}.mp4"
+        source.write_bytes(b"source")
+        output = tmp_path / f"output-{index}.mp4"
+        sources.append(str(source))
+        jobs.append(
+            batch_module.JobRecord.create(
+                source,
+                output,
+                "Convert",
+                ["ffmpeg", "-i", str(source), str(output)],
+                overwrite=True,
+            )
+        )
+    panel._queue.add(jobs)
+    panel._items = sources
+    panel._row_job_ids = [job.job_id for job in jobs]
+    panel._row_priorities = [0, 0, 0]
+    panel.file_list.addItems([Path(source).name for source in sources])
+    monkeypatch.setattr(batch_module, "FFmpegWorker", FakeWorker)
+
+    panel._start_queue()
+
+    assert len(panel._workers) == panel._effective_worker_cap()
+    assert len(panel._workers) == 2
+    assert sum(job.state == "running" for job in panel._queue.jobs) == 2
+
+    panel._queue.deactivate()
+    panel._workers.clear()
+    panel._worker = None
     panel.deleteLater()
 
 
