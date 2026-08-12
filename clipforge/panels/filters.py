@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QGroupBox, QCheckBox, QComboBox, QSpinBox, QDoubleSpinBox,
     QProgressBar, QFileDialog, QGridLayout,
     QListWidget, QListWidgetItem, QAbstractItemView,
+    QTableWidget, QTableWidgetItem, QHeaderView,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QPixmap
@@ -226,6 +227,25 @@ class FiltersPanel(QWidget):
         self.lbl_silence_result = QLabel("No scan yet")
         self.lbl_silence_result.setProperty("class", "dimLabel")
         sil_layout.addWidget(self.lbl_silence_result)
+        self.tbl_silence_markers = QTableWidget(0, 3)
+        self.tbl_silence_markers.setAccessibleName("Reviewable silence markers")
+        self.tbl_silence_markers.setHorizontalHeaderLabels(
+            ["Remove", "Start (seconds)", "End (seconds)"]
+        )
+        self.tbl_silence_markers.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.tbl_silence_markers.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.Stretch
+        )
+        self.tbl_silence_markers.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.Stretch
+        )
+        self.tbl_silence_markers.setMaximumHeight(150)
+        self.tbl_silence_markers.itemChanged.connect(
+            lambda _item: self._sync_silence_segments()
+        )
+        sil_layout.addWidget(self.tbl_silence_markers)
         sil_btn_row = FlowLayout()
         self.btn_detect_silence = QPushButton("Detect Silence")
         self.btn_detect_silence.setEnabled(False)
@@ -309,6 +329,7 @@ class FiltersPanel(QWidget):
         self.spn_silence_db.setValue(-30)
         self.spn_silence_dur.setValue(0.5)
         self._silence_segments = []
+        self._populate_silence_markers([])
         self._filter_stack_order = list(FILTER_STACK_DEFAULT)
         self._populate_filter_stack()
         self.btn_remove_silence.setEnabled(False)
@@ -349,6 +370,7 @@ class FiltersPanel(QWidget):
         self.btn_gen_srt.setEnabled(bool(self._whisper_path))
         self.btn_detect_silence.setEnabled(bool(FFMPEG))
         self._silence_segments = []
+        self._populate_silence_markers([])
         self.btn_remove_silence.setEnabled(False)
         self.lbl_silence_result.setText("No scan yet")
         if self._frame_worker and self._frame_worker.isRunning():
@@ -376,6 +398,14 @@ class FiltersPanel(QWidget):
             "silence_segments": [
                 [float(start), float(end)]
                 for start, end in self._silence_segments
+            ],
+            "silence_markers": [
+                {
+                    "start": start,
+                    "end": end,
+                    "remove": remove,
+                }
+                for start, end, remove in self._silence_marker_rows()
             ],
             "filter_stack_order": list(self._filter_stack_order),
         }
@@ -410,6 +440,11 @@ class FiltersPanel(QWidget):
                 if end > start:
                     segments.append((start, end))
         self._silence_segments = segments
+        markers = []
+        for item in (state.get("silence_markers") or []):
+            if isinstance(item, dict):
+                markers.append((item.get("start", 0), item.get("end", 0), bool(item.get("remove", True))))
+        self._populate_silence_markers(markers or [(start, end, True) for start, end in segments])
         self.btn_remove_silence.setEnabled(bool(segments))
         self._filter_stack_order = normalize_filter_order(state.get("filter_stack_order"))
         self._populate_filter_stack()
@@ -460,6 +495,70 @@ class FiltersPanel(QWidget):
         if all(hasattr(self, name) for name in required):
             vf, af = self._build_filters(update_graph=False)
             self.lbl_filter_graph.setText(filter_graph(vf, af))
+
+    def _silence_marker_rows(self):
+        rows = []
+        for row in range(self.tbl_silence_markers.rowCount()):
+            remove_item = self.tbl_silence_markers.item(row, 0)
+            start_item = self.tbl_silence_markers.item(row, 1)
+            end_item = self.tbl_silence_markers.item(row, 2)
+            try:
+                start = max(0.0, float(start_item.text()))
+                end = max(0.0, float(end_item.text()))
+            except (AttributeError, TypeError, ValueError):
+                continue
+            if end <= start:
+                continue
+            remove = bool(
+                remove_item
+                and remove_item.checkState() == Qt.CheckState.Checked
+            )
+            rows.append((start, end, remove))
+        return rows
+
+    def _sync_silence_segments(self):
+        if not hasattr(self, "tbl_silence_markers"):
+            return
+        self._silence_segments = [
+            (start, end)
+            for start, end, remove in self._silence_marker_rows()
+            if remove
+        ]
+        total = self.tbl_silence_markers.rowCount()
+        if total:
+            total_duration = sum(end - start for start, end in self._silence_segments)
+            self.lbl_silence_result.setText(
+                f"{len(self._silence_segments)} of {total} marker(s) selected "
+                f"for removal ({format_duration_short(total_duration)}); "
+                "edit times or uncheck rows before rendering"
+            )
+        self.btn_remove_silence.setEnabled(bool(self._silence_segments))
+
+    def _populate_silence_markers(self, markers):
+        self.tbl_silence_markers.blockSignals(True)
+        self.tbl_silence_markers.setRowCount(0)
+        for start, end, remove in markers[:500]:
+            try:
+                start = max(0.0, float(start))
+                end = max(0.0, float(end))
+            except (TypeError, ValueError):
+                continue
+            if end <= start:
+                continue
+            row = self.tbl_silence_markers.rowCount()
+            self.tbl_silence_markers.insertRow(row)
+            remove_item = QTableWidgetItem()
+            remove_item.setFlags(
+                remove_item.flags() | Qt.ItemFlag.ItemIsUserCheckable
+            )
+            remove_item.setCheckState(
+                Qt.CheckState.Checked if remove else Qt.CheckState.Unchecked
+            )
+            self.tbl_silence_markers.setItem(row, 0, remove_item)
+            self.tbl_silence_markers.setItem(row, 1, QTableWidgetItem(f"{start:.3f}"))
+            self.tbl_silence_markers.setItem(row, 2, QTableWidgetItem(f"{end:.3f}"))
+        self.tbl_silence_markers.blockSignals(False)
+        self._sync_silence_segments()
 
     def _on_source_preview_ready(self, filepath, pixmap):
         if filepath != self._filepath:
@@ -541,18 +640,25 @@ class FiltersPanel(QWidget):
         for i, s_str in enumerate(starts):
             s = float(s_str)
             e = float(ends[i]) if i < len(ends) else (self._info.get("duration", 0) if self._info else 0)
-            self._silence_segments.append((s, e))
+            if e > s:
+                self._silence_segments.append((s, e))
         count = len(self._silence_segments)
         if count == 0:
             self.lbl_silence_result.setText("No silent segments found")
             self.btn_remove_silence.setEnabled(False)
         else:
             total_dur = sum(e - s for s, e in self._silence_segments)
+            self._populate_silence_markers(
+                [(start, end, True) for start, end in self._silence_segments]
+            )
             self.lbl_silence_result.setText(
-                f"Found {count} silent segment(s) totaling {format_duration_short(total_dur)}")
+                f"Found {count} silent segment(s) totaling "
+                f"{format_duration_short(total_dur)}; review the markers before removal"
+            )
             self.btn_remove_silence.setEnabled(True)
 
     def _do_remove_silence(self):
+        self._sync_silence_segments()
         if not self._filepath or not self._silence_segments or not FFMPEG:
             return
         src = Path(self._filepath)
