@@ -9,15 +9,17 @@ from datetime import date
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QGroupBox, QCheckBox, QComboBox, QListWidget, QAbstractItemView,
-    QProgressBar, QFileDialog, QLineEdit,
+    QWidget, QVBoxLayout, QPushButton, QLabel,
+    QGroupBox, QCheckBox, QComboBox, QListWidget,
+    QAbstractItemView, QProgressBar, QFileDialog, QLineEdit, QSpinBox,
 )
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import pyqtSignal, Qt
 
 from clipforge_utils import format_size, estimate_output_size
 
 from ..constants import C, VIDEO_EXTS
+from ..job_queue import JobQueue, JobRecord, QueueError
+from ..processes import WorkerOutcome
 from ..tools import FFMPEG, _confirm_overwrite, probe_video
 from ..workers import FFmpegWorker
 from ..widgets import FlowLayout
@@ -109,7 +111,15 @@ class BatchPanel(QWidget):
         self._batch_operation = None
         self._batch_out_dir = None
         self._batch_post_action = None
+        self._queue = JobQueue()
+        self._row_job_ids = []
+        self._row_priorities = []
+        self._current_job_id = None
+        self._queue_paused = False
+        self._outcome_received = False
+        self._continue_after_worker = False
         self._setup_ui()
+        self._restore_queue()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -123,6 +133,7 @@ class BatchPanel(QWidget):
         self.file_list.setAcceptDrops(True)
         self.file_list.setDragDropMode(QAbstractItemView.DragDropMode.DropOnly)
         self.file_list.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.file_list.currentRowChanged.connect(self._on_current_row_changed)
         gl.addWidget(self.file_list)
 
         btn_row = FlowLayout()
@@ -134,13 +145,34 @@ class BatchPanel(QWidget):
         self.btn_clear.clicked.connect(self._clear_files)
         self.btn_remove_sel = QPushButton("Remove Selected")
         self.btn_remove_sel.clicked.connect(self._remove_selected)
+        self.btn_move_up = QPushButton("Move Up")
+        self.btn_move_up.setAccessibleName("Move selected batch job up")
+        self.btn_move_up.clicked.connect(lambda: self._move_selected(-1))
+        self.btn_move_down = QPushButton("Move Down")
+        self.btn_move_down.setAccessibleName("Move selected batch job down")
+        self.btn_move_down.clicked.connect(lambda: self._move_selected(1))
         btn_row.addWidget(self.btn_add)
         btn_row.addWidget(self.btn_add_folder)
         btn_row.addWidget(self.btn_remove_sel)
+        btn_row.addWidget(self.btn_move_up)
+        btn_row.addWidget(self.btn_move_down)
         btn_row.addWidget(self.btn_clear)
         btn_row.addStretch()
         gl.addLayout(btn_row)
         layout.addWidget(grp)
+
+        priority_row = FlowLayout()
+        priority_row.addWidget(QLabel("Selected priority:"))
+        self.spn_priority = QSpinBox()
+        self.spn_priority.setRange(-10, 10)
+        self.spn_priority.setValue(0)
+        self.spn_priority.setToolTip("Higher-priority jobs run first; range -10 to 10")
+        self.spn_priority.setAccessibleName("Selected batch job priority")
+        self.spn_priority.valueChanged.connect(self._set_selected_priority)
+        priority_row.addWidget(self.spn_priority)
+        priority_row.addWidget(QLabel("Higher values run first"))
+        priority_row.addStretch()
+        layout.addLayout(priority_row)
 
         op_grp = QGroupBox("Batch Operation")
         ol = FlowLayout(op_grp)
@@ -203,43 +235,187 @@ class BatchPanel(QWidget):
         self.btn_cancel.setObjectName("dangerBtn")
         self.btn_cancel.setVisible(False)
         self.btn_cancel.clicked.connect(self._cancel)
+        self.btn_pause = QPushButton("Pause Queue")
+        self.btn_pause.setAccessibleName("Pause or resume batch queue")
+        self.btn_pause.setVisible(False)
+        self.btn_pause.clicked.connect(self._toggle_pause)
+        self.btn_retry = QPushButton("Retry Failed")
+        self.btn_retry.setAccessibleName("Retry failed batch jobs")
+        self.btn_retry.clicked.connect(self._retry_failed)
         self.btn_start = QPushButton("Start Batch")
         self.btn_start.setObjectName("primaryBtn")
         self.btn_start.clicked.connect(self._start_batch)
         action_row.addStretch()
         action_row.addWidget(self.btn_cancel)
+        action_row.addWidget(self.btn_pause)
+        action_row.addWidget(self.btn_retry)
         action_row.addWidget(self.btn_start)
         layout.addLayout(action_row)
         layout.addStretch()
 
         self._out_dir = None
+        self._set_batch_running(False)
 
     def _add_files(self):
         paths, _ = QFileDialog.getOpenFileNames(
             self, "Add Videos", str(Path.home() / "Videos"),
             "Video Files (*.mp4 *.mkv *.avi *.mov *.webm *.flv *.wmv *.m4v *.ts);;All Files (*)")
-        for p in paths:
-            self._items.append(p)
-            self.file_list.addItem(Path(p).name)
+        self.add_paths(paths)
 
     def _add_folder(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Folder with Videos")
         if folder:
+            paths = []
             for ext in VIDEO_EXTS:
                 for f in Path(folder).glob(f"*{ext}"):
-                    self._items.append(str(f))
-                    self.file_list.addItem(f.name)
+                    paths.append(str(f))
+            self.add_paths(paths)
+
+    def add_paths(self, paths):
+        """Add unsaved sources without disturbing durable queue records."""
+        if self._queue.active:
+            self.requestToast.emit(
+                "Finish or stop the active batch before adding files", C["yellow"]
+            )
+            return
+        for path in paths:
+            source = str(path)
+            self._items.append(source)
+            self._row_job_ids.append(None)
+            self._row_priorities.append(0)
+            self.file_list.addItem(self._format_row(source, None, 0))
+        self._refresh_action_state()
+
+    @staticmethod
+    def _format_row(source, state, priority):
+        symbols = {
+            None: "○",
+            "queued": "○",
+            "paused": "Ⅱ",
+            "running": "⟳",
+            "cancelling": "…",
+            "succeeded": "✓",
+            "failed": "✗",
+            "interrupted": "↺",
+        }
+        priority_text = f"  [priority {priority}]" if priority else ""
+        return f"{symbols.get(state, '○')}  {Path(source).name}{priority_text}"
+
+    def _row_job(self, row):
+        if row < 0 or row >= len(self._row_job_ids):
+            return None
+        job_id = self._row_job_ids[row]
+        if not job_id:
+            return None
+        return next((job for job in self._queue.jobs if job.job_id == job_id), None)
+
+    def _on_current_row_changed(self, row):
+        self.spn_priority.blockSignals(True)
+        job = self._row_job(row)
+        priority = job.priority if job else (
+            self._row_priorities[row] if 0 <= row < len(self._row_priorities) else 0
+        )
+        self.spn_priority.setValue(priority)
+        self.spn_priority.blockSignals(False)
+
+    def _refresh_queue_rows(self):
+        jobs = {job.job_id: job for job in self._queue.jobs}
+        for row, source in enumerate(self._items):
+            if row >= self.file_list.count():
+                self.file_list.addItem("")
+            item = self.file_list.item(row)
+            job = jobs.get(self._row_job_ids[row]) if row < len(self._row_job_ids) else None
+            priority = job.priority if job else self._row_priorities[row]
+            state = job.state if job else None
+            item.setText(self._format_row(source, state, priority))
+            item.setToolTip(str(Path(source).resolve()))
+            item.setData(Qt.ItemDataRole.UserRole, self._row_job_ids[row])
+        while self.file_list.count() > len(self._items):
+            self.file_list.takeItem(self.file_list.count() - 1)
+        self._on_current_row_changed(self.file_list.currentRow())
+        self._refresh_action_state()
 
     def _clear_files(self):
+        if self._queue.active:
+            return
         self._items.clear()
+        self._row_job_ids.clear()
+        self._row_priorities.clear()
         self.file_list.clear()
+        try:
+            self._queue.clear()
+        except QueueError as exc:
+            self.requestToast.emit(f"Could not clear saved queue: {exc}", C["red"])
+        self._refresh_action_state()
 
     def _remove_selected(self):
-        for item in sorted(self.file_list.selectedIndexes(), reverse=True):
-            idx = item.row()
+        if self._queue.active:
+            return
+        selected_rows = sorted(
+            {index.row() for index in self.file_list.selectedIndexes()}, reverse=True
+        )
+        job_ids = [
+            self._row_job_ids[row]
+            for row in selected_rows
+            if 0 <= row < len(self._row_job_ids) and self._row_job_ids[row]
+        ]
+        try:
+            self._queue.remove(job_ids)
+        except QueueError as exc:
+            self.requestToast.emit(f"Could not remove saved jobs: {exc}", C["red"])
+            return
+        for idx in selected_rows:
             self.file_list.takeItem(idx)
             if idx < len(self._items):
                 self._items.pop(idx)
+            if idx < len(self._row_job_ids):
+                self._row_job_ids.pop(idx)
+            if idx < len(self._row_priorities):
+                self._row_priorities.pop(idx)
+        self._refresh_queue_rows()
+
+    def _move_selected(self, delta):
+        if self._queue.active:
+            return
+        row = self.file_list.currentRow()
+        target = row + int(delta)
+        if row < 0 or target < 0 or target >= len(self._items):
+            return
+        job_id = self._row_job_ids[row]
+        target_job_id = self._row_job_ids[target]
+        if bool(job_id) != bool(target_job_id):
+            self.requestToast.emit(
+                "Saved and new jobs can only be reordered within their groups",
+                C["yellow"],
+            )
+            return
+        try:
+            if job_id:
+                self._queue.move(job_id, delta)
+        except QueueError as exc:
+            self.requestToast.emit(f"Could not reorder saved jobs: {exc}", C["red"])
+            return
+        for values in (self._items, self._row_job_ids, self._row_priorities):
+            values[row], values[target] = values[target], values[row]
+        item = self.file_list.takeItem(row)
+        self.file_list.insertItem(target, item)
+        self.file_list.setCurrentRow(target)
+        self._refresh_queue_rows()
+
+    def _set_selected_priority(self, priority):
+        row = self.file_list.currentRow()
+        if row < 0 or row >= len(self._items) or self._queue.active:
+            return
+        job_id = self._row_job_ids[row]
+        try:
+            if job_id:
+                self._queue.set_priority(job_id, int(priority))
+            else:
+                self._row_priorities[row] = int(priority)
+        except QueueError as exc:
+            self.requestToast.emit(f"Could not set job priority: {exc}", C["red"])
+            return
+        self._refresh_queue_rows()
 
     def _toggle_custom_dir(self, checked):
         self.btn_out_dir.setEnabled(checked)
@@ -268,6 +444,126 @@ class BatchPanel(QWidget):
             self.lbl_name_preview.setText(f"Invalid template: {exc}")
             self.lbl_name_preview.setStyleSheet(f"color: {C['red']};")
 
+    def _restore_queue(self):
+        jobs = self._queue.jobs
+        if not jobs:
+            return
+        for job in jobs:
+            self._items.append(job.source_path)
+            self._row_job_ids.append(job.job_id)
+            self._row_priorities.append(job.priority)
+            self.file_list.addItem(self._format_row(
+                job.source_path, job.state, job.priority
+            ))
+        first = jobs[0]
+        snapshot = first.snapshot
+        if first.operation in [
+            self.cmb_operation.itemText(index)
+            for index in range(self.cmb_operation.count())
+        ]:
+            self.cmb_operation.setCurrentText(first.operation)
+        template = snapshot.get("template")
+        if isinstance(template, str) and template:
+            self.txt_name_template.setText(template)
+        output_dir = snapshot.get("output_dir")
+        if isinstance(output_dir, str) and output_dir:
+            self._out_dir = output_dir
+            self.chk_custom_dir.setChecked(True)
+            self.lbl_out_dir.setText(output_dir)
+        post_action = snapshot.get("post_action")
+        if isinstance(post_action, str):
+            self.cmb_post_action.setCurrentText(post_action)
+        pending = sum(job.state == "queued" for job in jobs)
+        retryable = sum(job.state in {"failed", "interrupted"} for job in jobs)
+        self.lbl_batch_status.setText(
+            f"Restored queue: {pending} queued, {retryable} failed or interrupted"
+        )
+        if self._queue.load_warning:
+            self.requestToast.emit(self._queue.load_warning, C["yellow"])
+        self._refresh_queue_rows()
+
+    def _row_index(self, job_id):
+        try:
+            return self._row_job_ids.index(job_id)
+        except ValueError:
+            return -1
+
+    def _has_retryable_jobs(self):
+        return any(job.state in {"failed", "interrupted"} for job in self._queue.jobs)
+
+    def _refresh_action_state(self):
+        active = self._queue.active
+        paused = self._queue.paused
+        editable = not active
+        self.btn_retry.setEnabled(editable and self._has_retryable_jobs())
+        self.spn_priority.setEnabled(editable and self.file_list.currentRow() >= 0)
+        self.btn_move_up.setEnabled(editable and self.file_list.currentRow() > 0)
+        self.btn_move_down.setEnabled(
+            editable and 0 <= self.file_list.currentRow() < len(self._items) - 1
+        )
+        self.btn_pause.setText("Resume Queue" if paused else "Pause Queue")
+
+    def _set_batch_running(self, running):
+        has_new = any(job_id is None for job_id in self._row_job_ids)
+        self.btn_start.setEnabled(
+            not running
+            and self._worker is None
+            and (has_new or bool(self._queue.has_pending))
+        )
+        self.btn_start.setText("Start Queue" if self._queue.jobs else "Start Batch")
+        self.btn_cancel.setVisible(running)
+        self.btn_cancel.setEnabled(running)
+        self.btn_pause.setVisible(running)
+        self.btn_pause.setEnabled(running)
+        for widget in (
+            self.file_list,
+            self.btn_add,
+            self.btn_add_folder,
+            self.btn_clear,
+            self.btn_remove_sel,
+            self.btn_move_up,
+            self.btn_move_down,
+            self.spn_priority,
+            self.cmb_operation,
+            self.txt_name_template,
+            self.chk_custom_dir,
+            self.btn_out_dir,
+        ):
+            widget.setEnabled(not running)
+        if not running:
+            self.btn_out_dir.setEnabled(self.chk_custom_dir.isChecked())
+        self._refresh_action_state()
+
+    def _toggle_pause(self):
+        if not self._queue.active:
+            return
+        try:
+            if self._queue.paused:
+                self._queue.resume()
+                self.lbl_batch_status.setText("Queue resumed")
+                self._process_next()
+            else:
+                self._queue.pause()
+                self.lbl_batch_status.setText(
+                    "Queue paused; the current job will finish before it stops"
+                )
+        except QueueError as exc:
+            self.requestToast.emit(f"Could not change queue state: {exc}", C["red"])
+        self._refresh_action_state()
+
+    def _retry_failed(self):
+        if self._queue.active:
+            return
+        try:
+            retried = self._queue.retry_failed()
+        except QueueError as exc:
+            self.requestToast.emit(f"Could not retry failed jobs: {exc}", C["red"])
+            return
+        if not retried:
+            return
+        self.lbl_batch_status.setText(f"Retrying {len(retried)} failed jobs")
+        self._start_queue()
+
     def _get_output_path(
         self,
         src_path,
@@ -284,25 +580,6 @@ class BatchPanel(QWidget):
             self.txt_name_template.text() if template is None else template,
             self._current_idx if index is None else index,
         )
-
-    def _set_batch_running(self, running):
-        self.btn_start.setEnabled(not running)
-        self.btn_cancel.setVisible(running)
-        self.btn_cancel.setEnabled(running)
-        for widget in (
-            self.file_list,
-            self.btn_add,
-            self.btn_add_folder,
-            self.btn_clear,
-            self.btn_remove_sel,
-            self.cmb_operation,
-            self.txt_name_template,
-            self.chk_custom_dir,
-            self.btn_out_dir,
-        ):
-            widget.setEnabled(not running)
-        if not running:
-            self.btn_out_dir.setEnabled(self.chk_custom_dir.isChecked())
 
     def _build_cmd(self, src_path, out_path, operation):
         if not FFMPEG:
@@ -331,22 +608,35 @@ class BatchPanel(QWidget):
         return cmd
 
     def _start_batch(self):
-        if not self._items or not FFMPEG:
+        if self._queue.active or not self._items or not FFMPEG:
             return
         operation = self.cmb_operation.currentText()
-        batch_items = tuple(self._items)
         template = self.txt_name_template.text()
         output_dir = self._out_dir
-        self._batch_overwrite = {}
-        output_keys = set()
-        batch_outputs = []
-        for index, source_path in enumerate(batch_items):
+        jobs_by_id = {job.job_id: job for job in self._queue.jobs}
+        new_rows = [
+            row for row, job_id in enumerate(self._row_job_ids) if not job_id
+        ]
+        if not new_rows and not self._queue.has_pending:
+            self.requestToast.emit(
+                "There are no queued jobs; use Retry Failed or add files",
+                C["yellow"],
+            )
+            return
+
+        output_keys = {
+            os.path.normcase(os.path.abspath(job.output_path))
+            for job in jobs_by_id.values()
+        }
+        prepared = []
+        for row in new_rows:
+            source_path = self._items[row]
             try:
                 output_path = self._get_output_path(
                     source_path,
                     operation,
                     template=template,
-                    index=index,
+                    index=row,
                     output_dir=output_dir,
                 )
             except ValueError as exc:
@@ -360,16 +650,31 @@ class BatchPanel(QWidget):
                 )
                 return
             output_keys.add(output_key)
-            batch_outputs.append(output_path)
             if not _confirm_overwrite(self, output_path, source_path):
                 return
-            self._batch_overwrite[output_path] = os.path.exists(output_path)
-        out_dir = output_dir or (str(Path(batch_items[0]).parent) if batch_items else "")
+            info = probe_video(source_path) if os.path.exists(source_path) else None
+            duration = float(info.get("duration", 0) or 0) if info else 0.0
+            command = self._build_cmd(source_path, output_path, operation)
+            if not command:
+                return
+            prepared.append({
+                "row": row,
+                "source": source_path,
+                "output": output_path,
+                "duration": duration,
+                "command": command,
+                "overwrite": os.path.exists(output_path),
+            })
+
+        out_dir = output_dir or (
+            str(Path(self._items[new_rows[0]]).parent) if new_rows else ""
+        )
         if out_dir:
             try:
                 usage = shutil.disk_usage(out_dir)
                 estimated_needed = 0
-                for p in batch_items:
+                for entry in prepared:
+                    p = entry["source"]
                     if not os.path.exists(p):
                         continue
                     info = probe_video(p)
@@ -389,83 +694,209 @@ class BatchPanel(QWidget):
                     return
             except OSError:
                 pass
-        self._current_idx = 0
-        self._cancel_requested = False
-        self._batch_items = batch_items
-        self._batch_outputs = tuple(batch_outputs)
+
+        records = []
+        post_action = self.cmb_post_action.currentText()
+        for entry in prepared:
+            records.append(JobRecord.create(
+                entry["source"],
+                entry["output"],
+                operation,
+                entry["command"],
+                duration=entry["duration"],
+                overwrite=entry["overwrite"],
+                priority=self._row_priorities[entry["row"]],
+                snapshot={
+                    "template": template,
+                    "output_dir": output_dir or "",
+                    "post_action": post_action,
+                    "index": entry["row"],
+                },
+            ))
+        try:
+            added = self._queue.add(records) if records else ()
+        except QueueError as exc:
+            self.requestToast.emit(f"Could not save batch queue: {exc}", C["red"])
+            return
+        for entry, job in zip(prepared, added):
+            row = entry["row"]
+            self._row_job_ids[row] = job.job_id
+            self.file_list.item(row).setData(Qt.ItemDataRole.UserRole, job.job_id)
+        self._batch_items = tuple(self._items)
+        self._batch_outputs = tuple(job.output_path for job in self._queue.jobs)
         self._batch_operation = operation
         self._batch_out_dir = output_dir
-        self._batch_post_action = self.cmb_post_action.currentText()
+        self._batch_post_action = post_action
+        self._start_queue()
+
+    def _start_queue(self):
+        if self._queue.active or not self._queue.has_pending:
+            self._set_batch_running(False)
+            return
+        self._cancel_requested = False
+        self._current_job_id = None
+        self._queue_paused = False
+        self._queue.activate()
+        self.progress.setValue(0)
         self._set_batch_running(True)
         self._process_next()
 
     def _process_next(self):
-        if self._current_idx >= len(self._batch_items):
-            self._set_batch_running(False)
-            self.lbl_batch_status.setText(
-                f"Batch complete: {len(self._batch_items)} files processed"
-            )
-            self.requestToast.emit(
-                f"Batch complete: {len(self._batch_items)} files", C["green"]
-            )
-            self._post_completion()
+        if not self._queue.active or self._queue.paused:
+            self._refresh_queue_rows()
+            return
+        job = self._queue.claim_next()
+        self._refresh_queue_rows()
+        if not job:
+            if not self._queue.has_pending:
+                self._finish_queue()
             return
 
-        src = self._batch_items[self._current_idx]
-        operation = self._batch_operation
-        out_path = self._batch_outputs[self._current_idx]
-        cmd = self._build_cmd(src, out_path, operation)
+        self._current_job_id = job.job_id
+        self._current_idx = self._row_index(job.job_id)
+        src = job.source_path
+        out_path = job.output_path
 
         self.lbl_batch_status.setText(
-            f"Processing {self._current_idx + 1}/{len(self._batch_items)}: {Path(src).name}"
+            f"Processing {self._current_idx + 1}/{len(self._row_job_ids)}: {Path(src).name}"
         )
         self.progress.setValue(0)
 
-        item = self.file_list.item(self._current_idx)
-        if item:
-            item.setText(f"⟳  {Path(src).name}")
-
-        info = probe_video(src)
-        duration = info.get("duration", 0) if info else 0
-
         self._worker = FFmpegWorker(
-            cmd,
-            duration,
+            job.command,
+            job.duration,
             output_path=out_path,
-            overwrite=self._batch_overwrite.get(out_path, False),
+            overwrite=job.overwrite,
         )
         self._worker.progress.connect(self._on_item_progress)
         self._worker.log_output.connect(self.console.append)
-        self._worker.finished_signal.connect(self._on_item_done)
+        self._outcome_received = False
+        self._continue_after_worker = False
+        self._worker.finished.connect(self._on_worker_thread_finished)
+        if hasattr(self._worker, "outcome_signal"):
+            self._worker.outcome_signal.connect(self._on_item_outcome)
+        else:
+            self._worker.finished_signal.connect(self._on_item_done)
         self._worker.start()
 
     def _on_item_progress(self, pct):
-        total = len(self._batch_items)
-        overall = (self._current_idx / total + pct / 100 / total) * 100
+        total = max(1, len(self._queue.jobs))
+        completed = sum(job.state == "succeeded" for job in self._queue.jobs)
+        overall = (completed + max(0.0, min(100.0, pct)) / 100) / total * 100
         self.progress.setValue(int(overall))
+        if self._current_job_id:
+            try:
+                self._queue.update_progress(self._current_job_id, pct)
+            except QueueError:
+                pass
+
+    def _on_item_outcome(self, outcome):
+        if not isinstance(outcome, WorkerOutcome):
+            return
+        self._outcome_received = True
+        self._complete_current_job(outcome)
 
     def _on_item_done(self, ok, msg):
-        item = self.file_list.item(self._current_idx)
-        if item:
-            if ok:
-                item.setText(f"✓  {Path(self._batch_items[self._current_idx]).name}")
-            else:
-                item.setText(f"✗  {Path(self._batch_items[self._current_idx]).name}")
-                self.console.append(f"[ERROR] {msg}\n")
-        if self._cancel_requested:
-            self._set_batch_running(False)
-            self.lbl_batch_status.setText("Batch cancelled")
-            self._cancel_requested = False
+        if self._outcome_received:
             return
-        self._current_idx += 1
-        self._process_next()
+        self._complete_current_job(WorkerOutcome(
+            "succeeded" if ok else "failed",
+            "completed" if ok else "process_failed",
+            msg,
+            output_valid=True if ok else None,
+            cancelled=self._cancel_requested and not ok,
+        ))
+
+    def _complete_current_job(self, outcome):
+        job_id = self._current_job_id
+        if not job_id:
+            return
+        try:
+            completed = self._queue.complete(
+                job_id,
+                outcome.succeeded,
+                outcome.message,
+                cancelled=outcome.cancelled,
+                output_valid=outcome.output_valid,
+            )
+        except QueueError as exc:
+            self.requestToast.emit(f"Could not record batch result: {exc}", C["red"])
+            self._finish_queue(cancelled=True)
+            return
+        row = self._row_index(job_id)
+        if row >= 0:
+            self.file_list.setCurrentRow(row)
+        if completed.state in {"failed", "interrupted"}:
+            self.console.append(f"[ERROR] {outcome.message}\n")
+        self._current_job_id = None
+        self._refresh_queue_rows()
+        if self._cancel_requested:
+            self._cancel_requested = False
+            self._continue_after_worker = False
+            self._finish_queue(cancelled=True)
+        elif self._queue.paused:
+            self._continue_after_worker = False
+            self.lbl_batch_status.setText(
+                "Queue paused; resume when you are ready for the next job"
+            )
+            self._refresh_action_state()
+        else:
+            self._continue_after_worker = True
+            if self._worker is None:
+                self._continue_after_worker = False
+                self._process_next()
+
+    def _on_worker_thread_finished(self):
+        self._worker = None
+        if self._continue_after_worker:
+            self._continue_after_worker = False
+            self._process_next()
+        elif not self._queue.active:
+            self._set_batch_running(False)
+        else:
+            self._refresh_action_state()
 
     def _cancel(self):
-        if self._worker:
-            self._cancel_requested = True
-            self.btn_cancel.setEnabled(False)
-            self._worker.cancel()
-            self.lbl_batch_status.setText("Cancelling current job...")
+        if not self._queue.active:
+            return
+        self._cancel_requested = True
+        self.btn_cancel.setEnabled(False)
+        try:
+            if self._current_job_id:
+                self._queue.cancel(self._current_job_id)
+            if self._worker:
+                self._worker.cancel()
+            else:
+                self._finish_queue(cancelled=True)
+        except QueueError as exc:
+            self.requestToast.emit(f"Could not cancel batch: {exc}", C["red"])
+            self._finish_queue(cancelled=True)
+        self.lbl_batch_status.setText("Cancelling current job...")
+
+    def _finish_queue(self, *, cancelled=False):
+        try:
+            self._queue.deactivate()
+        except QueueError as exc:
+            self.requestToast.emit(f"Could not close batch queue: {exc}", C["red"])
+        counts = self._queue.counts()
+        self._set_batch_running(False)
+        self._refresh_queue_rows()
+        if cancelled:
+            remaining = counts["queued"]
+            self.lbl_batch_status.setText(
+                f"Batch stopped; {remaining} queued job(s) remain"
+            )
+            return
+        succeeded = counts["succeeded"]
+        failed = counts["failed"] + counts["interrupted"]
+        self.lbl_batch_status.setText(
+            f"Batch complete: {succeeded} succeeded, {failed} failed or interrupted"
+        )
+        self.requestToast.emit(
+            f"Batch complete: {succeeded} succeeded, {failed} failed",
+            C["green"] if not failed else C["yellow"],
+        )
+        self._post_completion()
 
     def _post_completion(self):
         action = self._batch_post_action or self.cmb_post_action.currentText()

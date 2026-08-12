@@ -601,9 +601,7 @@ class MainWindow(QMainWindow):
         if files:
             if len(files) > 1 or self.stack.currentIndex() == 7:  # batch panel index
                 self._switch_panel(7)
-                for f in files:
-                    self.batch_panel._items.append(f)
-                    self.batch_panel.file_list.addItem(Path(f).name)
+                self.batch_panel.add_paths(files)
             else:
                 self.file_bar.load_file(files[0])
 
