@@ -103,6 +103,8 @@ def _validate_settings(value):
     }
     if "high_contrast" in settings and not isinstance(settings["high_contrast"], bool):
         raise ValueError("high_contrast must be true or false")
+    if "updates_enabled" in settings and not isinstance(settings["updates_enabled"], bool):
+        raise ValueError("updates_enabled must be true or false")
     for key in ("window_width", "window_height"):
         if key in settings:
             item = settings[key]

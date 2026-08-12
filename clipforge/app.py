@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QLabel, QStackedWidget, QTextEdit, QSplitter,
     QListWidget, QListWidgetItem, QScrollArea, QStatusBar,
     QComboBox, QFileDialog, QInputDialog, QSizePolicy,
-    QDockWidget,
+    QDockWidget, QMessageBox,
 )
 from PyQt6.QtCore import Qt, QThread, QTimer
 from PyQt6.QtGui import QAction, QColor, QPalette, QDragEnterEvent, QDropEvent
@@ -63,7 +63,8 @@ from .panels.filters import FiltersPanel
 from .panels.audio import AudioPanel
 from .panels.streams import StreamsPanel
 from .panels.batch import BatchPanel
-from .workers import CapabilityProbeWorker, YTDLPWorker
+from .workers import CapabilityProbeWorker, UpdateCheckWorker, YTDLPWorker
+from .update import UpdateInfo
 from .yt_dlp import find_yt_dlp, validate_source_url
 
 
@@ -98,6 +99,7 @@ class MainWindow(QMainWindow):
         self._project_signature = None
         self._preview_dock = None
         self._yt_dlp_worker = None
+        self._update_worker = None
         self._yt_dlp_path = find_yt_dlp()
         # Restore window geometry
         w = self._settings.get("window_width", 1340)
@@ -113,6 +115,11 @@ class MainWindow(QMainWindow):
         self._check_deps()
         self._start_capability_probe()
         self._load_recent()
+        self._update_check_timer = QTimer(self)
+        self._update_check_timer.setSingleShot(True)
+        self._update_check_timer.timeout.connect(self._automatic_update_check)
+        if self._settings.get("updates_enabled", True):
+            self._update_check_timer.start(5000)
         self._show_persistence_notices()
 
     def _setup_ui(self):
@@ -410,6 +417,29 @@ class MainWindow(QMainWindow):
         self.preview_detach_action.triggered.connect(self._set_preview_detached)
         view_menu.addAction(self.preview_detach_action)
 
+        help_menu = self.menuBar().addMenu("Help")
+        self.check_updates_action = QAction("Check for Updates…", self)
+        self.check_updates_action.setToolTip(
+            "Check GitHub for a newer ClipForge release without downloading anything"
+        )
+        self.check_updates_action.triggered.connect(
+            lambda: self._check_for_updates(manual=True)
+        )
+        help_menu.addAction(self.check_updates_action)
+        self.update_checks_action = QAction(
+            "Enable automatic update checks",
+            self,
+        )
+        self.update_checks_action.setCheckable(True)
+        self.update_checks_action.setChecked(
+            bool(self._settings.get("updates_enabled", True))
+        )
+        self.update_checks_action.setToolTip(
+            "Allow a delayed, metadata-only release check when ClipForge starts"
+        )
+        self.update_checks_action.toggled.connect(self._toggle_update_checks)
+        help_menu.addAction(self.update_checks_action)
+
     def _set_preview_detached(self, detached):
         """Move the existing preview widget into or out of a floating dock."""
         if detached:
@@ -687,6 +717,92 @@ class MainWindow(QMainWindow):
             C["green"],
         )
 
+    def _toggle_update_checks(self, enabled):
+        enabled = bool(enabled)
+        self._settings["updates_enabled"] = enabled
+        if not save_settings(self._settings):
+            self._show_persistence_notices()
+        if not enabled and self._update_worker and self._update_worker.isRunning():
+            self._update_worker.cancel()
+        self.toast.show_message(
+            "Automatic update checks enabled"
+            if enabled
+            else "Automatic update checks disabled",
+            C["green"] if enabled else C["yellow"],
+        )
+
+    def _automatic_update_check(self):
+        if self._settings.get("updates_enabled", True):
+            self._check_for_updates(manual=False)
+
+    def _check_for_updates(self, *, manual=False):
+        if (
+            not manual
+            and not self._settings.get("updates_enabled", True)
+        ):
+            return
+        if self._update_worker is not None:
+            return
+        self._update_worker = UpdateCheckWorker(
+            self,
+            current_version=APP_VERSION,
+            timeout=5,
+        )
+        worker = self._update_worker
+        worker.finished_signal.connect(self._on_update_check_done)
+        worker.finished.connect(
+            lambda current_worker=worker: self._clear_update_worker(current_worker)
+        )
+        worker.start()
+        self.status_bar.showMessage("Checking for ClipForge updates…")
+
+    def _on_update_check_done(self, result):
+        if not isinstance(result, UpdateInfo) or result.error == "cancelled":
+            return
+        if result.error:
+            self.console.append(f"[WARNING] Update check unavailable: {result.error}\n")
+            self.status_bar.showMessage("Update check unavailable", 5000)
+            return
+        if not result.available:
+            self.console.append(
+                f"[INFO] ClipForge v{result.current_version} is up to date.\n"
+            )
+            self.status_bar.showMessage("ClipForge is up to date", 5000)
+            return
+        policy_messages = {
+            "verified": "The release publishes a digest-checked provenance manifest and signature asset.",
+            "digest-only": "The release publishes a digest-checked provenance manifest but no signature asset.",
+            "unverified": "The release provenance manifest is present but has no verified digest.",
+            "missing": "The release does not publish the required provenance manifest and signature assets.",
+        }
+        box = QMessageBox(self)
+        box.setIcon(
+            QMessageBox.Icon.Information
+            if result.manifest_status == "verified"
+            else QMessageBox.Icon.Warning
+        )
+        box.setWindowTitle("ClipForge update available")
+        box.setText(
+            f"ClipForge v{result.latest_version} is available "
+            f"(current v{result.current_version})."
+        )
+        box.setInformativeText(
+            "This check only read release metadata; no files were downloaded or installed.\n\n"
+            + policy_messages.get(result.manifest_status, "Release provenance status is unknown.")
+            + "\n\nOpen the release manually to review its notes and provenance before upgrading."
+        )
+        box.setDetailedText(
+            f"Release: {result.release_url}\n"
+            f"Manifest policy: {result.manifest_status}\n"
+            f"Manifest: {result.manifest_url or 'not published'}\n"
+            f"Signature: {result.signature_url or 'not published'}"
+        )
+        box.exec()
+
+    def _clear_update_worker(self, worker):
+        if self._update_worker is worker:
+            self._update_worker = None
+
     def _check_deps(self):
         if FFMPEG:
             self.lbl_ffmpeg_status.setText("FFmpeg: Found")
@@ -952,6 +1068,8 @@ class MainWindow(QMainWindow):
             self._autosave_project_if_needed()
         if hasattr(self, "_project_autosave_timer"):
             self._project_autosave_timer.stop()
+        if hasattr(self, "_update_check_timer"):
+            self._update_check_timer.stop()
         self._worker_status_timer.stop()
         if self._preview_dock is not None:
             self._preview_dock.blockSignals(True)

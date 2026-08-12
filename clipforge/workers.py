@@ -48,6 +48,7 @@ from .yt_dlp import (
     build_yt_dlp_command,
     validate_download_path,
 )
+from .update import UpdateCheckCancelled, UpdateInfo, check_for_update
 
 # ---------------------------------------------------------------------------
 # Probe workers
@@ -185,6 +186,45 @@ class CapabilityProbeWorker(QThread):
             },
         )
         self.outcome_signal.emit(outcome)
+        self.finished_signal.emit(result)
+
+
+class UpdateCheckWorker(QThread):
+    """Run the bounded GitHub release metadata check without blocking Qt."""
+
+    finished_signal = pyqtSignal(object)
+
+    def __init__(self, parent=None, *, current_version, timeout=5):
+        super().__init__(parent)
+        self.current_version = str(current_version)
+        self.timeout = float(timeout)
+        self._cancel_event = threading.Event()
+
+    def cancel(self):
+        self._cancel_event.set()
+
+    def run(self):
+        if self._cancel_event.is_set():
+            self.finished_signal.emit(
+                UpdateInfo(current_version=self.current_version, error="cancelled")
+            )
+            return
+        try:
+            result = check_for_update(
+                current_version=self.current_version,
+                timeout=self.timeout,
+                cancel_event=self._cancel_event,
+            )
+        except UpdateCheckCancelled:
+            result = UpdateInfo(
+                current_version=self.current_version,
+                error="cancelled",
+            )
+        except Exception as exc:
+            result = UpdateInfo(
+                current_version=self.current_version,
+                error=f"{type(exc).__name__}: {exc}",
+            )
         self.finished_signal.emit(result)
 
 
