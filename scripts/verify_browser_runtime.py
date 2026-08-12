@@ -6,11 +6,16 @@ import argparse
 import hashlib
 import json
 import re
+import sys
 from html.parser import HTMLParser
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from clipforge.runtime_policy import policy_manifest  # noqa: E402
+
 VENDOR_ROOT = ROOT / "vendor" / "ffmpeg"
 SBOM_PATH = VENDOR_ROOT / "sbom.json"
 INVENTORY_DATE = "2026-07-29"
@@ -160,6 +165,7 @@ def build_inventory():
         "schema": "clipforge.browser-runtime.sbom",
         "schema_version": 1,
         "generated_at": INVENTORY_DATE,
+        "runtime_policy": policy_manifest(),
         "components": COMPONENTS,
         "artifacts": [
             {
@@ -185,6 +191,11 @@ class _InlineHandlerParser(HTMLParser):
 
 def verify_inventory():
     expected = json.loads(SBOM_PATH.read_text(encoding="utf-8"))
+    if expected.get("runtime_policy") != policy_manifest():
+        raise RuntimeError(
+            "Browser runtime security policy is stale; run "
+            "`python scripts/verify_browser_runtime.py --write`"
+        )
     actual = build_inventory()
     if expected != actual:
         raise RuntimeError(

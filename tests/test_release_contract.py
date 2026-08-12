@@ -26,10 +26,10 @@ def test_browser_runtime_inventory_and_policy_are_synchronized():
 def test_manifest_and_runtime_lock_agree():
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     assert project["project"]["requires-python"] == ">=3.11"
-    assert project["project"]["dependencies"] == ["PyQt6>=6.7,<7"]
+    assert project["project"]["dependencies"] == ["PyQt6>=6.11,<7"]
     lock = (ROOT / "requirements.lock").read_text(encoding="utf-8").lower()
     assert "pyqt6==" in lock
-    assert "pyqt6-qt6==" in lock
+    assert "pyqt6-qt6==6.11.1" in lock
     assert "pyqt6-sip==" in lock
 
 

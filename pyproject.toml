@@ -11,7 +11,7 @@ requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "SysAdminDoc" }]
 dependencies = [
-    "PyQt6>=6.7,<7",
+    "PyQt6>=6.11,<7",
 ]
 
 [project.optional-dependencies]

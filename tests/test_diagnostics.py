@@ -8,6 +8,7 @@ from clipforge.diagnostics import (
     redact_text,
 )
 from clipforge.workers import FFmpegWorker
+from clipforge.runtime_policy import evaluate_ffmpeg_runtime
 
 
 def test_severity_classification_is_exclusive():
@@ -65,6 +66,23 @@ def test_support_export_redacts_paths_and_never_includes_media(tmp_path):
         "paths_redacted": True,
         "media_contents_included": False,
     }
+
+
+def test_diagnostics_snapshot_includes_runtime_policy_and_qt_identity():
+    store = DiagnosticsStore()
+    banner = "ffmpeg version 8.1.2-full_build"
+    store.record_runtime_policy(
+        "ffmpeg",
+        evaluate_ffmpeg_runtime(banner),
+        identity={"banner": banner, "executable": "C:\\ffmpeg\\bin\\ffmpeg.exe"},
+    )
+    snapshot = store.snapshot(redact=False)
+    runtime = snapshot["runtime"]
+    assert runtime["policy"]["schema"] == "clipforge.runtime-policy"
+    assert runtime["components"]["qt"]["component"] == "qt"
+    assert "identity" in runtime["components"]["qt"]
+    assert runtime["components"]["ffmpeg"]["identity"]["banner"] == banner
+    assert runtime["components"]["ffmpeg"]["status"] == "supported"
 
 
 def test_url_is_not_mistaken_for_local_path():

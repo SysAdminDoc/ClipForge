@@ -24,7 +24,6 @@ from .tools import (
     find_realesrgan, find_rife, find_span,
     detect_hw_encoders,
     extract_frame,
-    nvdec_decode_is_safe,
     probe_media,
     probe_video,
     read_ffmpeg_version,
@@ -41,6 +40,7 @@ from .processes import (
 )
 from .diagnostics import DIAGNOSTICS
 from .ai_tools import AIFrameCache
+from .runtime_policy import evaluate_ffmpeg_runtime, evaluate_nvdec
 
 # ---------------------------------------------------------------------------
 # Probe workers
@@ -88,6 +88,18 @@ class CapabilityProbeWorker(QThread):
             cancel_event=self._cancel_event,
             timeout=self.timeout,
         )
+        ffmpeg_policy = evaluate_ffmpeg_runtime(version)
+        nvdec_policy = evaluate_nvdec(version)
+        DIAGNOSTICS.record_runtime_policy(
+            "ffmpeg",
+            ffmpeg_policy,
+            identity={"banner": version, "executable": FFMPEG},
+        )
+        DIAGNOSTICS.record_runtime_policy(
+            "nvdec",
+            nvdec_policy,
+            identity={"banner": version, "executable": FFMPEG},
+        )
         encoders = (
             {}
             if self._cancel_event.is_set()
@@ -100,7 +112,9 @@ class CapabilityProbeWorker(QThread):
             {
                 "cancelled": self._cancel_event.is_set(),
                 "version": version,
-                "nvdec_safe": nvdec_decode_is_safe(version),
+                "ffmpeg_policy": ffmpeg_policy.as_dict(),
+                "nvdec_policy": nvdec_policy.as_dict(),
+                "nvdec_safe": nvdec_policy.accepted,
                 "encoders": encoders,
             }
         )

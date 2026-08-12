@@ -7,7 +7,6 @@ import json
 import shutil
 import tempfile
 import atexit
-import re
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +14,11 @@ from typing import Any, TypedDict
 
 from clipforge_utils import _parse_fps
 from .ai_tools import AIToolManager
+from .runtime_policy import (
+    NVDEC_FIX_COMMIT,  # noqa: F401 - retained as a public compatibility constant
+    evaluate_nvdec,
+    parse_ffmpeg_version as _parse_ffmpeg_version,
+)
 
 # ---------------------------------------------------------------------------
 # Temp-dir tracking
@@ -153,32 +157,14 @@ FFPROBE = find_tool("ffprobe")
 # Hardware encoder detection
 # ---------------------------------------------------------------------------
 
-NVDEC_FIX_COMMIT = "4c6217477fc64305055b37d9d1d0d76d30e37f97"
-
-
 def parse_ffmpeg_version(version_output):
     """Return an FFmpeg release tuple, or None for an unrecognized build."""
-    match = re.search(
-        r"\bffmpeg version (?:n)?(\d+)\.(\d+)(?:\.(\d+))?",
-        str(version_output or ""),
-        re.IGNORECASE,
-    )
-    if not match:
-        return None
-    return tuple(int(part or 0) for part in match.groups())
+    return _parse_ffmpeg_version(version_output)
 
 
 def nvdec_decode_is_safe(version_output):
-    """Reject NVDEC releases affected by CVE-2026-64832.
-
-    Unknown builds fail closed. Git builds can opt in only when their version
-    banner carries the full upstream fix commit.
-    """
-    output = str(version_output or "")
-    if NVDEC_FIX_COMMIT in output.lower():
-        return True
-    version = parse_ffmpeg_version(output)
-    return version is not None and version > (8, 1, 2)
+    """Return whether the conservative, reviewed NVDEC policy allows decode."""
+    return evaluate_nvdec(version_output).accepted
 
 
 def read_ffmpeg_version(ffmpeg_path=None, *, cancel_event=None, timeout=10):

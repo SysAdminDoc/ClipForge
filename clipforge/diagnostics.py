@@ -15,6 +15,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import APP_NAME, APP_VERSION
+from .runtime_policy import (
+    evaluate_qt_runtime,
+    policy_manifest,
+    qt_runtime_identity,
+)
 
 
 def _utc_now():
@@ -67,12 +72,22 @@ class DiagnosticsStore:
         self._jobs = OrderedDict()
         self._events = deque(maxlen=max_events)
         self._tool_versions = {}
+        self._runtime_policy = {}
         self._lock = threading.RLock()
 
     def reset(self):
         with self._lock:
             self._jobs.clear()
             self._events.clear()
+            self._runtime_policy.clear()
+
+    def record_runtime_policy(self, component, decision, *, identity=None):
+        """Store a bounded runtime-policy decision for support diagnostics."""
+        payload = decision.as_dict()
+        if identity:
+            payload["identity"] = dict(identity)
+        with self._lock:
+            self._runtime_policy[str(component)] = payload
 
     def tool_version(self, name, executable):
         key = (name, str(executable or ""))
@@ -174,6 +189,8 @@ class DiagnosticsStore:
             )
 
     def snapshot(self, *, redact=True):
+        qt_identity = qt_runtime_identity()
+        qt_policy = evaluate_qt_runtime(qt_identity.get("qt"))
         with self._lock:
             jobs = []
             for record in self._jobs.values():
@@ -182,6 +199,14 @@ class DiagnosticsStore:
                     for key, value in record.items()
                 }
                 jobs.append(copied)
+            runtime_policy = dict(self._runtime_policy)
+            runtime_policy.setdefault(
+                "qt",
+                {
+                    **qt_policy.as_dict(),
+                    "identity": qt_identity,
+                },
+            )
             payload = {
                 "schema_version": 1,
                 "generated_at": _utc_now(),
@@ -190,6 +215,8 @@ class DiagnosticsStore:
                     "python": platform.python_version(),
                     "platform": platform.platform(),
                     "frozen": bool(getattr(sys, "frozen", False)),
+                    "policy": policy_manifest(),
+                    "components": runtime_policy,
                 },
                 "privacy": {
                     "paths_redacted": redact,
