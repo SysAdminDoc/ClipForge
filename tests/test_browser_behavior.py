@@ -439,6 +439,74 @@ def test_quota_failure_surfaces_recovery_warning(chromium_browser, browser_app_u
         context.close()
 
 
+def test_browser_proxy_cache_uses_sampled_identity_and_explicit_purge(browser_page):
+    identity = browser_page.evaluate(
+        """
+        async () => {
+            const first = new File(
+                [new Uint8Array(192).fill(1)],
+                'clip.mp4',
+                {type: 'video/mp4', lastModified: 123},
+            );
+            const changed = new File(
+                [new Uint8Array(192).fill(2)],
+                'clip.mp4',
+                {type: 'video/mp4', lastModified: 123},
+            );
+            return {
+                first: await window.browserProxyKey(first),
+                changed: await window.browserProxyKey(changed),
+            };
+        }
+        """
+    )
+    assert identity["first"] != identity["changed"]
+
+    browser_page.evaluate(
+        """
+        async () => {
+            const db = await new Promise((resolve, reject) => {
+                const request = indexedDB.open('clipforge-recovery', 2);
+                request.onupgradeneeded = () => {
+                    if (!request.result.objectStoreNames.contains('projects')) {
+                        request.result.createObjectStore('projects');
+                    }
+                    if (!request.result.objectStoreNames.contains('proxies')) {
+                        request.result.createObjectStore('proxies');
+                    }
+                };
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject(request.error);
+            });
+            await new Promise((resolve, reject) => {
+                const request = db.transaction('proxies', 'readwrite')
+                    .objectStore('proxies')
+                    .put({
+                        key: 'test-proxy',
+                        profile: 2,
+                        complete: true,
+                        size: 4,
+                        blob: new Blob([new Uint8Array([1, 2, 3, 4])]),
+                        createdAt: 1,
+                    }, 'test-proxy');
+                request.onsuccess = resolve;
+                request.onerror = () => reject(request.error);
+            });
+            db.close();
+            await window.refreshBrowserProxyCacheStatus();
+        }
+        """
+    )
+    browser_page.wait_for_function(
+        "() => document.querySelector('#browserProxyCacheText')?.textContent.includes('1 entry')"
+    )
+    browser_page.locator('[data-action="purge-browser-cache"]').click()
+    browser_page.wait_for_function(
+        "() => document.querySelector('#browserProxyCacheText')?.textContent.includes('0 entries')"
+    )
+    assert browser_page.evaluate("async () => (await window.browserProxyCacheStats()).bytes") == 0
+
+
 def test_every_track_is_reachable_at_900_by_700(browser_page):
     layout = browser_page.evaluate(
         """

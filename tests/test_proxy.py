@@ -22,6 +22,39 @@ def test_proxy_cache_keys_source_metadata_and_validates_manifest(tmp_path):
     assert cache.lookup(source) is None
 
 
+def test_proxy_cache_rejects_same_metadata_content_changes_and_corruption(tmp_path):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source-v1")
+    cache = ProxyCache(tmp_path / "cache")
+    first_key = cache.key_for(source)
+    original_stat = source.stat()
+    source.write_bytes(b"source-v2")
+    os.utime(source, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+    assert cache.key_for(source) != first_key
+
+    proxy_path, _manifest_path = cache.paths_for(source)
+    proxy_path.write_bytes(b"proxy-data")
+    cache.record(source, proxy_path)
+    proxy_path.write_bytes(b"proxy-tata")
+    assert cache.lookup(source) is None
+
+
+def test_proxy_cache_reports_usage_and_can_be_cleared(tmp_path):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    cache = ProxyCache(tmp_path / "cache", max_bytes=1024)
+    proxy_path, _manifest_path = cache.paths_for(source)
+    proxy_path.write_bytes(b"proxy")
+    cache.record(source, proxy_path)
+
+    stats = cache.stats()
+    assert stats["bytes"] == len(b"proxy")
+    assert stats["entries"] == 1
+    assert stats["max_bytes"] == 1024
+    assert len(cache.clear()) >= 2
+    assert cache.stats()["bytes"] == 0
+
+
 def test_proxy_cache_cleans_interrupted_files_and_prunes_oldest(tmp_path):
     cache_root = tmp_path / "cache"
     cache_root.mkdir()

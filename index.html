@@ -1117,6 +1117,10 @@
                     <span>Project files store media references, not media bytes. Relink moved or reopened local sources here.</span>
                     <button class="btn btn-sm" id="relinkButton" hidden data-action="relink-media">Relink</button>
                 </div>
+                <div class="recovery-bar" id="browserProxyCacheBar">
+                    <span id="browserProxyCacheText">Proxy cache usage is loading…</span>
+                    <button class="btn btn-sm" data-action="purge-browser-cache" aria-label="Purge browser proxy cache">Purge</button>
+                </div>
                 <div class="panel-tabs" role="tablist" aria-label="Project browser">
                     <button class="panel-tab active" id="mediaTab" role="tab" aria-selected="true" aria-controls="mediaTabPanel" tabindex="0">Media</button>
                     <button class="panel-tab" id="effectsTab" role="tab" aria-selected="false" aria-controls="effectsTabPanel" tabindex="-1">Effects</button>

@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QSlider,
     QComboBox, QFileDialog, QGraphicsView, QGraphicsScene, QProgressBar,
     QStackedWidget, QLayout, QSpacerItem, QSizePolicy,
-    QAbstractSpinBox, QLineEdit, QTextEdit,
+    QAbstractSpinBox, QLineEdit, QTextEdit, QMessageBox,
 )
 from PyQt6.QtCore import (
     Qt, QUrl, QTimer, QPoint, QPointF, QPropertyAnimation, QEasingCurve, QRect,
@@ -727,6 +727,20 @@ class VideoPlayer(QWidget):
         proxy_layout.addLayout(backend_row)
         proxy_layout.addWidget(self.lbl_proxy_status)
         proxy_layout.addLayout(proxy_action_row)
+        proxy_cache_row = QHBoxLayout()
+        self.lbl_proxy_cache = QLabel()
+        self.lbl_proxy_cache.setProperty("class", "dimLabel")
+        self.lbl_proxy_cache.setWordWrap(True)
+        self.lbl_proxy_cache.setAccessibleName("Preview proxy cache usage")
+        proxy_cache_row.addWidget(self.lbl_proxy_cache, 1)
+        self.btn_clear_proxy_cache = QPushButton("Purge proxy cache")
+        self.btn_clear_proxy_cache.setAccessibleName("Purge preview proxy cache")
+        self.btn_clear_proxy_cache.setToolTip(
+            "Remove all reusable preview proxies; source media is not affected"
+        )
+        self.btn_clear_proxy_cache.clicked.connect(self._clear_proxy_cache)
+        proxy_cache_row.addWidget(self.btn_clear_proxy_cache)
+        proxy_layout.addLayout(proxy_cache_row)
         layout.addWidget(proxy_controls)
 
         # Timecode display
@@ -734,6 +748,57 @@ class VideoPlayer(QWidget):
         self.lbl_timecode.setProperty("class", "dimLabel")
         self.lbl_timecode.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self.lbl_timecode)
+        self._refresh_proxy_cache_status()
+
+    def _refresh_proxy_cache_status(self):
+        try:
+            stats = self._proxy_cache.stats()
+        except OSError as error:
+            self.lbl_proxy_cache.setText(f"Proxy cache unavailable: {error}")
+            self.btn_clear_proxy_cache.setEnabled(False)
+            return
+        invalid = (
+            f"; {stats['invalid_entries']} invalid entry"
+            f"{'ies' if stats['invalid_entries'] != 1 else ''}"
+            if stats["invalid_entries"]
+            else ""
+        )
+        self.lbl_proxy_cache.setText(
+            f"Proxy cache: {format_size(stats['bytes'])} / "
+            f"{format_size(stats['max_bytes'])} ({stats['entries']} entries){invalid}"
+        )
+        self.btn_clear_proxy_cache.setEnabled(
+            self._proxy_worker is None and stats["entries"] > 0
+        )
+
+    def _clear_proxy_cache(self):
+        if self._proxy_worker and self._proxy_worker.isRunning():
+            self.proxyStatus.emit(False, "Wait for proxy generation to finish before purging the cache")
+            return
+        answer = QMessageBox.question(
+            self,
+            "Purge proxy cache",
+            "Remove all reusable preview proxies? Source media and projects will not be changed.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        active_proxy = (
+            self._proxy_path is not None
+            and self._playback_path
+            and Path(self._playback_path).resolve() == Path(self._proxy_path).resolve()
+        )
+        removed = self._proxy_cache.clear()
+        self._proxy_path = None
+        self.btn_toggle_proxy.setEnabled(False)
+        if active_proxy and self._filepath:
+            self._set_playback_source(self._filepath)
+        self._refresh_proxy_cache_status()
+        self.proxyStatus.emit(
+            True,
+            f"Purged {len(removed)} preview cache entr{'y' if len(removed) == 1 else 'ies'}",
+        )
 
     def load(self, filepath, info=None):
         self._cancel_background_reads()
@@ -745,6 +810,7 @@ class VideoPlayer(QWidget):
         else:
             self._fps = 30.0
         self._proxy_path = self._proxy_cache.lookup(filepath)
+        self._refresh_proxy_cache_status()
         estimate = self._proxy_cache.estimate_size(self._source_info)
         estimate_text = format_size(estimate) if estimate > 0 else "size unknown"
         self.btn_create_proxy.setText(f"Create Proxy (~{estimate_text})")
@@ -886,6 +952,7 @@ class VideoPlayer(QWidget):
         self.proxy_progress.show()
         self.btn_create_proxy.setText("Cancel Proxy")
         self.lbl_proxy_status.setText("Proxy: generating…")
+        self._refresh_proxy_cache_status()
         worker.start()
 
     def _on_proxy_finished(self, worker, source_path, ok, message):
@@ -911,6 +978,7 @@ class VideoPlayer(QWidget):
             self.lbl_proxy_status.setText(f"Proxy unavailable: {message}")
         self.proxyStatus.emit(ok, message)
         self._proxy_worker = None
+        self._refresh_proxy_cache_status()
 
     def _toggle_proxy(self):
         if not self._filepath:
@@ -924,6 +992,7 @@ class VideoPlayer(QWidget):
             self._set_playback_source(self._filepath)
             return
         self._proxy_path = self._proxy_cache.lookup(self._filepath)
+        self._refresh_proxy_cache_status()
         if self._proxy_path:
             self._set_playback_source(self._proxy_path)
         else:

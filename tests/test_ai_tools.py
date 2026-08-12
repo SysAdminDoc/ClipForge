@@ -1,6 +1,7 @@
 import hashlib
 import io
 import json
+import os
 import zipfile
 from dataclasses import replace
 from pathlib import Path
@@ -189,3 +190,39 @@ def test_ai_frame_cache_is_atomic_reusable_and_source_keyed(tmp_path):
 
     source.write_bytes(b"source-v2-longer")
     assert cache.lookup(source) is None
+
+
+def test_ai_frame_cache_uses_bounded_content_identity_and_detects_corruption(tmp_path):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source-v1")
+    cache = AIFrameCache(tmp_path / "frames")
+    first_key = cache.key_for(source)
+    original_stat = source.stat()
+    source.write_bytes(b"source-v2")
+    source.touch()
+    os.utime(source, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+    assert cache.key_for(source) != first_key
+
+    staging = cache.staging_dir(source)
+    (staging / "frame_000001.png").write_bytes(b"one")
+    committed = cache.commit(source, staging, 1)
+    (committed / "frame_000001.png").write_bytes(b"bad")
+    assert cache.lookup(source) is None
+    assert not committed.exists()
+    assert cache.stats()["invalid_entries"] == 0
+
+
+def test_ai_frame_cache_reports_limits_and_purges_entries(tmp_path):
+    source = tmp_path / "source.mp4"
+    source.write_bytes(b"source")
+    cache = AIFrameCache(tmp_path / "frames", max_bytes=1024 * 1024)
+    staging = cache.staging_dir(source)
+    (staging / "frame_000001.png").write_bytes(b"frame")
+    cache.commit(source, staging, 1)
+
+    stats = cache.stats()
+    assert stats["bytes"] > 0
+    assert stats["entries"] == 1
+    assert stats["max_bytes"] == 1024 * 1024
+    assert len(cache.purge()) == 1
+    assert cache.stats()["bytes"] == 0

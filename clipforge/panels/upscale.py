@@ -5,7 +5,7 @@ from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
-    QGroupBox, QComboBox, QProgressBar, QFileDialog,
+    QGroupBox, QComboBox, QProgressBar, QFileDialog, QMessageBox,
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 
@@ -39,6 +39,7 @@ class UpscalePanel(QWidget):
         self._worker = None
         self._install_worker = None
         self._ai_manager = AIToolManager()
+        self._frame_cache = AIFrameCache()
         self._setup_ui()
 
     def _setup_ui(self):
@@ -118,6 +119,20 @@ class UpscalePanel(QWidget):
         self.lbl_storage_estimate.setProperty("class", "dimLabel")
         self.lbl_storage_estimate.setWordWrap(True)
         info_l.addWidget(self.lbl_storage_estimate)
+        cache_row = QHBoxLayout()
+        self.lbl_cache_status = QLabel()
+        self.lbl_cache_status.setProperty("class", "dimLabel")
+        self.lbl_cache_status.setWordWrap(True)
+        self.lbl_cache_status.setAccessibleName("Frame cache usage")
+        cache_row.addWidget(self.lbl_cache_status, 1)
+        self.btn_clear_cache = QPushButton("Purge frame cache")
+        self.btn_clear_cache.setAccessibleName("Purge reusable frame cache")
+        self.btn_clear_cache.setToolTip(
+            "Remove reusable PNG frames; the next AI operation will extract them again"
+        )
+        self.btn_clear_cache.clicked.connect(self._clear_frame_cache)
+        cache_row.addWidget(self.btn_clear_cache)
+        info_l.addLayout(cache_row)
         layout.addWidget(info_grp)
 
         self.progress = QProgressBar()
@@ -144,6 +159,42 @@ class UpscalePanel(QWidget):
         layout.addStretch()
 
         self._check_tools()
+        self._refresh_cache_status()
+
+    def _refresh_cache_status(self):
+        stats = self._frame_cache.stats()
+        invalid = (
+            f"; {stats['invalid_entries']} invalid entry"
+            f"{'ies' if stats['invalid_entries'] != 1 else ''}"
+            if stats["invalid_entries"]
+            else ""
+        )
+        self.lbl_cache_status.setText(
+            f"Frame cache: {format_size(stats['bytes'])} / "
+            f"{format_size(stats['max_bytes'])} ({stats['entries']} entries){invalid}"
+        )
+        processing = self._worker is not None and self._worker.isRunning()
+        self.btn_clear_cache.setEnabled(not processing and stats["entries"] > 0)
+
+    def _clear_frame_cache(self):
+        if self._worker and self._worker.isRunning():
+            self.requestToast.emit("Wait for the current AI job to finish before purging its cache", C["yellow"])
+            return
+        answer = QMessageBox.question(
+            self,
+            "Purge frame cache",
+            "Remove all reusable AI frame cache entries? The next AI operation will extract them again.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        removed = self._frame_cache.purge()
+        self._refresh_cache_status()
+        self.requestToast.emit(
+            f"Purged {len(removed)} reusable frame-cache entr{'y' if len(removed) == 1 else 'ies'}",
+            C["blue"],
+        )
 
     def _check_tools(self):
         finders = {
@@ -231,6 +282,7 @@ class UpscalePanel(QWidget):
             "Upscale and interpolation share this metadata-keyed cache; "
             "source changes create a new entry."
         )
+        self._refresh_cache_status()
         self._refresh_action_state()
         self._update_output_res()
         self._update_interp_info()
@@ -252,6 +304,10 @@ class UpscalePanel(QWidget):
 
     def _refresh_action_state(self):
         processing = self._worker is not None and self._worker.isRunning()
+        if hasattr(self, "btn_clear_cache"):
+            self.btn_clear_cache.setEnabled(
+                not processing and self._frame_cache.stats()["entries"] > 0
+            )
         selected_tool = find_span() if "SPAN" in self.cmb_engine.currentText() else find_realesrgan()
         self.btn_upscale.setEnabled(
             bool(self._filepath and FFMPEG and selected_tool and not processing)
@@ -331,6 +387,7 @@ class UpscalePanel(QWidget):
     def _on_done(self, ok, msg, out_path):
         self._worker = None
         self._set_processing(False)
+        self._refresh_cache_status()
         if ok:
             self.progress.setValue(100)
             size = format_size(os.path.getsize(out_path)) if os.path.exists(out_path) else ""

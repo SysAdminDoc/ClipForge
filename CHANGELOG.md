@@ -14,6 +14,7 @@ All notable changes to ClipForge will be documented in this file.
 - Release checks now emit a cross-surface provenance manifest covering the browser SBOM, hash-locked Python distributions, external FFmpeg/ffprobe binaries, optional libmpv, and managed AI tools; desktop job diagnostics retain the exact runtime identities used.
 - Batch source inspection and thumbnail metadata probes now run in cancellable worker threads with bounded FFprobe timeouts; preview background reads no longer block the GUI while waiting for cancellation, and shutdown retains confirmed-worker cleanup diagnostics.
 - Browser preview and export now share a resolved timeline plan for clip boundaries, source in-points, transforms, and track audio state; browser behavior tests cover the same plan at both surfaces.
+- Browser proxy and desktop preview/AI caches now use bounded sampled-content identities, byte-based lifecycle limits, corruption/incomplete-entry validation, quota/disk preflight, usage reporting, LRU pruning, and explicit purge controls.
 
 ## [v0.5.2] - 2026-07-29
 

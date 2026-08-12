@@ -12,7 +12,10 @@ const PROJECT_SCHEMA_VERSION = 1;
 const PROJECT_DB_NAME = 'clipforge-recovery';
 const PROJECT_STORE_NAME = 'projects';
 const PROJECT_RECOVERY_KEY = 'current';
-const BROWSER_PROXY_PROFILE = 1;
+const BROWSER_PROXY_PROFILE = 2;
+const BROWSER_PROXY_SAMPLE_BYTES = 64 * 1024;
+const BROWSER_PROXY_CACHE_MAX_BYTES = 512 * 1024 * 1024;
+const BROWSER_PROXY_QUOTA_HEADROOM = 8 * 1024 * 1024;
 const MEDIA_METADATA_TIMEOUT_MS =
     Number(globalThis.CLIPFORGE_METADATA_TIMEOUT_MS) || 10000;
 let recoveryDbPromise = null;
@@ -87,6 +90,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     setupEventListeners();
     renderRuler();
     initProjectRecovery();
+    refreshBrowserProxyCacheStatus();
     window.clipforgeEditorReady = true;
     await initFFmpeg();
 });
@@ -464,6 +468,7 @@ function setupEventListeners() {
         'recover-project': () => recoverLastProject(),
         'discard-recovery': () => discardRecoveryProject(),
         'relink-media': () => document.getElementById('relinkFileInput').click(),
+        'purge-browser-cache': () => purgeBrowserProxyCache(),
         'quick-effect': (_event, control) => applyQuickEffect(control.dataset.effect),
         'go-start': () => goToStart(),
         'step-backward': () => stepBackward(),
@@ -1009,8 +1014,105 @@ async function generateVideoWaveform(media) {
     }
 }
 
-function browserProxyKey(file) {
-    return `v${BROWSER_PROXY_PROFILE}:${file.name}:${file.size}:${file.lastModified}`;
+function bytesToHex(bytes) {
+    return [...new Uint8Array(bytes)]
+        .map(value => value.toString(16).padStart(2, '0'))
+        .join('');
+}
+
+async function browserProxySourceFingerprint(file) {
+    const size = Math.max(0, Number(file?.size) || 0);
+    const sampleSize = Math.min(BROWSER_PROXY_SAMPLE_BYTES, Math.max(size, 1));
+    const offsets = [...new Set([
+        0,
+        Math.max(0, Math.floor((size - sampleSize) / 2)),
+        Math.max(0, size - sampleSize),
+    ])].sort((left, right) => left - right);
+    const chunks = [];
+    const header = new TextEncoder().encode(
+        `clipforge-proxy-sample-v1:${size}:${sampleSize}:${offsets.join(',')}:`,
+    );
+    chunks.push(header);
+    for (const offset of offsets) {
+        const bytes = new Uint8Array(
+            await file.slice(offset, offset + sampleSize).arrayBuffer(),
+        );
+        const offsetBytes = new Uint8Array(8);
+        const offsetView = new DataView(offsetBytes.buffer);
+        offsetView.setUint32(0, Math.floor(offset / 0x100000000));
+        offsetView.setUint32(4, offset >>> 0);
+        chunks.push(offsetBytes, bytes);
+    }
+    const totalBytes = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
+    const sample = new Uint8Array(totalBytes);
+    let cursor = 0;
+    for (const chunk of chunks) {
+        sample.set(chunk, cursor);
+        cursor += chunk.byteLength;
+    }
+    const digest = await crypto.subtle.digest('SHA-256', sample);
+    return {
+        name: String(file?.name || ''),
+        size,
+        lastModified: Number(file?.lastModified) || 0,
+        sampleBytes: sampleSize,
+        sampleSha256: bytesToHex(digest),
+    };
+}
+
+function browserProxyFingerprintMatches(left, right) {
+    return Boolean(
+        left
+        && right
+        && left.name === right.name
+        && Number(left.size) === Number(right.size)
+        && Number(left.lastModified) === Number(right.lastModified)
+        && left.sampleBytes === right.sampleBytes
+        && left.sampleSha256 === right.sampleSha256,
+    );
+}
+
+function browserProxyKeyFromFingerprint(fingerprint) {
+    return [
+        `v${BROWSER_PROXY_PROFILE}`,
+        fingerprint.size,
+        fingerprint.lastModified,
+        fingerprint.sampleSha256,
+        encodeURIComponent(fingerprint.name),
+    ].join(':');
+}
+
+async function browserProxyIdentity(file) {
+    const source = await browserProxySourceFingerprint(file);
+    return { source, key: browserProxyKeyFromFingerprint(source) };
+}
+
+async function browserProxyKey(file) {
+    return (await browserProxyIdentity(file)).key;
+}
+
+function browserProxyRecordSize(record) {
+    const size = Number(record?.size ?? record?.blob?.size ?? 0);
+    return Number.isFinite(size) && size > 0 ? size : 0;
+}
+
+function browserProxyRecordIsComplete(record) {
+    return Boolean(
+        record
+        && record.profile === BROWSER_PROXY_PROFILE
+        && record.complete === true
+        && typeof record.key === 'string'
+        && record.blob instanceof Blob
+        && browserProxyRecordSize(record) === record.blob.size
+        && record.blob.size > 0,
+    );
+}
+
+function browserProxyRecordIsValid(record, source) {
+    return Boolean(
+        browserProxyRecordIsComplete(record)
+        && browserProxyFingerprintMatches(record.source, source)
+    );
 }
 
 function browserProxyButtonLabel(media) {
@@ -1043,14 +1145,18 @@ function applyBrowserProxy(media, payload) {
 
 async function restoreBrowserProxy(media) {
     if (!media.file) return false;
-    const key = browserProxyKey(media.file);
-    if (media.proxy?.key && media.proxy.key !== key) return false;
     try {
-        const payload = await browserProxyStore('get', key);
-        if (!payload || payload.profile !== BROWSER_PROXY_PROFILE || !(payload.blob instanceof Blob)) {
+        const identity = await browserProxyIdentity(media.file);
+        if (media.proxy?.key && media.proxy.key !== identity.key) return false;
+        const payload = await browserProxyStore('get', identity.key);
+        if (!browserProxyRecordIsValid(payload, identity.source)) {
+            if (payload?.key) await browserProxyStore('delete', payload.key);
             return false;
         }
+        payload.lastAccessedAt = Date.now();
+        await browserProxyStore('put', identity.key, payload);
         applyBrowserProxy(media, payload);
+        await refreshBrowserProxyCacheStatus();
         return true;
     } catch (error) {
         console.warn('Browser proxy restore failed:', error);
@@ -1058,15 +1164,143 @@ async function restoreBrowserProxy(media) {
     }
 }
 
-async function pruneBrowserProxyCache() {
+async function browserStorageEstimate() {
+    try {
+        const estimate = await navigator.storage?.estimate?.();
+        return {
+            usage: Number.isFinite(estimate?.usage) ? estimate.usage : null,
+            quota: Number.isFinite(estimate?.quota) ? estimate.quota : null,
+        };
+    } catch (_error) {
+        return { usage: null, quota: null };
+    }
+}
+
+async function browserProxyCacheStats() {
+    const records = await browserProxyStore('all');
+    let bytes = 0;
+    let invalidEntries = 0;
+    for (const record of records) {
+        const size = browserProxyRecordSize(record);
+        if (!browserProxyRecordIsComplete(record)) {
+            invalidEntries += 1;
+            continue;
+        }
+        bytes += size;
+    }
+    const storage = await browserStorageEstimate();
+    return {
+        bytes,
+        entries: records.filter(record => (
+            browserProxyRecordIsComplete(record)
+        )).length,
+        invalidEntries,
+        maxBytes: BROWSER_PROXY_CACHE_MAX_BYTES,
+        usage: storage.usage,
+        quota: storage.quota,
+    };
+}
+
+async function pruneBrowserProxyCache({ requiredBytes = 0, protectKey = null } = {}) {
     try {
         const records = await browserProxyStore('all');
-        records.sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
-        for (const record of records.slice(10)) {
-            await browserProxyStore('delete', record.key);
+        const validRecords = [];
+        let total = 0;
+        for (const record of records) {
+            const size = browserProxyRecordSize(record);
+            if (!browserProxyRecordIsComplete(record)) {
+                if (record?.key) await browserProxyStore('delete', record.key);
+                continue;
+            }
+            validRecords.push({ record, size });
+            total += size;
         }
+        const protectedSize = validRecords.find(item => item.record.key === protectKey)?.size || 0;
+        const requestedBytes = Math.max(0, Number(requiredBytes) || 0);
+        const effectiveRequired = Math.max(0, requestedBytes - protectedSize);
+        let projected = total - protectedSize + requestedBytes;
+        validRecords.sort(
+            (left, right) => Number(left.record.lastAccessedAt || left.record.createdAt || 0)
+                - Number(right.record.lastAccessedAt || right.record.createdAt || 0),
+        );
+        for (const { record, size } of validRecords) {
+            if (projected <= BROWSER_PROXY_CACHE_MAX_BYTES) break;
+            if (record.key === protectKey) continue;
+            await browserProxyStore('delete', record.key);
+            projected -= size;
+        }
+        const estimate = await browserStorageEstimate();
+        if (
+            estimate.quota != null
+            && estimate.usage != null
+            && effectiveRequired + BROWSER_PROXY_QUOTA_HEADROOM
+                > Math.max(0, estimate.quota - estimate.usage)
+        ) {
+            throw new Error(
+                `Browser storage has only ${formatBytes(Math.max(0, estimate.quota - estimate.usage))} available`,
+            );
+        }
+        return await browserProxyCacheStats();
     } catch (error) {
         console.warn('Browser proxy pruning failed:', error);
+        throw error;
+    }
+}
+
+async function refreshBrowserProxyCacheStatus() {
+    const label = document.getElementById('browserProxyCacheText');
+    const button = document.querySelector('[data-action="purge-browser-cache"]');
+    if (!label) return null;
+    try {
+        const stats = await browserProxyCacheStats();
+        const invalid = stats.invalidEntries
+            ? `; ${stats.invalidEntries} incomplete/invalid record${stats.invalidEntries === 1 ? '' : 's'} removed on next write`
+            : '';
+        const quota = stats.quota != null && stats.usage != null
+            ? ` Browser origin: ${formatBytes(stats.usage)} / ${formatBytes(stats.quota)}.`
+            : '';
+        label.textContent = `Proxy cache: ${formatBytes(stats.bytes)} / ${formatBytes(stats.maxBytes)}; ${stats.entries} entr${stats.entries === 1 ? 'y' : 'ies'}.${quota}${invalid}`;
+        if (button) {
+            button.disabled = Boolean(browserProxyJob)
+                || (stats.entries === 0 && stats.invalidEntries === 0);
+        }
+        return stats;
+    } catch (error) {
+        label.textContent = `Proxy cache unavailable: ${error.message}`;
+        if (button) button.disabled = true;
+        return null;
+    }
+}
+
+async function purgeBrowserProxyCache() {
+    if (browserProxyJob) {
+        toast('info', 'Finish or cancel the active proxy job before purging its cache');
+        return;
+    }
+    try {
+        const records = await browserProxyStore('all');
+        for (const record of records) {
+            if (record?.key) await browserProxyStore('delete', record.key);
+        }
+        for (const media of mediaItems) {
+            if (media.proxyUrl?.startsWith('blob:')) URL.revokeObjectURL(media.proxyUrl);
+            delete media.proxyKey;
+            delete media.proxySize;
+            delete media.proxyUrl;
+            media.proxyActive = false;
+            clips.filter(clip => clip.mediaId == media.id).forEach(clip => {
+                clip.url = media.url;
+                clip.proxyActive = false;
+            });
+        }
+        syncPreviewAtTime(currentTime);
+        renderMediaList();
+        renderTimeline();
+        await refreshBrowserProxyCacheStatus();
+        toast('success', `Purged ${records.length} browser proxy record${records.length === 1 ? '' : 's'}`);
+    } catch (error) {
+        console.error('Browser proxy purge failed:', error);
+        toast('error', `Could not purge browser proxy cache: ${error.message}`);
     }
 }
 
@@ -1107,6 +1341,7 @@ async function generateBrowserProxy(mediaId) {
             'proxy',
             { label: `Proxy: ${media.name}`, mediaId: media.id },
             async job => {
+                const sourceIdentity = await browserProxyIdentity(media.file);
                 renderMediaList();
                 const extension =
                     media.file.name.match(/\.[A-Za-z0-9]{1,8}$/)?.[0] || '.bin';
@@ -1127,20 +1362,32 @@ async function generateBrowserProxy(mediaId) {
                 );
                 const data = await job.readFile(outputName);
                 const blob = new Blob([data.buffer], { type: 'video/mp4' });
+                const completedIdentity = await browserProxyIdentity(media.file);
+                if (completedIdentity.key !== sourceIdentity.key) {
+                    throw new Error('Source changed while the proxy was being generated; try again');
+                }
+                await pruneBrowserProxyCache({
+                    requiredBytes: blob.size,
+                    protectKey: completedIdentity.key,
+                });
                 const payload = {
-                    key: browserProxyKey(media.file),
+                    key: completedIdentity.key,
                     profile: BROWSER_PROXY_PROFILE,
+                    complete: true,
+                    source: completedIdentity.source,
                     blob,
                     size: blob.size,
                     createdAt: Date.now(),
+                    lastAccessedAt: Date.now(),
                 };
                 job.assertActive();
                 await browserProxyStore('put', payload.key, payload);
                 job.assertActive();
-                await pruneBrowserProxyCache();
+                await pruneBrowserProxyCache({ protectKey: payload.key });
                 job.assertActive();
                 applyBrowserProxy(media, payload);
                 syncPreviewAtTime(currentTime);
+                await refreshBrowserProxyCacheStatus();
             },
         );
         toast('success', 'Proxy cached and selected for preview; export still uses the original');
@@ -3234,6 +3481,8 @@ Object.assign(window, {
     setVolume, toggleMute, showExportModal, hideExportModal, exportVideo,
     buildExportPreflight, buildResolvedTimelinePlan, resolveTimelineAtTime,
     serializeProject, normalizeProject,
+    browserProxyKey, browserProxyCacheStats, pruneBrowserProxyCache,
+    refreshBrowserProxyCacheStatus, purgeBrowserProxyCache,
     cancelExport, saveProject, recoverLastProject, discardRecoveryProject,
     applyProjectSnapshot, showEditMenu,
     generateBrowserProxy, updateClipProperty, applyQuickEffect,

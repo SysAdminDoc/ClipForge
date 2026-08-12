@@ -20,6 +20,10 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from .constants import CONFIG_DIR
 
 
+CACHE_SAMPLE_BYTES = 64 * 1024
+AI_FRAME_CACHE_MAX_BYTES = 5 * 1024**3
+
+
 @dataclass(frozen=True)
 class AIToolSpec:
     tool_id: str
@@ -96,6 +100,28 @@ def _sha256(path):
     with Path(path).open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _sampled_sha256(path, sample_bytes=CACHE_SAMPLE_BYTES):
+    """Hash bounded source samples so cache identity does not read large media twice."""
+    path = Path(path)
+    size = path.stat().st_size
+    sample_size = min(max(int(sample_bytes), 1), size or 1)
+    offsets = sorted(
+        {
+            0,
+            max(0, (size - sample_size) // 2),
+            max(0, size - sample_size),
+        }
+    )
+    digest = hashlib.sha256()
+    digest.update(f"clipforge-sample-v1:{size}:{sample_size}:".encode())
+    with path.open("rb") as stream:
+        for offset in offsets:
+            stream.seek(offset)
+            digest.update(offset.to_bytes(8, "big"))
+            digest.update(stream.read(sample_size))
     return digest.hexdigest()
 
 
@@ -358,9 +384,11 @@ class AIToolInstallWorker(QThread):
 class AIFrameCache:
     """Persistent source-frame cache shared by upscale and interpolation."""
 
-    def __init__(self, root=None):
+    def __init__(self, root=None, max_bytes=AI_FRAME_CACHE_MAX_BYTES):
         self.root = Path(root) if root else CONFIG_DIR / "ai-frame-cache"
+        self.max_bytes = max(0, int(max_bytes))
         self.root.mkdir(parents=True, exist_ok=True)
+        self.cleanup_incomplete()
 
     @staticmethod
     def fingerprint(source):
@@ -370,7 +398,9 @@ class AIFrameCache:
             "path": os.fspath(path),
             "size": stat.st_size,
             "mtime_ns": stat.st_mtime_ns,
-            "format": "png-v1",
+            "sample_bytes": CACHE_SAMPLE_BYTES,
+            "sample_sha256": _sampled_sha256(path),
+            "format": "png-v2",
         }
 
     def key_for(self, source):
@@ -387,14 +417,43 @@ class AIFrameCache:
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             count = int(manifest.get("count") or 0)
-            if manifest.get("source") != self.fingerprint(source) or count <= 0:
-                return None
-            if not (entry / "frame_000001.png").is_file():
-                return None
-            if not (entry / f"frame_{count:06d}.png").is_file():
-                return None
+            frames = manifest.get("frames")
+            if (
+                manifest.get("schema") != "clipforge.ai-frame-cache"
+                or manifest.get("complete") is not True
+                or manifest.get("source") != self.fingerprint(source)
+                or count <= 0
+                or not isinstance(frames, list)
+                or len(frames) != count
+            ):
+                raise ValueError("invalid frame-cache manifest")
+            expected_names = {f"frame_{index:06d}.png" for index in range(1, count + 1)}
+            actual_names = {
+                path.name for path in entry.glob("frame_*.png") if path.is_file()
+            }
+            if actual_names != expected_names:
+                raise ValueError("frame-cache frame set is incomplete")
+            total_bytes = 0
+            for frame in frames:
+                if not isinstance(frame, dict):
+                    raise ValueError("invalid frame-cache frame metadata")
+                frame_path = entry / frame["name"]
+                if frame["name"] not in expected_names:
+                    raise ValueError("frame-cache contains an unsafe frame name")
+                if not frame_path.is_file() or frame_path.stat().st_size <= 0:
+                    raise ValueError("frame-cache frame is missing or empty")
+                if int(frame["size"]) != frame_path.stat().st_size:
+                    raise ValueError("frame-cache frame size changed")
+                if _sha256(frame_path) != frame["sha256"]:
+                    raise ValueError("frame-cache frame checksum changed")
+                total_bytes += frame_path.stat().st_size
+            if int(manifest.get("bytes") or 0) != total_bytes:
+                raise ValueError("frame-cache byte total changed")
+            os.utime(entry, None)
             return entry
-        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        except (OSError, KeyError, ValueError, TypeError, json.JSONDecodeError):
+            if entry.is_dir():
+                _safe_remove_tree(entry, self.root)
             return None
 
     def staging_dir(self, source):
@@ -407,10 +466,37 @@ class AIFrameCache:
 
     def commit(self, source, staging, count):
         staging = Path(staging)
+        resolved_staging = staging.resolve()
+        resolved_root = self.root.resolve()
+        if resolved_staging == resolved_root or resolved_root not in resolved_staging.parents:
+            raise ValueError("Frame-cache staging path is outside the cache root")
+        count = int(count)
+        if count <= 0:
+            raise ValueError("Frame-cache count must be positive")
+        frame_paths = sorted(staging.glob("frame_*.png"))
+        expected_names = [f"frame_{index:06d}.png" for index in range(1, count + 1)]
+        if [path.name for path in frame_paths] != expected_names:
+            raise ValueError("Frame-cache output is incomplete")
+        frames = []
+        total_bytes = 0
+        for frame_path in frame_paths:
+            if not frame_path.is_file() or frame_path.stat().st_size <= 0:
+                raise ValueError("Frame-cache output contains an empty frame")
+            size = frame_path.stat().st_size
+            frames.append({
+                "name": frame_path.name,
+                "size": size,
+                "sha256": _sha256(frame_path),
+            })
+            total_bytes += size
         payload = {
             "schema": "clipforge.ai-frame-cache",
+            "version": 2,
+            "complete": True,
             "source": self.fingerprint(source),
-            "count": int(count),
+            "count": count,
+            "bytes": total_bytes,
+            "frames": frames,
         }
         (staging / "frames.json").write_text(
             json.dumps(payload, indent=2),
@@ -424,7 +510,66 @@ class AIFrameCache:
                 return existing
             _safe_remove_tree(final, self.root)
         os.replace(staging, final)
+        self.prune(protected={final.name})
         return final
+
+    def cleanup_incomplete(self):
+        """Remove abandoned staging directories without touching committed entries."""
+        for path in self.root.glob(".*"):
+            if path.is_dir():
+                _safe_remove_tree(path, self.root)
+
+    def _entry_bytes(self, entry):
+        return sum(path.stat().st_size for path in entry.rglob("*") if path.is_file())
+
+    def stats(self):
+        self.cleanup_incomplete()
+        total = 0
+        entries = 0
+        invalid = 0
+        for entry in self.root.iterdir():
+            if not entry.is_dir():
+                continue
+            entries += 1
+            total += self._entry_bytes(entry)
+            try:
+                manifest = json.loads((entry / "frames.json").read_text(encoding="utf-8"))
+                if manifest.get("complete") is not True:
+                    invalid += 1
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                invalid += 1
+        return {
+            "bytes": total,
+            "entries": entries,
+            "invalid_entries": invalid,
+            "max_bytes": self.max_bytes,
+        }
+
+    def prune(self, max_bytes=None, protected=None):
+        max_bytes = self.max_bytes if max_bytes is None else max(0, int(max_bytes))
+        protected = set(protected or ())
+        entries = [path for path in self.root.iterdir() if path.is_dir()]
+        entries.sort(key=lambda path: path.stat().st_mtime_ns)
+        total = sum(self._entry_bytes(entry) for entry in entries)
+        removed = []
+        for entry in entries:
+            if total <= max_bytes:
+                break
+            if entry.name in protected:
+                continue
+            size = self._entry_bytes(entry)
+            _safe_remove_tree(entry, self.root)
+            total -= size
+            removed.append(entry)
+        return removed
+
+    def purge(self):
+        removed = []
+        for entry in self.root.iterdir():
+            if entry.is_dir():
+                _safe_remove_tree(entry, self.root)
+                removed.append(entry)
+        return removed
 
     @staticmethod
     def estimate_required_bytes(info):

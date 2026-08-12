@@ -1216,6 +1216,16 @@ class UpscaleWorker(QThread):
                 self.log_output.emit(f"[1/3] Reusing {frames_dir.name} frame cache.\n")
             else:
                 required = frame_cache.estimate_required_bytes(info)
+                if required > frame_cache.max_bytes:
+                    _finish_worker(
+                        self,
+                        "failed",
+                        "cache_limit_exceeded",
+                        f"Frame cache estimate exceeds its {frame_cache.max_bytes / 1024**3:.1f} GiB limit",
+                        output_path=str(final_output),
+                    )
+                    return
+                frame_cache.prune(max_bytes=frame_cache.max_bytes - required)
                 free = shutil.disk_usage(frame_cache.root).free
                 if required > free * 0.9:
                     _finish_worker(
@@ -1547,6 +1557,16 @@ class InterpolateWorker(QThread):
                 self.log_output.emit(f"[1/3] Reusing {frames_dir.name} frame cache.\n")
             else:
                 required = frame_cache.estimate_required_bytes(info)
+                if required > frame_cache.max_bytes:
+                    _finish_worker(
+                        self,
+                        "failed",
+                        "cache_limit_exceeded",
+                        f"Frame cache estimate exceeds its {frame_cache.max_bytes / 1024**3:.1f} GiB limit",
+                        output_path=str(final_output),
+                    )
+                    return
+                frame_cache.prune(max_bytes=frame_cache.max_bytes - required)
                 free = shutil.disk_usage(frame_cache.root).free
                 if required > free * 0.9:
                     _finish_worker(
