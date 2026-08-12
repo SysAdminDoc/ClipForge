@@ -5,7 +5,13 @@ import time
 from pathlib import Path
 
 from clipforge.processes import (
+    AUDIO_ONLY_STREAM_POLICY,
+    TRANSCODE_STREAM_POLICY,
+    VIDEO_ONLY_STREAM_POLICY,
     command_with_staging_output,
+    output_contract_for_streams,
+    output_contract_from_dict,
+    output_contract_to_dict,
     run_managed_process,
     staging_output_path,
     validate_output,
@@ -151,6 +157,38 @@ def test_worker_outcome_serializes_terminal_state_for_queue_adapters():
         "full_log_path": None,
         "details": {"validator": "ffprobe"},
     }
+
+
+def test_stream_selection_policies_emit_explicit_maps_and_timing_rules():
+    transcode = TRANSCODE_STREAM_POLICY.ffmpeg_args()
+    assert transcode[:4] == ["-map", "0:v:0", "-map", "0:a?"]
+    assert "-sn" in transcode
+    assert "-dn" in transcode
+    assert ["-map_metadata", "0"] == transcode[transcode.index("-map_metadata"):transcode.index("-map_metadata") + 2]
+    assert "-fps_mode" in transcode
+
+    video_only = VIDEO_ONLY_STREAM_POLICY.ffmpeg_args()
+    assert "-map" in video_only
+    assert "-an" in video_only
+    assert "-fps_mode" in video_only
+
+    audio_only = AUDIO_ONLY_STREAM_POLICY.ffmpeg_args()
+    assert "-vn" in audio_only
+    audio_map = audio_only.index("-map")
+    assert audio_only[audio_map:audio_map + 2] == ["-map", "0:a:0?"]
+
+
+def test_output_contract_round_trips_explicit_stream_cardinality(tmp_path):
+    contract = output_contract_for_streams(
+        tmp_path / "output.mkv",
+        expected_duration=2.5,
+        video_count=1,
+        audio_count=2,
+        subtitle_count=0,
+        allowed_codecs=(("video", ("h264",)),),
+    )
+    restored = output_contract_from_dict(output_contract_to_dict(contract))
+    assert restored == contract
 
 
 def test_managed_process_uses_requested_working_directory(tmp_path):

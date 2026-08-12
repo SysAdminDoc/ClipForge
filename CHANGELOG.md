@@ -9,6 +9,7 @@ All notable changes to ClipForge will be documented in this file.
 - Raised the PyQt6 dependency floor to the Qt 6.11.1 security baseline and made the browser runtime SBOM reject stale policy metadata.
 - Desktop media workers now emit typed terminal outcomes with reason codes, cancellation/timeout state, output validation, and bounded log references while preserving existing panel signals.
 - The desktop batch panel now runs from the durable queue journal, restoring interrupted work and exposing reorder, priority, pause/resume, cancellation, and retry-failed controls.
+- Batch conversions and AI reassembly now declare stream maps, intentional subtitle/data drops, metadata/chapter handling, timestamp policy, and persisted ffprobe stream-cardinality contracts; multistream jobs warn before intentional drops.
 
 ## [v0.5.2] - 2026-07-29
 

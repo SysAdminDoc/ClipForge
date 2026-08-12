@@ -79,6 +79,110 @@ class OutputValidationContract:
     required_sidecars: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class StreamSelectionPolicy:
+    """Declare which input streams and timing metadata a generated output uses."""
+
+    video: str = "first"
+    audio: str = "all"
+    subtitles: str = "drop"
+    data: str = "drop"
+    metadata: str = "copy"
+    chapters: str = "copy"
+    timestamps: str = "preserve"
+
+    def ffmpeg_args(self, input_index=0):
+        """Return output-side FFmpeg arguments for this selection policy."""
+        prefix = str(input_index)
+        args = []
+        if self.video == "first":
+            args += ["-map", f"{prefix}:v:0"]
+        elif self.video == "all":
+            args += ["-map", f"{prefix}:v?"]
+        elif self.video == "none":
+            args.append("-vn")
+        else:
+            raise ValueError(f"Unsupported video selection policy: {self.video}")
+
+        if self.audio == "all":
+            args += ["-map", f"{prefix}:a?"]
+        elif self.audio == "first":
+            args += ["-map", f"{prefix}:a:0?"]
+        elif self.audio == "none":
+            args.append("-an")
+        else:
+            raise ValueError(f"Unsupported audio selection policy: {self.audio}")
+
+        if self.subtitles == "drop":
+            args.append("-sn")
+        elif self.subtitles != "copy":
+            raise ValueError(
+                f"Unsupported subtitle selection policy: {self.subtitles}"
+            )
+        if self.data == "drop":
+            args.append("-dn")
+        elif self.data != "copy":
+            raise ValueError(f"Unsupported data selection policy: {self.data}")
+        if self.metadata == "copy":
+            args += ["-map_metadata", prefix]
+        elif self.metadata == "drop":
+            args += ["-map_metadata", "-1"]
+        else:
+            raise ValueError(f"Unsupported metadata policy: {self.metadata}")
+        if self.chapters == "copy":
+            args += ["-map_chapters", prefix]
+        elif self.chapters == "drop":
+            args += ["-map_chapters", "-1"]
+        else:
+            raise ValueError(f"Unsupported chapter policy: {self.chapters}")
+        if self.timestamps == "preserve":
+            args += ["-fps_mode", "passthrough"]
+        elif self.timestamps == "reset":
+            args += ["-avoid_negative_ts", "make_zero"]
+        else:
+            raise ValueError(f"Unsupported timestamp policy: {self.timestamps}")
+        return args
+
+
+TRANSCODE_STREAM_POLICY = StreamSelectionPolicy()
+VIDEO_ONLY_STREAM_POLICY = StreamSelectionPolicy(audio="none")
+AUDIO_ONLY_STREAM_POLICY = StreamSelectionPolicy(
+    video="none",
+    audio="first",
+    metadata="copy",
+    chapters="copy",
+)
+
+
+def output_contract_for_streams(
+    output_path,
+    *,
+    expected_duration=0,
+    video_count=1,
+    audio_count=None,
+    subtitle_count=0,
+    allowed_codecs=(),
+):
+    """Build a semantic contract from an explicit stream-selection decision."""
+    suffix = Path(output_path).suffix.lower()
+    if suffix in _AUDIO_ONLY_SUFFIXES:
+        video_count = 0
+        audio_count = 1 if audio_count is None else audio_count
+    stream_counts = [("video", video_count, video_count)]
+    if audio_count is not None:
+        stream_counts.append(("audio", audio_count, audio_count))
+    if subtitle_count is not None:
+        stream_counts.append(("subtitle", subtitle_count, subtitle_count))
+    duration = float(expected_duration or 0)
+    return OutputValidationContract(
+        expected_duration=duration if duration > 0 else None,
+        duration_tolerance=max(1.0, duration * 0.03),
+        stream_counts=tuple(stream_counts),
+        allowed_formats=_OUTPUT_FORMAT_POLICIES.get(suffix, ()),
+        allowed_codecs=tuple(allowed_codecs),
+    )
+
+
 _OUTPUT_FORMAT_POLICIES = {
     ".mp4": ("mov", "mp4", "m4a", "3gp", "3g2", "mj2"),
     ".m4v": ("mov", "mp4", "m4a", "3gp", "3g2", "mj2"),
@@ -123,6 +227,57 @@ def default_output_contract(
         stream_counts=streams,
         allowed_formats=_OUTPUT_FORMAT_POLICIES.get(suffix, ()),
         required_sidecars=(),
+    )
+
+
+def output_contract_to_dict(contract):
+    """Serialize an output contract into bounded JSON-compatible values."""
+    if contract is None:
+        return None
+    return {
+        "expected_duration": contract.expected_duration,
+        "duration_tolerance": contract.duration_tolerance,
+        "stream_counts": [list(item) for item in contract.stream_counts],
+        "allowed_formats": list(contract.allowed_formats),
+        "allowed_codecs": [
+            [stream_type, list(codecs)]
+            for stream_type, codecs in contract.allowed_codecs
+        ],
+        "required_sidecars": list(contract.required_sidecars),
+    }
+
+
+def output_contract_from_dict(value):
+    """Parse a persisted output contract, rejecting malformed queue data."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("output contract must be an object")
+    stream_counts = value.get("stream_counts", [])
+    allowed_codecs = value.get("allowed_codecs", [])
+    if not isinstance(stream_counts, list) or not isinstance(allowed_codecs, list):
+        raise ValueError("output contract stream policies must be lists")
+    parsed_counts = []
+    for item in stream_counts:
+        if not isinstance(item, list) or len(item) != 3:
+            raise ValueError("output contract stream count is invalid")
+        parsed_counts.append((str(item[0]), int(item[1]), item[2]))
+    parsed_codecs = []
+    for item in allowed_codecs:
+        if not isinstance(item, list) or len(item) != 2 or not isinstance(item[1], list):
+            raise ValueError("output contract codec policy is invalid")
+        parsed_codecs.append((str(item[0]), tuple(str(codec) for codec in item[1])))
+    formats = value.get("allowed_formats", [])
+    sidecars = value.get("required_sidecars", [])
+    if not isinstance(formats, list) or not isinstance(sidecars, list):
+        raise ValueError("output contract formats or sidecars are invalid")
+    return OutputValidationContract(
+        expected_duration=value.get("expected_duration"),
+        duration_tolerance=value.get("duration_tolerance", 1.0),
+        stream_counts=tuple(parsed_counts),
+        allowed_formats=tuple(str(item) for item in formats),
+        allowed_codecs=tuple(parsed_codecs),
+        required_sidecars=tuple(str(item) for item in sidecars),
     )
 
 

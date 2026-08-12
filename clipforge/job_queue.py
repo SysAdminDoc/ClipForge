@@ -16,7 +16,13 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .constants import CONFIG_DIR
-from .processes import default_output_contract, validate_output
+from .processes import (
+    OutputValidationContract,
+    default_output_contract,
+    output_contract_from_dict,
+    output_contract_to_dict,
+    validate_output,
+)
 from .tools import FFPROBE
 
 
@@ -105,6 +111,7 @@ class JobRecord:
     source_size: int | None = None
     source_mtime_ns: int | None = None
     snapshot: dict[str, Any] = field(default_factory=dict)
+    output_contract: OutputValidationContract | None = None
     created_at: str = field(default_factory=_now)
     updated_at: str = field(default_factory=_now)
 
@@ -120,6 +127,7 @@ class JobRecord:
         overwrite: bool = False,
         priority: int = 0,
         snapshot: dict[str, Any] | None = None,
+        output_contract: OutputValidationContract | None = None,
     ) -> "JobRecord":
         source = _normalise_path(source_path)
         output = _normalise_path(output_path)
@@ -140,6 +148,7 @@ class JobRecord:
             source_size=source_stat.st_size if source_stat else None,
             source_mtime_ns=source_stat.st_mtime_ns if source_stat else None,
             snapshot=dict(snapshot or {}),
+            output_contract=output_contract,
             created_at=now,
             updated_at=now,
         )
@@ -161,6 +170,7 @@ class JobRecord:
             "source_size": self.source_size,
             "source_mtime_ns": self.source_mtime_ns,
             "snapshot": dict(self.snapshot),
+            "output_contract": output_contract_to_dict(self.output_contract),
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -188,6 +198,7 @@ class JobRecord:
             source_size=value.get("source_size"),
             source_mtime_ns=value.get("source_mtime_ns"),
             snapshot=value.get("snapshot", {}),
+            output_contract=output_contract_from_dict(value.get("output_contract")),
             created_at=value.get("created_at", ""),
             updated_at=value.get("updated_at", ""),
         )
@@ -236,6 +247,26 @@ def _validate_record(record: JobRecord) -> None:
         ):
             raise QueueValidationError(f"job {field_name} is invalid")
     _validate_snapshot(record.snapshot)
+    if record.output_contract is not None:
+        if not isinstance(record.output_contract, OutputValidationContract):
+            raise QueueValidationError("job output contract is invalid")
+        if len(record.output_contract.stream_counts) > 16:
+            raise QueueValidationError("job output contract has too many stream rules")
+        for stream_type, minimum, maximum in record.output_contract.stream_counts:
+            if not isinstance(stream_type, str) or not stream_type or len(stream_type) > 32:
+                raise QueueValidationError("job output contract stream type is invalid")
+            if (
+                isinstance(minimum, bool)
+                or not isinstance(minimum, int)
+                or minimum < 0
+                or maximum is not None
+                and (
+                    isinstance(maximum, bool)
+                    or not isinstance(maximum, int)
+                    or maximum < minimum
+                )
+            ):
+                raise QueueValidationError("job output contract stream count is invalid")
     _validate_text(record.created_at, "created timestamp", max_length=100)
     _validate_text(record.updated_at, "updated timestamp", max_length=100)
 
@@ -688,7 +719,10 @@ class JobQueue:
             return validate_output(
                 path,
                 ffprobe_path=FFPROBE,
-                contract=default_output_contract(path, expected_duration=job.duration),
+                contract=(
+                    job.output_contract
+                    or default_output_contract(path, expected_duration=job.duration)
+                ),
             )
         try:
             if path.is_file() and path.stat().st_size > 0:

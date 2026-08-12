@@ -19,7 +19,14 @@ from clipforge_utils import format_size, estimate_output_size
 
 from ..constants import C, VIDEO_EXTS
 from ..job_queue import JobQueue, JobRecord, QueueError
-from ..processes import WorkerOutcome
+from ..processes import (
+    AUDIO_ONLY_STREAM_POLICY,
+    TRANSCODE_STREAM_POLICY,
+    VIDEO_ONLY_STREAM_POLICY,
+    StreamSelectionPolicy,
+    WorkerOutcome,
+    output_contract_for_streams,
+)
 from ..tools import FFMPEG, _confirm_overwrite, probe_video
 from ..workers import FFmpegWorker
 from ..widgets import FlowLayout
@@ -584,7 +591,8 @@ class BatchPanel(QWidget):
     def _build_cmd(self, src_path, out_path, operation):
         if not FFMPEG:
             return None
-        cmd = [FFMPEG, "-y", "-i", src_path]
+        policy = self._stream_policy(operation)
+        cmd = [FFMPEG, "-y", "-i", src_path] + policy.ffmpeg_args()
         if operation == "Convert to MP4 (H.264)":
             cmd += ["-c:v", "libx264", "-crf", "18", "-preset", "medium",
                     "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", out_path]
@@ -603,9 +611,80 @@ class BatchPanel(QWidget):
         elif operation == "Remove Audio":
             cmd += ["-c:v", "copy", "-an", out_path]
         elif operation == "Lossless Trim (first 30s)":
-            cmd = [FFMPEG, "-y", "-i", src_path, "-t", "30", "-c", "copy",
-                   "-avoid_negative_ts", "make_zero", out_path]
+            trim_policy = StreamSelectionPolicy(
+                audio="all",
+                timestamps="reset",
+            )
+            cmd = [FFMPEG, "-y", "-i", src_path] + trim_policy.ffmpeg_args()
+            cmd += ["-t", "30", "-c", "copy", out_path]
         return cmd
+
+    @staticmethod
+    def _stream_policy(operation):
+        if operation in {"Extract Audio (MP3)", "Extract Audio (AAC)"}:
+            return AUDIO_ONLY_STREAM_POLICY
+        if operation == "Remove Audio":
+            return VIDEO_ONLY_STREAM_POLICY
+        return TRANSCODE_STREAM_POLICY
+
+    @staticmethod
+    def _output_contract(source_info, output_path, operation, duration):
+        streams = (source_info or {}).get("streams", [])
+        source_audio_count = sum(
+            stream.get("codec_type") == "audio" for stream in streams
+        )
+        if operation in {"Extract Audio (MP3)", "Extract Audio (AAC)"}:
+            audio_count = 1
+            video_count = 0
+            subtitle_count = 0
+        elif operation == "Remove Audio":
+            audio_count = 0
+            video_count = 1
+            subtitle_count = 0
+        else:
+            audio_count = source_audio_count if source_info is not None else None
+            video_count = 1
+            subtitle_count = 0
+        codec_policy = {
+            "Convert to MP4 (H.264)": (("video", ("h264",)), ("audio", ("aac",))),
+            "Convert to MKV (H.265)": (("video", ("hevc",)), ("audio", ("aac",))),
+            "Convert to WebM (VP9)": (("video", ("vp9",)), ("audio", ("opus",))),
+            "Extract Audio (MP3)": (("audio", ("mp3",)),),
+            "Extract Audio (AAC)": (("audio", ("aac",)),),
+            "Downscale to 1080p": (("video", ("h264",)),),
+            "Downscale to 720p": (("video", ("h264",)),),
+        }.get(operation, ())
+        return output_contract_for_streams(
+            output_path,
+            expected_duration=duration,
+            video_count=video_count,
+            audio_count=audio_count,
+            subtitle_count=subtitle_count,
+            allowed_codecs=codec_policy,
+        )
+
+    def _report_stream_policy(self, source_info, operation, source_path):
+        """Surface intentional stream drops before a batch starts."""
+        if not source_info:
+            return False
+        dropped = [
+            stream.get("codec_type")
+            for stream in source_info.get("streams", [])
+            if stream.get("codec_type") in {"subtitle", "data", "attachment"}
+        ]
+        if not dropped:
+            return False
+        types = ", ".join(sorted(set(dropped)))
+        self.console.append(
+            f"[Batch stream policy] {Path(source_path).name}: "
+            f"{types} stream(s) will be dropped; video/audio, metadata, "
+            "chapters, and timestamps follow the selected operation.\n"
+        )
+        self.requestToast.emit(
+            f"Batch will drop {types} stream(s); see the console for policy",
+            C["yellow"],
+        )
+        return True
 
     def _start_batch(self):
         if self._queue.active or not self._items or not FFMPEG:
@@ -629,6 +708,7 @@ class BatchPanel(QWidget):
             for job in jobs_by_id.values()
         }
         prepared = []
+        stream_warning_shown = False
         for row in new_rows:
             source_path = self._items[row]
             try:
@@ -653,7 +733,16 @@ class BatchPanel(QWidget):
             if not _confirm_overwrite(self, output_path, source_path):
                 return
             info = probe_video(source_path) if os.path.exists(source_path) else None
-            duration = float(info.get("duration", 0) or 0) if info else 0.0
+            if not stream_warning_shown:
+                stream_warning_shown = self._report_stream_policy(
+                    info, operation, source_path
+                )
+            source_duration = float(info.get("duration", 0) or 0) if info else 0.0
+            duration = (
+                min(30.0, source_duration)
+                if operation == "Lossless Trim (first 30s)"
+                else source_duration
+            )
             command = self._build_cmd(source_path, output_path, operation)
             if not command:
                 return
@@ -662,6 +751,9 @@ class BatchPanel(QWidget):
                 "source": source_path,
                 "output": output_path,
                 "duration": duration,
+                "contract": self._output_contract(
+                    info, output_path, operation, duration
+                ),
                 "command": command,
                 "overwrite": os.path.exists(output_path),
             })
@@ -706,6 +798,7 @@ class BatchPanel(QWidget):
                 duration=entry["duration"],
                 overwrite=entry["overwrite"],
                 priority=self._row_priorities[entry["row"]],
+                output_contract=entry["contract"],
                 snapshot={
                     "template": template,
                     "output_dir": output_dir or "",
@@ -767,6 +860,7 @@ class BatchPanel(QWidget):
             job.duration,
             output_path=out_path,
             overwrite=job.overwrite,
+            output_contract=job.output_contract,
         )
         self._worker.progress.connect(self._on_item_progress)
         self._worker.log_output.connect(self.console.append)

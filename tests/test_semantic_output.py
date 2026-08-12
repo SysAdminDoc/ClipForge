@@ -72,12 +72,16 @@ def test_ai_reassembly_preserves_source_audio_cardinality(
         str(frames / "frame_%06d.png"),
     ])
     output = tmp_path / "result.mkv"
-    _run(_ai_reassembly_command(
+    reassembly = _ai_reassembly_command(
         frames / "frame_%06d.png",
         source,
         output,
         24,
-    ))
+    )
+    assert "-map" in reassembly and "1:a?" in reassembly
+    assert reassembly[reassembly.index("-fps_mode") + 1] == "cfr"
+    assert "-sn" in reassembly and "-dn" in reassembly
+    _run(reassembly)
 
     source_info = probe_video(str(source))
     ok, reason = validate_output(

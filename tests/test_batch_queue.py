@@ -77,3 +77,28 @@ def test_batch_panel_reorders_and_prioritizes_saved_jobs(monkeypatch, tmp_path):
     assert panel.file_list.item(0).text().startswith("○")
     assert "priority 7" in panel.file_list.item(0).text()
     panel.deleteLater()
+
+
+def test_batch_panel_warns_before_dropping_subtitle_or_data_streams(
+    monkeypatch, tmp_path
+):
+    panel, _ = _panel(monkeypatch, tmp_path)
+    notices = []
+    panel.requestToast.connect(lambda message, _color: notices.append(message))
+
+    warned = panel._report_stream_policy(
+        {
+            "streams": [
+                {"codec_type": "video"},
+                {"codec_type": "subtitle"},
+                {"codec_type": "data"},
+            ]
+        },
+        "Convert to MP4 (H.264)",
+        tmp_path / "source.mkv",
+    )
+
+    assert warned
+    assert "subtitle" in panel.console.toPlainText()
+    assert notices and "drop" in notices[0]
+    panel.deleteLater()

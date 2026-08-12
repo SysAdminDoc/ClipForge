@@ -7,6 +7,7 @@ from clipforge.job_queue import (
     JobRecord,
     QueueBusyError,
 )
+from clipforge.processes import output_contract_for_streams
 
 
 def _job(tmp_path, name, *, priority=0, overwrite=False):
@@ -49,6 +50,32 @@ def test_queue_persists_snapshot_and_priority_order(tmp_path):
     assert restored_high.attempts == 1
     assert restored_high.snapshot["template"] == "{name}-out{ext}"
     assert json.loads(queue_path.read_text(encoding="utf-8"))["schema_version"] == 1
+
+
+def test_queue_persists_output_contract_for_restart_validation(tmp_path):
+    queue_path = tmp_path / "job-queue.json"
+    source = tmp_path / "source.mp4"
+    output = tmp_path / "output.mp4"
+    source.write_bytes(b"source")
+    contract = output_contract_for_streams(
+        output,
+        expected_duration=1.0,
+        video_count=1,
+        audio_count=2,
+        subtitle_count=0,
+    )
+    job = JobRecord.create(
+        source,
+        output,
+        "Convert",
+        ["ffmpeg", "-i", str(source), str(output)],
+        output_contract=contract,
+    )
+    queue = JobQueue(queue_path)
+    queue.add([job])
+
+    restored = JobQueue(queue_path)
+    assert restored.jobs[0].output_contract == contract
 
 
 def test_queue_rejects_mutations_while_active_and_supports_pause_resume(tmp_path):
