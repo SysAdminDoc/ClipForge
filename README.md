@@ -128,7 +128,7 @@ All-in-one video editor — Trim, Crop, Upscale, Interpolate, Convert, Filter, A
 - **Atomic output safety** — validates staged media before replacing the chosen destination
 - **Runtime security policy** — rejects unreviewed FFmpeg branches, keeps NVDEC fail-closed until a reviewed boundary, and requires the patched Qt 6.11.1 runtime
 - **Cross-surface provenance** — release checks record exact versions, SHA-256 hashes, licenses, and lock/source metadata for browser assets, Python distributions, FFmpeg/ffprobe, optional libmpv, and managed AI tools; support diagnostics include the identities used by each desktop job
-- 176-test suite covering utilities, process safety, semantic media validation, generated media, probing, proxy/AI caching, supply-chain validation, diagnostics, persistence, browser jobs, and accessibility contracts
+- 177-test suite covering utilities, process safety, semantic media validation, generated media, probing, proxy/AI caching, supply-chain validation, diagnostics, persistence, browser jobs, and accessibility contracts
 
 ### Web Editor
 
@@ -145,6 +145,7 @@ Try it in the browser: **[sysadmindoc.github.io/ClipForge](https://sysadmindoc.g
 - Runtime hashes, build provenance, dependency inventory, and license files under `vendor/ffmpeg/`
 - **Full undo/redo** (Ctrl+Z / Ctrl+Shift+Z, 50-deep history)
 - **Truthful multi-clip export** — contiguous video clips and embedded source audio are rendered; preflight blocks unsupported gaps, overlaps, transitions, unlinked audio/music, or unrendered effects instead of silently dropping them
+- **Shared browser timeline semantics** — preview and export resolve clip boundaries, source in-points, transforms, and track mute/solo state through the same tested timeline plan
 - Cancellable MP4, WebM, and GIF export with sanitized filenames, cleanup, and quality/resolution options
 - Serialized waveform, proxy, and export jobs with collision-proof virtual paths, shared progress/cancel state, guaranteed cleanup, and reusable-engine recovery
 - Versioned `.clipforge` project save/load with legacy migration, IndexedDB crash recovery, and explicit local-media relinking
@@ -204,7 +205,7 @@ python scripts/release_check.py --build
 Release builds are unsigned and produced locally. `clipforge/version.py` is the
 version source of truth; use `python scripts/sync_version.py --set X.Y.Z` to
 update desktop, web, README, and Windows executable metadata together.
-The release check runs the 171-test Python and headless-Chromium suite, then
+The release check runs the 177-test Python and headless-Chromium suite, then
 generates disposable FFmpeg fixtures for audio/video,
 subtitles, chapters, rotation, VFR, odd filenames, and core edit operations;
 `--build` creates a fresh hash-locked environment, builds the unsigned

@@ -13,6 +13,7 @@ All notable changes to ClipForge will be documented in this file.
 - The release gate now runs a deterministic cross-surface media matrix covering desktop/AI contracts, browser export and relinking, VFR/multistream timing, cancellation, interrupted queues, and invalid outputs.
 - Release checks now emit a cross-surface provenance manifest covering the browser SBOM, hash-locked Python distributions, external FFmpeg/ffprobe binaries, optional libmpv, and managed AI tools; desktop job diagnostics retain the exact runtime identities used.
 - Batch source inspection and thumbnail metadata probes now run in cancellable worker threads with bounded FFprobe timeouts; preview background reads no longer block the GUI while waiting for cancellation, and shutdown retains confirmed-worker cleanup diagnostics.
+- Browser preview and export now share a resolved timeline plan for clip boundaries, source in-points, transforms, and track audio state; browser behavior tests cover the same plan at both surfaces.
 
 ## [v0.5.2] - 2026-07-29
 

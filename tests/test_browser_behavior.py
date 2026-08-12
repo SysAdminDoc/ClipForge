@@ -190,6 +190,137 @@ def test_legacy_project_migrates_and_relinks_matching_local_media(browser_page):
     assert browser_page.locator(".media-item.missing").count() == 0
 
 
+def test_timeline_resolver_is_shared_by_preview_and_export_plan(browser_page):
+    payload = _project(
+        "Resolver Project",
+        media=[
+            {
+                "id": "media-a",
+                "name": "first.mp4",
+                "type": "video",
+                "duration": 12,
+                "width": 320,
+                "height": 180,
+                "reference": {"name": "first.mp4", "mime": "video/mp4"},
+            },
+            {
+                "id": "media-b",
+                "name": "second.mp4",
+                "type": "video",
+                "duration": 12,
+                "width": 320,
+                "height": 180,
+                "reference": {"name": "second.mp4", "mime": "video/mp4"},
+            },
+        ],
+        clips=[
+            {
+                "id": "video-a",
+                "mediaId": "media-a",
+                "track": "video",
+                "startTime": 0,
+                "duration": 2,
+                "inPoint": 3,
+                "outPoint": 5,
+                "name": "First video",
+                "type": "video",
+                "linkedTo": "audio-a",
+            },
+            {
+                "id": "audio-a",
+                "mediaId": "media-a",
+                "track": "audio",
+                "startTime": 0,
+                "duration": 2,
+                "inPoint": 3,
+                "outPoint": 5,
+                "name": "First audio",
+                "type": "audio",
+                "linkedTo": "video-a",
+                "volume": 80,
+            },
+            {
+                "id": "video-b",
+                "mediaId": "media-b",
+                "track": "video",
+                "startTime": 2,
+                "duration": 3,
+                "inPoint": 1,
+                "outPoint": 4,
+                "name": "Second video",
+                "type": "video",
+                "linkedTo": "audio-b",
+            },
+            {
+                "id": "audio-b",
+                "mediaId": "media-b",
+                "track": "audio",
+                "startTime": 2,
+                "duration": 3,
+                "inPoint": 1,
+                "outPoint": 4,
+                "name": "Second audio",
+                "type": "audio",
+                "linkedTo": "video-b",
+            },
+        ],
+    )
+    _upload_project(browser_page, payload)
+    browser_page.wait_for_function(
+        "() => document.querySelector('.project-name')?.textContent === 'Resolver Project'"
+    )
+
+    resolved = browser_page.evaluate(
+        """
+        () => {
+            const atStart = window.resolveTimelineAtTime(0.5);
+            const atSecond = window.resolveTimelineAtTime(2.5);
+            const plan = window.buildResolvedTimelinePlan();
+            const preflight = window.buildExportPreflight();
+            return {
+                atStart: {
+                    video: atStart.video && {
+                        name: atStart.video.clip.name,
+                        sourceTime: atStart.video.sourceTime,
+                    },
+                    audio: atStart.audio.map(entry => ({
+                        name: entry.clip.name,
+                        sourceTime: entry.sourceTime,
+                        volume: entry.volume,
+                    })),
+                },
+                atSecond: {
+                    name: atSecond.video?.clip.name,
+                    sourceTime: atSecond.video?.sourceTime,
+                },
+                plan: plan.videoSegments.map(segment => ({
+                    name: segment.clip.name,
+                    timelineStart: segment.timelineStart,
+                    sourceStart: segment.sourceStart,
+                    duration: segment.duration,
+                })),
+                exportPlan: preflight.timelinePlan.videoSegments.map(segment => ({
+                    name: segment.clip.name,
+                    timelineStart: segment.timelineStart,
+                    sourceStart: segment.sourceStart,
+                    duration: segment.duration,
+                })),
+            };
+        }
+        """
+    )
+    assert resolved["atStart"] == {
+        "video": {"name": "First video", "sourceTime": 3.5},
+        "audio": [{"name": "First audio", "sourceTime": 3.5, "volume": 80}],
+    }
+    assert resolved["atSecond"] == {"name": "Second video", "sourceTime": 1.5}
+    assert resolved["plan"] == [
+        {"name": "First video", "timelineStart": 0, "sourceStart": 3, "duration": 2},
+        {"name": "Second video", "timelineStart": 2, "sourceStart": 1, "duration": 3},
+    ]
+    assert resolved["exportPlan"] == resolved["plan"]
+
+
 def test_project_switch_clears_history_after_dirty_confirmation(browser_page):
     browser_page.locator("#fileInput").set_input_files(
         {"name": "first.png", "mimeType": "image/png", "buffer": PNG_BYTES}

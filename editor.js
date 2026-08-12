@@ -75,6 +75,8 @@ let audioContext = null;
 
 // Preview elements
 let previewVideo, previewCanvas, previewCtx;
+let activePreviewClipId = null;
+let previewSource = null;
 
 // ==================== INITIALIZATION ====================
 document.addEventListener('DOMContentLoaded', async () => {
@@ -944,7 +946,7 @@ function addToTimeline(mediaId) {
     
     // Show preview
     if (media.type === 'video') {
-        loadPreview(media.proxyUrl || media.url);
+        syncPreviewAtTime(currentTime);
     }
     
     toast('info', `Added "${media.name}" to timeline`);
@@ -1077,7 +1079,7 @@ async function generateBrowserProxy(mediaId) {
             clip.url = media.proxyActive ? media.proxyUrl : media.url;
             clip.proxyActive = media.proxyActive;
         });
-        loadPreview(media.proxyActive ? media.proxyUrl : media.url);
+        syncPreviewAtTime(currentTime);
         renderMediaList();
         renderTimeline();
         toast('info', media.proxyActive ? 'Proxy selected for preview' : 'Original selected for preview');
@@ -1138,7 +1140,7 @@ async function generateBrowserProxy(mediaId) {
                 await pruneBrowserProxyCache();
                 job.assertActive();
                 applyBrowserProxy(media, payload);
-                if (previewVideo?.src === media.url) loadPreview(media.proxyUrl);
+                syncPreviewAtTime(currentTime);
             },
         );
         toast('success', 'Proxy cached and selected for preview; export still uses the original');
@@ -1908,6 +1910,114 @@ function unlinkAudio() {
 }
 
 // ==================== PLAYBACK ====================
+function resolveTimelineAtTime(time = currentTime) {
+    const projectDuration = clips.reduce(
+        (end, clip) => Math.max(end, finiteNumber(clip.startTime) + finiteNumber(clip.duration)),
+        0,
+    );
+    const globalTime = Math.max(
+        0,
+        Math.min(projectDuration, finiteNumber(time)),
+    );
+    const active = clips.filter(clip => {
+        const start = finiteNumber(clip.startTime);
+        const end = start + Math.max(0, finiteNumber(clip.duration));
+        return start <= globalTime && globalTime < end;
+    });
+    const videoCandidates = active
+        .filter(clip => clip.track === 'video')
+        .sort((left, right) => finiteNumber(left.startTime) - finiteNumber(right.startTime));
+    const selectedVideo = trackStates.video.visible === false
+        ? null
+        : videoCandidates[videoCandidates.length - 1] || null;
+    const video = selectedVideo
+        ? {
+            clip: selectedVideo,
+            sourceTime: Math.max(
+                finiteNumber(selectedVideo.inPoint),
+                Math.min(
+                    finiteNumber(selectedVideo.outPoint, finiteNumber(selectedVideo.inPoint) + finiteNumber(selectedVideo.duration)),
+                    finiteNumber(selectedVideo.inPoint) + globalTime - finiteNumber(selectedVideo.startTime),
+                ),
+            ),
+        }
+        : null;
+
+    const audioCandidates = active.filter(
+        clip => clip.track === 'audio' || clip.track === 'music',
+    );
+    const soloTrack = trackStates.audio.solo
+        ? 'audio'
+        : (trackStates.music.solo ? 'music' : null);
+    const audio = audioCandidates
+        .filter(clip => !soloTrack || clip.track === soloTrack)
+        .filter(clip => !trackStates[clip.track]?.muted)
+        .map(clip => ({
+            clip,
+            sourceTime: Math.max(
+                finiteNumber(clip.inPoint),
+                Math.min(
+                    finiteNumber(clip.outPoint, finiteNumber(clip.inPoint) + finiteNumber(clip.duration)),
+                    finiteNumber(clip.inPoint) + globalTime - finiteNumber(clip.startTime),
+                ),
+            ),
+            volume: Math.max(0, Math.min(100, finiteNumber(clip.volume, 100))),
+        }));
+    return {
+        time: globalTime,
+        video,
+        audio,
+        active,
+        trackStates: JSON.parse(JSON.stringify(trackStates)),
+    };
+}
+
+function buildResolvedTimelinePlan() {
+    const projectDuration = clips.reduce(
+        (end, clip) => Math.max(end, finiteNumber(clip.startTime) + finiteNumber(clip.duration)),
+        0,
+    );
+    const boundaries = [...new Set([
+        0,
+        projectDuration,
+        ...clips.flatMap(clip => [
+            Math.max(0, finiteNumber(clip.startTime)),
+            Math.max(0, finiteNumber(clip.startTime) + finiteNumber(clip.duration)),
+        ]),
+    ])].sort((left, right) => left - right);
+    const videoSegments = [];
+    const audioSegments = [];
+    for (let index = 0; index < boundaries.length - 1; index++) {
+        const start = boundaries[index];
+        const end = boundaries[index + 1];
+        if (end - start <= 0.0001) continue;
+        const resolved = resolveTimelineAtTime((start + end) / 2);
+        if (resolved.video) {
+            const previous = videoSegments[videoSegments.length - 1];
+            if (
+                previous
+                && previous.clip.id === resolved.video.clip.id
+                && Math.abs(previous.timelineStart + previous.duration - start) < 0.0001
+            ) {
+                previous.duration = end - previous.timelineStart;
+            } else {
+                videoSegments.push({
+                    clip: resolved.video.clip,
+                    timelineStart: start,
+                    sourceStart: finiteNumber(resolved.video.clip.inPoint),
+                    duration: end - start,
+                });
+            }
+        }
+        audioSegments.push({
+            timelineStart: start,
+            duration: end - start,
+            clips: resolved.audio,
+        });
+    }
+    return { duration: projectDuration, boundaries, videoSegments, audioSegments };
+}
+
 function togglePlay() {
     if (isPlaying) {
         pause();
@@ -1922,11 +2032,7 @@ function play() {
     isPlaying = true;
     document.getElementById('playBtn').innerHTML = '⏸';
     
-    // Start video playback
-    if (previewVideo.src) {
-        previewVideo.currentTime = currentTime;
-        previewVideo.play();
-    }
+    syncPreviewAtTime(currentTime, { autoplay: true });
     
     playbackInterval = setInterval(() => {
         currentTime += 1/30;
@@ -1934,6 +2040,7 @@ function play() {
             pause();
             currentTime = 0;
         }
+        syncPreviewAtTime(currentTime, { autoplay: true });
         updatePlayhead();
     }, 1000/30);
 }
@@ -2006,26 +2113,78 @@ function updateDuration() {
 
 // ==================== PREVIEW ====================
 function loadPreview(url) {
+    if (!url) return;
+    previewSource = url;
     previewVideo.src = url;
     previewVideo.style.display = 'block';
     document.getElementById('previewPlaceholder').style.display = 'none';
 }
 
-function seekPreview(time) {
-    if (previewVideo.src) {
-        previewVideo.currentTime = time;
+function syncPreviewAtTime(time, { autoplay = false } = {}) {
+    if (!previewVideo) return null;
+    const resolved = resolveTimelineAtTime(time);
+    const video = resolved.video;
+    if (!video) {
+        previewVideo.pause();
+        activePreviewClipId = null;
+        previewSource = null;
+        previewVideo.style.display = 'none';
+        document.getElementById('previewPlaceholder').style.display = 'flex';
+        document.querySelector('.preview-placeholder-text').textContent =
+            'No video clip at the playhead.';
+        return resolved;
     }
+    const clip = video.clip;
+    const media = mediaItems.find(item => item.id == clip.mediaId);
+    const url = clip.url || media?.proxyUrl || media?.url;
+    if (!url) return resolved;
+    if (activePreviewClipId !== clip.id || previewSource !== url) {
+        activePreviewClipId = clip.id;
+        loadPreview(url);
+    }
+    previewVideo.style.opacity = String(Math.max(0, Math.min(1, finiteNumber(clip.opacity, 100) / 100)));
+    previewVideo.style.transform = `rotate(${finiteNumber(clip.rotation)}deg) scale(${Math.max(0.01, finiteNumber(clip.scale, 100) / 100)})`;
+    previewVideo.style.filter = `brightness(${1 + finiteNumber(clip.brightness) / 100}) contrast(${1 + finiteNumber(clip.contrast) / 100}) saturate(${1 + finiteNumber(clip.saturation) / 100})`;
+    const linkedAudio = resolved.audio.find(
+        entry => entry.clip.id === clip.linkedTo || entry.clip.linkedTo === clip.id,
+    );
+    previewVideo.muted = !linkedAudio;
+    previewVideo.volume = linkedAudio ? linkedAudio.volume / 100 : 0;
+    const target = Math.max(0, video.sourceTime);
+    if (previewVideo.readyState >= 1 && Math.abs(previewVideo.currentTime - target) > 0.08) {
+        previewVideo.currentTime = target;
+    }
+    previewVideo.style.display = 'block';
+    document.getElementById('previewPlaceholder').style.display = 'none';
+    if (autoplay && isPlaying && previewVideo.paused) {
+        const playPromise = previewVideo.play();
+        playPromise?.catch(() => {});
+    }
+    return resolved;
+}
+
+function seekPreview(time) {
+    syncPreviewAtTime(time, { autoplay: isPlaying });
 }
 
 function onVideoTimeUpdate() {
     if (isPlaying) {
-        currentTime = previewVideo.currentTime;
+        const resolved = resolveTimelineAtTime(currentTime);
+        if (resolved.video?.clip && resolved.video.clip.id === activePreviewClipId) {
+            currentTime = Math.max(
+                0,
+                finiteNumber(resolved.video.clip.startTime)
+                    + previewVideo.currentTime
+                    - finiteNumber(resolved.video.clip.inPoint),
+            );
+        }
         updatePlayhead();
     }
 }
 
 function onVideoLoaded() {
     console.log('Video loaded:', previewVideo.duration);
+    syncPreviewAtTime(currentTime, { autoplay: isPlaying });
 }
 
 function onVideoEnded() {
@@ -2153,6 +2312,7 @@ function buildExportPreflight() {
     const videoClips = clips
         .filter(clip => clip.track === 'video')
         .sort((a, b) => a.startTime - b.startTime);
+    const timelinePlan = buildResolvedTimelinePlan();
 
     if (!ffmpegLoaded) reasons.push('The FFmpeg engine is not ready.');
     if (browserFfmpegJob && browserFfmpegJob.type !== 'export') {
@@ -2182,6 +2342,9 @@ function buildExportPreflight() {
         || trackStates.music.solo
     ) {
         reasons.push('Track visibility, mute, and solo states are preview-only and must be reset before export.');
+    }
+    if (videoClips.length > 0 && timelinePlan.videoSegments.length !== videoClips.length) {
+        reasons.push('The resolved timeline cannot represent every video clip as a deterministic export segment.');
     }
 
     videoClips.forEach((clip, index) => {
@@ -2241,7 +2404,14 @@ function buildExportPreflight() {
             ? 'GIF has no audio by format; embedded source audio will be omitted.'
             : 'Embedded source audio is preserved when present.',
     );
-    return { supported: reasons.length === 0, reasons: [...new Set(reasons)], notes, videoClips };
+    return {
+        supported: reasons.length === 0,
+        reasons: [...new Set(reasons)],
+        notes,
+        videoClips,
+        videoSegments: timelinePlan.videoSegments,
+        timelinePlan,
+    };
 }
 
 function renderExportPreflight() {
@@ -2297,17 +2467,18 @@ async function exportVideo() {
                     || 'clipforge-export'
                 );
                 document.getElementById('exportFilename').value = filename;
-                const videoClips = preflight.videoClips;
+                const videoSegments = preflight.videoSegments || [];
                 const segmentFiles = [];
 
-                for (let i = 0; i < videoClips.length; i++) {
-                    const clip = videoClips[i];
+                for (let i = 0; i < videoSegments.length; i++) {
+                    const segment = videoSegments[i];
+                    const clip = segment.clip;
                     const media = mediaItems.find(item => item.id === clip.mediaId);
                     if (!media?.file) {
                         throw new Error(`Source is missing for ${clip.name}`);
                     }
                     document.getElementById('loadingText').textContent =
-                        `Processing clip ${i + 1}/${videoClips.length}...`;
+                        `Processing clip ${i + 1}/${videoSegments.length}...`;
                     const extension =
                         media.file.name.match(/\.[A-Za-z0-9]{1,8}$/)?.[0] || '.bin';
                     const inputName = job.path(`input_${i}`, extension);
@@ -2315,9 +2486,9 @@ async function exportVideo() {
                     await job.writeSource(inputName, media.file);
 
                     const args = [];
-                    if (clip.inPoint > 0) args.push('-ss', String(clip.inPoint));
+                    if (segment.sourceStart > 0) args.push('-ss', String(segment.sourceStart));
                     args.push('-i', inputName);
-                    args.push('-t', String(clip.duration));
+                    args.push('-t', String(segment.duration));
                     args.push(
                         '-map', '0:v:0',
                         '-map', '0:a?',
@@ -2444,7 +2615,7 @@ async function exportVideo() {
                 await job.deleteFile(finalOutput);
                 toast(
                     'success',
-                    `Exported ${videoClips.length} clip(s) successfully!`,
+                    `Exported ${videoSegments.length} clip(s) successfully!`,
                 );
             },
         );
@@ -2720,6 +2891,8 @@ function resetProjectRuntimeState() {
     redoStack.length = 0;
     currentTool = 'select';
     exportCancelRequested = false;
+    activePreviewClipId = null;
+    previewSource = null;
     if (previewVideo) {
         previewVideo.pause();
         previewVideo.removeAttribute('src');
@@ -3059,7 +3232,8 @@ Object.assign(window, {
     setTool, setZoom, splitClip, deleteSelected, copyClip, cutClip, pasteClip,
     selectAllClips, addTransition, selectTransitionType, unlinkAudio,
     setVolume, toggleMute, showExportModal, hideExportModal, exportVideo,
-    buildExportPreflight, serializeProject, normalizeProject,
+    buildExportPreflight, buildResolvedTimelinePlan, resolveTimelineAtTime,
+    serializeProject, normalizeProject,
     cancelExport, saveProject, recoverLastProject, discardRecoveryProject,
     applyProjectSnapshot, showEditMenu,
     generateBrowserProxy, updateClipProperty, applyQuickEffect,
