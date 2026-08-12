@@ -28,6 +28,7 @@ All notable changes to ClipForge will be documented in this file.
 - Silence detection now presents persisted, editable review markers so users can adjust boundaries or exclude individual ranges before removal.
 - Video clips now render bounded full-duration thumbnail strips with hover scrubbing, and the desktop View menu can float the preview pane for multi-monitor editing.
 - Filters now support dependency-free, keyframe-editable motion-tracked blur regions with bounded FFmpeg crop/overlay expressions; project sessions persist the redaction controls.
+- Added optional local Tesseract hardsub OCR: cancellable FFmpeg frame sampling, confidence-filtered TSV parsing, stable observation merging, and atomic `.srt` export; Whisper captions remain separate.
 
 ## [v0.5.2] - 2026-07-29
 

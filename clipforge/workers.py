@@ -5,6 +5,7 @@ import re
 import shutil
 import threading
 import time as _time
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -41,6 +42,7 @@ from .processes import (
 from .diagnostics import DIAGNOSTICS
 from .ai_tools import AIFrameCache
 from .runtime_policy import evaluate_ffmpeg_runtime, evaluate_nvdec
+from .ocr import format_srt, merge_ocr_observations, parse_tesseract_tsv
 
 # ---------------------------------------------------------------------------
 # Probe workers
@@ -216,6 +218,194 @@ class FrameExtractWorker(QThread):
         )
         self.outcome_signal.emit(outcome)
         self.finished_signal.emit(self.filepath, pixmap)
+
+
+class OCRWorker(QThread):
+    """Sample hardsubs and run local Tesseract without blocking the GUI."""
+
+    progress = pyqtSignal(float)
+    log_output = pyqtSignal(str)
+    outcome_signal = pyqtSignal(object)
+    finished_signal = pyqtSignal(bool, str, str)
+
+    def __init__(
+        self,
+        filepath,
+        tesseract_path,
+        language="eng",
+        parent=None,
+        *,
+        sample_rate=2.0,
+        max_samples=600,
+    ):
+        super().__init__(parent)
+        self.filepath = str(filepath)
+        self.tesseract_path = str(tesseract_path)
+        self.language = str(language or "eng")[:32]
+        self.sample_rate = max(0.25, float(sample_rate))
+        self.max_samples = max(1, min(int(max_samples), 600))
+        self._cancel_event = threading.Event()
+
+    def cancel(self):
+        self._cancel_event.set()
+
+    def _finish(self, outcome, srt_text=""):
+        self.outcome_signal.emit(outcome)
+        self.finished_signal.emit(
+            outcome.state == "succeeded",
+            outcome.message,
+            srt_text,
+        )
+
+    def run(self):
+        if not FFMPEG or not self.tesseract_path:
+            self._finish(
+                WorkerOutcome(
+                    "failed",
+                    "dependency_missing",
+                    "FFmpeg and Tesseract are required for hardsub OCR",
+                )
+            )
+            return
+        probe_result = probe_media(
+            self.filepath,
+            timeout=15,
+            cancel_event=self._cancel_event,
+        )
+        if probe_result.error and probe_result.error.code == "probe_cancelled":
+            self._finish(
+                WorkerOutcome(
+                    "cancelled",
+                    "cancelled",
+                    "Hardsub OCR cancelled",
+                    cancelled=True,
+                )
+            )
+            return
+        info = probe_result.info or {}
+        duration = max(0.0, float(info.get("duration") or 0))
+        if duration <= 0:
+            self._finish(
+                WorkerOutcome("failed", "invalid_duration", "Video duration is unavailable")
+            )
+            return
+        sample_count = min(self.max_samples, max(1, math.ceil(duration * self.sample_rate)))
+        fps = sample_count / duration
+        interval = 1.0 / fps
+        tmpdir = create_job_temp_dir("ocr")
+        try:
+            pattern = str(Path(tmpdir) / "frame_%04d.png")
+            command = [
+                FFMPEG,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-i",
+                self.filepath,
+                "-vf",
+                f"fps={fps:.9f},scale=1280:-2",
+                "-frames:v",
+                str(sample_count),
+                "-y",
+                pattern,
+            ]
+            self.log_output.emit("[OCR] Sampling hardsub frames…\n")
+            extraction = run_managed_process(
+                command,
+                cancel_event=self._cancel_event,
+                timeout=max(60, duration * 2),
+                stderr_callback=self.log_output.emit,
+            )
+            if extraction.cancelled or self._cancel_event.is_set():
+                self._finish(
+                    WorkerOutcome(
+                        "cancelled",
+                        "cancelled",
+                        "Hardsub OCR cancelled",
+                        cancelled=True,
+                    )
+                )
+                return
+            if extraction.timed_out or extraction.returncode != 0:
+                self._finish(
+                    WorkerOutcome(
+                        "failed",
+                        "frame_extract_failed",
+                        "Could not sample frames for hardsub OCR",
+                        returncode=extraction.returncode,
+                    )
+                )
+                return
+            observations = []
+            frame_paths = sorted(Path(tmpdir).glob("frame_*.png"))
+            for index, frame_path in enumerate(frame_paths):
+                if self._cancel_event.is_set():
+                    self._finish(
+                        WorkerOutcome(
+                            "cancelled",
+                            "cancelled",
+                            "Hardsub OCR cancelled",
+                            cancelled=True,
+                        )
+                    )
+                    return
+                result = run_managed_process(
+                    [
+                        self.tesseract_path,
+                        str(frame_path),
+                        "stdout",
+                        "--psm",
+                        "6",
+                        "-l",
+                        self.language,
+                        "tsv",
+                    ],
+                    cancel_event=self._cancel_event,
+                    timeout=15,
+                )
+                if result.cancelled:
+                    self._finish(
+                        WorkerOutcome(
+                            "cancelled",
+                            "cancelled",
+                            "Hardsub OCR cancelled",
+                            cancelled=True,
+                        )
+                    )
+                    return
+                if result.returncode == 0:
+                    text = parse_tesseract_tsv(result.stdout)
+                    if text:
+                        observations.append((index * interval, text))
+                self.progress.emit((index + 1) / max(len(frame_paths), 1) * 100)
+            segments = merge_ocr_observations(
+                observations,
+                duration=duration,
+                sample_interval=interval,
+            )
+            srt_text = format_srt(segments)
+            if not srt_text:
+                self._finish(
+                    WorkerOutcome(
+                        "failed",
+                        "no_text_detected",
+                        "Tesseract found no readable hard subtitles",
+                    )
+                )
+                return
+            self.progress.emit(100)
+            self._finish(
+                WorkerOutcome(
+                    "succeeded",
+                    "completed",
+                    f"Extracted {len(segments)} hardsub subtitle segment(s)",
+                    details={"segments": len(segments), "samples": len(frame_paths)},
+                ),
+                srt_text,
+            )
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            _unregister_temp_dir(tmpdir)
 
 
 class BatchProbeWorker(QThread):

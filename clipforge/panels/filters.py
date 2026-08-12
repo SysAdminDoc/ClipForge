@@ -25,6 +25,8 @@ from ..tools import (
     escape_ffmpeg_filter_value,
 )
 from ..workers import FFmpegWorker, FrameExtractWorker
+from ..workers import OCRWorker
+from ..ocr import find_tesseract, output_srt_path
 from ..widgets import FlowLayout
 from ..filter_stack import (
     FILTER_STACK_DEFAULT,
@@ -65,6 +67,7 @@ class FiltersPanel(QWidget):
         self._filepath = None
         self._info = None
         self._worker = None
+        self._ocr_worker = None
         self._frame_worker = None
         self._caption_tmpdir = None
         self._filter_stack_order = list(FILTER_STACK_DEFAULT)
@@ -292,6 +295,39 @@ class FiltersPanel(QWidget):
             self.lbl_whisper_status.setText("Whisper: Not found (pip install openai-whisper)")
             self.lbl_whisper_status.setStyleSheet(f"color: {C['yellow']};")
 
+        ocr_grp = QGroupBox("Hard-sub OCR (Tesseract)")
+        ocr_layout = QVBoxLayout(ocr_grp)
+        ocr_row = FlowLayout()
+        ocr_row.addWidget(QLabel("Language:"))
+        self.cmb_ocr_lang = QComboBox()
+        self.cmb_ocr_lang.addItems(["eng", "spa", "fra", "deu", "ita", "por", "jpn", "kor", "chi_sim"])
+        self.cmb_ocr_lang.setAccessibleName("Tesseract OCR language")
+        self.cmb_ocr_lang.setToolTip(
+            "Use a language code installed in the local Tesseract data directory"
+        )
+        ocr_row.addWidget(self.cmb_ocr_lang)
+        self.lbl_ocr_status = QLabel()
+        self.lbl_ocr_status.setProperty("class", "dimLabel")
+        self.lbl_ocr_status.setWordWrap(True)
+        self._tesseract_path = find_tesseract()
+        if self._tesseract_path:
+            self.lbl_ocr_status.setText("Tesseract: Found")
+            self.lbl_ocr_status.setStyleSheet(f"color: {C['green']};")
+        else:
+            self.lbl_ocr_status.setText("Tesseract: Not found (install locally to enable)")
+            self.lbl_ocr_status.setStyleSheet(f"color: {C['yellow']};")
+        ocr_row.addWidget(self.lbl_ocr_status, 1)
+        ocr_layout.addLayout(ocr_row)
+        ocr_button_row = FlowLayout()
+        self.btn_ocr_srt = QPushButton("Extract hardsubs to .srt")
+        self.btn_ocr_srt.setObjectName("primaryBtn")
+        self.btn_ocr_srt.setEnabled(False)
+        self.btn_ocr_srt.clicked.connect(self._do_ocr_srt)
+        ocr_button_row.addStretch()
+        ocr_button_row.addWidget(self.btn_ocr_srt)
+        ocr_layout.addLayout(ocr_button_row)
+        layout.addWidget(ocr_grp)
+
         # LUT
         lut_grp = QGroupBox("LUT Color Grading")
         ll = FlowLayout(lut_grp)
@@ -442,6 +478,7 @@ class FiltersPanel(QWidget):
         self._lut_path = None
         self.lbl_lut_file.setText("No LUT selected")
         self._restore_redaction_controls(normalize_redaction_state(DEFAULT_REDACTION))
+        self.cmb_ocr_lang.setCurrentText("eng")
         self.spn_silence_db.setValue(-30)
         self.spn_silence_dur.setValue(0.5)
         self._silence_segments = []
@@ -535,11 +572,15 @@ class FiltersPanel(QWidget):
         self.btn_apply.setEnabled(bool(FFMPEG))
         self.btn_preview.setEnabled(bool(FFMPEG))
         self.btn_gen_srt.setEnabled(bool(self._whisper_path))
+        self.btn_ocr_srt.setEnabled(bool(self._tesseract_path and FFMPEG))
         self.btn_detect_silence.setEnabled(bool(FFMPEG))
         self._silence_segments = []
         self._populate_silence_markers([])
         self.btn_remove_silence.setEnabled(False)
         self.lbl_silence_result.setText("No scan yet")
+        if self._ocr_worker and self._ocr_worker.isRunning():
+            self._ocr_worker.cancel()
+        self._ocr_worker = None
         if self._frame_worker and self._frame_worker.isRunning():
             self._frame_worker.cancel()
         self.lbl_preview_before.setText("Loading original preview…")
@@ -576,6 +617,7 @@ class FiltersPanel(QWidget):
             ],
             "filter_stack_order": list(self._filter_stack_order),
             "redaction": self._redaction_state_from_controls(),
+            "ocr_language": self.cmb_ocr_lang.currentText(),
         }
 
     def restore_project_state(self, state):
@@ -615,6 +657,11 @@ class FiltersPanel(QWidget):
         self._populate_silence_markers(markers or [(start, end, True) for start, end in segments])
         self.btn_remove_silence.setEnabled(bool(segments))
         self._restore_redaction_controls(state.get("redaction"))
+        if state.get("ocr_language") in {
+            self.cmb_ocr_lang.itemText(index)
+            for index in range(self.cmb_ocr_lang.count())
+        }:
+            self.cmb_ocr_lang.setCurrentText(state["ocr_language"])
         self._filter_stack_order = normalize_filter_order(state.get("filter_stack_order"))
         self._populate_filter_stack()
 
@@ -928,6 +975,84 @@ class FiltersPanel(QWidget):
                 ok, msg, target_path, generated_path, caption_tmpdir
             ))
         self._worker.start()
+
+    def _do_ocr_srt(self):
+        if not self._filepath or not self._tesseract_path or not FFMPEG:
+            self.requestToast.emit(
+                "FFmpeg and local Tesseract are required for hardsub OCR",
+                C["yellow"],
+            )
+            return
+        src = Path(self._filepath)
+        selected_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save OCR Subtitles",
+            str(src.parent / f"{src.stem}.ocr.srt"),
+            "SubRip subtitles (*.srt);;All Files (*)",
+        )
+        if not selected_path:
+            return
+        out_path = output_srt_path(selected_path)
+        if not _confirm_overwrite(self, str(out_path)):
+            return
+        if self._ocr_worker and self._ocr_worker.isRunning():
+            self.requestToast.emit("Hardsub OCR is already running", C["yellow"])
+            return
+        self._ocr_worker = OCRWorker(
+            self._filepath,
+            self._tesseract_path,
+            self.cmb_ocr_lang.currentText(),
+            parent=self,
+        )
+        self._ocr_output_path = out_path
+        self._ocr_worker.progress.connect(self.progress.setValue)
+        self._ocr_worker.log_output.connect(self.console.append)
+        self._ocr_worker.finished_signal.connect(
+            lambda ok, message, srt_text: self._on_ocr_done(
+                ok, message, srt_text, out_path
+            )
+        )
+        self.btn_ocr_srt.setEnabled(False)
+        self.progress.setRange(0, 100)
+        self.progress.setValue(0)
+        self.lbl_progress_detail.setText("Sampling frames and reading hardsubs…")
+        self._ocr_worker.start()
+
+    def _on_ocr_done(self, ok, message, srt_text, out_path):
+        self.btn_ocr_srt.setEnabled(bool(self._tesseract_path and FFMPEG))
+        self.lbl_progress_detail.setText("")
+        if not ok:
+            self.requestToast.emit(f"Hardsub OCR failed: {message}", C["red"])
+            return
+        staged_path = None
+        try:
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=out_path.parent,
+                prefix=f".{out_path.stem}.clipforge-",
+                suffix=".tmp",
+                delete=False,
+            ) as staged:
+                staged_path = Path(staged.name)
+                staged.write(srt_text)
+                staged.flush()
+                os.fsync(staged.fileno())
+            os.replace(staged_path, out_path)
+            self.progress.setValue(100)
+            self.requestToast.emit(
+                f"Hardsub subtitles exported: {out_path.name}",
+                C["green"],
+            )
+        except OSError as exc:
+            self.requestToast.emit(f"Could not write OCR subtitles: {exc}", C["red"])
+        finally:
+            if staged_path and staged_path.exists():
+                try:
+                    staged_path.unlink()
+                except OSError:
+                    pass
 
     def _on_caption_done(self, ok, msg, out_path, generated_path, caption_tmpdir):
         self.progress.setRange(0, 100)

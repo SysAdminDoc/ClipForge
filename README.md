@@ -65,6 +65,7 @@ All-in-one video editor — Trim, Crop, Upscale, Interpolate, Convert, Filter, A
 - Subtitle burn-in (.srt, .ass)
 - LUT import (.cube files)
 - **Auto-captions via Whisper** — model/language selection, generates .srt files
+- **Hardsub OCR via optional local Tesseract** — cancellable frame sampling, TSV line grouping, and atomic export to `.srt`
 - Audio normalization with **loudness target presets** (YouTube -14 LUFS, Podcast -16, Broadcast -23, Spotify, Apple Music)
 - **Silence detection** — adjustable threshold/duration with editable, selectable review markers showing segment count and total duration
 - **Motion-tracked redaction** — linearly tracked, keyframe-editable blur regions for faces, plates, or other private content
@@ -131,7 +132,7 @@ All-in-one video editor — Trim, Crop, Upscale, Interpolate, Convert, Filter, A
 - **Atomic output safety** — validates staged media before replacing the chosen destination
 - **Runtime security policy** — rejects unreviewed FFmpeg branches, keeps NVDEC fail-closed until a reviewed boundary, and requires the patched Qt 6.11.1 runtime
 - **Cross-surface provenance** — release checks record exact versions, SHA-256 hashes, licenses, and lock/source metadata for browser assets, Python distributions, FFmpeg/ffprobe, optional libmpv, and managed AI tools; support diagnostics include the identities used by each desktop job
-- 214-test suite covering utilities, process safety, semantic media validation, generated media, probing, proxy/AI caching, supply-chain validation, diagnostics, persistence, browser modules/jobs, project sessions, filter graphs, localization, and accessibility contracts
+- 217-test suite covering utilities, process safety, semantic media validation, generated media, probing, proxy/AI caching, supply-chain validation, diagnostics, persistence, browser modules/jobs, project sessions, filter graphs, OCR, localization, and accessibility contracts
 
 ### Web Editor
 
@@ -214,7 +215,7 @@ python scripts/release_check.py --build
 Release builds are unsigned and produced locally. `clipforge/version.py` is the
 version source of truth; use `python scripts/sync_version.py --set X.Y.Z` to
 update desktop, web, README, and Windows executable metadata together.
-The release check runs the 214-test Python and headless-Chromium suite, then
+The release check runs the 217-test Python and headless-Chromium suite, then
 generates disposable FFmpeg fixtures for audio/video,
 subtitles, chapters, rotation, VFR, odd filenames, and core edit operations;
 `--build` creates a fresh hash-locked environment, builds the unsigned
