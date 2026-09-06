@@ -4,8 +4,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -14,13 +16,13 @@ import time
 import venv
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from clipforge.processes import terminate_process_tree, validate_output
 from clipforge.tools import FFMPEG, FFPROBE, probe_video, write_concat_manifest
+from clipforge.version import APP_VERSION
 
 
 def run(command, *, timeout=120, env=None):
@@ -31,6 +33,7 @@ def run(command, *, timeout=120, env=None):
         text=True,
         timeout=timeout,
         env=env,
+        check=False,
         creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == "win32" else 0,
     )
     if result.returncode != 0:
@@ -220,7 +223,48 @@ def remove_tree_with_retries(path, *, attempts=20):
             time.sleep(0.5)
 
 
-def run_build_smoke():
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def artifact_platform():
+    system = {
+        "Windows": "windows",
+        "Darwin": "macos",
+        "Linux": "linux",
+    }.get(platform.system(), platform.system().lower())
+    machine = platform.machine().lower()
+    arch = "x64" if machine in {"amd64", "x86_64"} else machine
+    return f"{system}-{arch}"
+
+
+def publish_build_artifacts(executable, provenance, output_dir):
+    output_dir = Path(output_dir).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    suffix = ".exe" if sys.platform == "win32" else ""
+    stem = f"ClipForge-v{APP_VERSION}-{artifact_platform()}"
+    published_executable = output_dir / f"{stem}{suffix}"
+    published_provenance = output_dir / f"{stem}-provenance.json"
+    shutil.copy2(executable, published_executable)
+    shutil.copy2(provenance, published_provenance)
+    published = [published_executable, published_provenance]
+    checksums = output_dir / "SHA256SUMS.txt"
+    checksums.write_text(
+        "".join(f"{sha256_file(path)}  {path.name}\n" for path in published),
+        encoding="utf-8",
+    )
+    return [*published, checksums]
+
+
+def run_build_smoke(output_dir=None):
+    if output_dir is not None:
+        output_dir = Path(output_dir).resolve()
+        remove_tree_with_retries(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
     temp_path = Path(tempfile.mkdtemp(prefix="clipforge-release-build-"))
     try:
         fixture_dir = temp_path / "fixtures"
@@ -246,6 +290,7 @@ def run_build_smoke():
         )
         build_env = os.environ.copy()
         build_env["CLIPFORGE_CONFIG_DIR"] = str(temp_path / "build-config")
+        provenance = temp_path / "build-provenance.json"
         run(
             [
                 environment_python,
@@ -253,7 +298,7 @@ def run_build_smoke():
                 "--strict-lock",
                 ROOT / "requirements-dev.lock",
                 "--output",
-                temp_path / "build-provenance.json",
+                provenance,
             ],
             timeout=120,
             env=build_env,
@@ -282,6 +327,7 @@ def run_build_smoke():
         require_valid(packaged_output)
         packaged_env = os.environ.copy()
         packaged_env["CLIPFORGE_CONFIG_DIR"] = str(temp_path / "packaged-config")
+        packaged_env["QT_QPA_PLATFORM"] = "offscreen"
         process = subprocess.Popen(
             [str(executable), str(fixtures["audio_video"])],
             cwd=ROOT,
@@ -296,6 +342,8 @@ def run_build_smoke():
         finally:
             terminate_process_tree(process)
             time.sleep(0.5)
+        if output_dir is not None:
+            publish_build_artifacts(executable, provenance, output_dir)
     finally:
         remove_tree_with_retries(temp_path)
 
@@ -304,9 +352,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--build", action="store_true")
     parser.add_argument("--media-only", action="store_true")
+    parser.add_argument("--artifact-dir", type=Path, default=ROOT / "dist")
     args = parser.parse_args()
 
-    if sys.version_info < (3, 11):
+    if sys.version_info < (3, 11):  # noqa: UP036 - keep a clear CLI failure
         raise RuntimeError("ClipForge release checks require Python 3.11 or newer")
     from scripts.media_contract_matrix import run_matrix
 
@@ -323,7 +372,7 @@ def main():
         run(["node", "--check", "coi-serviceworker.js"])
         run_gui_smoke()
     if args.build:
-        run_build_smoke()
+        run_build_smoke(args.artifact_dir)
     print("ClipForge release check passed")
     return 0
 

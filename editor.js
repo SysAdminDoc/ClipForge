@@ -89,7 +89,7 @@ function setProjectDirty(dirty) {
     document.documentElement.dataset.projectDirty = String(projectDirty);
     const projectName = document.querySelector('.project-name')?.textContent?.trim()
         || 'Untitled Project';
-    document.title = `${projectDirty ? '* ' : ''}${projectName} — ClipForge`;
+    document.title = `${projectDirty ? '* ' : ''}${projectName} | ClipForge`;
 }
 
 function recordBrowserDiagnosticError(error, context = 'runtime') {
@@ -527,7 +527,7 @@ async function initializeFFmpeg({ successToast = true, timeoutMs = 30000 } = {})
         content.style.textAlign = 'center';
         const icon = document.createElement('div');
         icon.style.cssText = 'font-size:48px;margin-bottom:16px';
-        icon.textContent = '⚠️';
+        icon.textContent = '!';
         const title = document.createElement('div');
         title.style.cssText = 'font-size:14px;margin-bottom:16px;color:var(--text-1)';
         title.textContent = browserT('failedLoadEngine');
@@ -973,7 +973,7 @@ function renderMediaList() {
         empty.style.cssText = 'text-align:center;padding:40px 20px;color:var(--text-3)';
         const icon = document.createElement('div');
         icon.style.cssText = 'font-size:20px;margin-bottom:10px;opacity:0.4';
-        icon.textContent = '⊕';
+        icon.textContent = '+';
         const message = document.createElement('div');
         message.style.cssText = 'font-size:11px;line-height:1.5;color:var(--text-2)';
         message.append('No media yet', document.createElement('br'));
@@ -1023,7 +1023,7 @@ function renderMediaList() {
         } else {
             const icon = document.createElement('span');
             icon.className = 'media-thumb-icon';
-            icon.textContent = media.missing ? '⚠' : (media.type === 'audio' ? '🎵' : '📷');
+            icon.textContent = media.missing ? '!' : (media.type === 'audio' ? 'AU' : 'IM');
             thumb.appendChild(icon);
         }
 
@@ -1035,7 +1035,7 @@ function renderMediaList() {
         const meta = document.createElement('div');
         meta.className = 'media-meta';
         const type = document.createElement('span');
-        type.textContent = media.missing ? 'Missing — relink required' : media.type;
+        type.textContent = media.missing ? 'Missing. Relink required.' : media.type;
         const mediaDuration = document.createElement('span');
         mediaDuration.className = 'media-duration';
         mediaDuration.textContent = formatTimecode(media.duration);
@@ -1731,7 +1731,7 @@ function renderTimeline() {
         transEl.dataset.transitionId = trans.id;
         transEl.style.left = left + 'px';
         transEl.style.width = Math.max(width, 20) + 'px';
-        transEl.innerHTML = '🔀';
+        transEl.textContent = 'Mix';
         transEl.title = trans.type;
         transEl.setAttribute('role', 'button');
         transEl.tabIndex = 0;
@@ -2570,7 +2570,7 @@ function play() {
     if (clips.length === 0) return;
     
     isPlaying = true;
-    document.getElementById('playBtn').innerHTML = '⏸';
+    document.getElementById('playBtn').textContent = 'Pause';
     
     syncPreviewAtTime(currentTime, { autoplay: true });
     
@@ -2587,7 +2587,7 @@ function play() {
 
 function pause() {
     isPlaying = false;
-    document.getElementById('playBtn').innerHTML = '▶';
+    document.getElementById('playBtn').textContent = 'Play';
     
     if (previewVideo.src) {
         previewVideo.pause();
@@ -2733,7 +2733,7 @@ function setVolume(value) {
 function toggleMute() {
     previewVideo.muted = !previewVideo.muted;
     const button = document.querySelector('.volume-btn');
-    button.textContent = previewVideo.muted ? '🔇' : '🔊';
+    button.textContent = previewVideo.muted ? 'Unmute' : 'Mute';
     button.setAttribute('aria-pressed', String(previewVideo.muted));
     button.setAttribute('aria-label', previewVideo.muted ? 'Unmute preview audio' : 'Mute preview audio');
 }
@@ -3158,7 +3158,7 @@ function resetProjectRuntimeState() {
     }
     document.getElementById('previewPlaceholder').style.display = 'flex';
     previewCtx?.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
-    document.getElementById('playBtn').textContent = '▶';
+    document.getElementById('playBtn').textContent = 'Play';
     document.getElementById('currentTime').textContent = '00:00:00:00';
     document.getElementById('contextMenu').style.display = 'none';
     closeEditMenu({ restoreFocus: false });
@@ -3609,9 +3609,9 @@ function toast(type, message) {
     const el = document.createElement('div');
     el.className = `toast ${type}`;
     el.setAttribute('role', type === 'error' ? 'alert' : 'status');
-    const icons = { success: '✓', error: '✕', info: 'ℹ', warning: '⚠' };
+    const icons = { success: 'OK', error: 'Error', info: 'Info', warning: 'Note' };
     el.innerHTML = `
-        <span class="toast-icon">${icons[type] || 'ℹ'}</span>
+        <span class="toast-icon">${icons[type] || 'Info'}</span>
         <span class="toast-text">${escapeHtml(message)}</span>
     `;
     container.appendChild(el);

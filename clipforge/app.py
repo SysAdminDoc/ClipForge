@@ -15,9 +15,18 @@ from PyQt6.QtWidgets import (
     QDockWidget, QMessageBox,
 )
 from PyQt6.QtCore import Qt, QThread, QTimer
-from PyQt6.QtGui import QAction, QColor, QPalette, QDragEnterEvent, QDropEvent
+from PyQt6.QtGui import (
+    QAction,
+    QColor,
+    QPalette,
+    QDragEnterEvent,
+    QDropEvent,
+    QIcon,
+    QPixmap,
+)
 
 from . import APP_NAME, APP_VERSION
+from .branding import application_icon_path
 from .constants import (
     C,
     C_HIGH_CONTRAST,
@@ -91,6 +100,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._i18n = catalog_for_environment()
         self.setWindowTitle(WINDOW_TITLE)
+        self.setWindowIcon(QIcon(str(application_icon_path())))
         self.setMinimumSize(1150, 780)
         self._settings = load_settings()
         self._project_path = None
@@ -137,9 +147,28 @@ class MainWindow(QMainWindow):
         sb_layout.setContentsMargins(0, 0, 0, 0)
         sb_layout.setSpacing(0)
 
+        brand = QWidget()
+        brand.setObjectName("sidebarBrand")
+        brand_layout = QHBoxLayout(brand)
+        brand_layout.setContentsMargins(16, 14, 16, 10)
+        brand_layout.setSpacing(10)
+        brand_icon = QLabel()
+        brand_icon.setObjectName("sidebarBrandIcon")
+        brand_icon.setPixmap(
+            QPixmap(str(application_icon_path())).scaled(
+                32,
+                32,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+        brand_icon.setAccessibleName("ClipForge logo")
+        brand_layout.addWidget(brand_icon)
         title = QLabel(APP_NAME)
         title.setObjectName("sidebarTitle")
-        sb_layout.addWidget(title)
+        brand_layout.addWidget(title)
+        brand_layout.addStretch()
+        sb_layout.addWidget(brand)
 
         edit_label = QLabel("EDIT")
         edit_label.setObjectName("sectionLabel")
@@ -1135,6 +1164,7 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
+    app.setWindowIcon(QIcon(str(application_icon_path())))
     apply_application_theme(app, load_settings().get("high_contrast", False))
 
     window = MainWindow()

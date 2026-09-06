@@ -1,9 +1,12 @@
 /*! Derived from coi-serviceworker v0.1.7 (MIT); ClipForge cache extensions. */
-const CACHE_NAME = 'clipforge-browser-runtime-v1';
+const CACHE_NAME = 'clipforge-browser-runtime-v2';
 const STATIC_ASSETS = [
     './',
     './index.html',
-    './favicon.svg',
+    './assets/brand/clipforge-mark-32.png',
+    './assets/brand/clipforge-mark-64.png',
+    './assets/brand/clipforge-mark-128.png',
+    './assets/brand/clipforge-mark-192.png',
     './bootstrap.js',
     './editor.js',
     './coi-serviceworker.js',

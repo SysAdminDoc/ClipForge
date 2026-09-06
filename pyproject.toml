@@ -28,6 +28,9 @@ py-modules = ["clipforge_utils"]
 [tool.setuptools.packages.find]
 include = ["clipforge*"]
 
+[tool.setuptools.package-data]
+clipforge = ["assets/*.png"]
+
 [tool.setuptools.dynamic]
 version = { attr = "clipforge.version.APP_VERSION" }
 

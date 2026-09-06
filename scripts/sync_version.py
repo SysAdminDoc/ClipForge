@@ -8,7 +8,6 @@ import re
 import sys
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 VERSION_FILE = ROOT / "clipforge" / "version.py"
 README_FILE = ROOT / "README.md"
@@ -75,6 +74,12 @@ def expected_surfaces(version: str) -> dict[Path, str]:
     readme = re.sub(
         r"Version-\d+\.\d+\.\d+-orange",
         f"Version-{version}-orange",
+        readme,
+        count=1,
+    )
+    readme = re.sub(
+        r"badge/version-\d+\.\d+\.\d+-6366f1",
+        f"badge/version-{version}-6366f1",
         readme,
         count=1,
     )

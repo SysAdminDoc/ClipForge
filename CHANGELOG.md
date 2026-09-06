@@ -2,7 +2,22 @@
 
 All notable changes to ClipForge will be documented in this file.
 
-## [v0.5.3] - 2026-08-12
+## [v0.5.4] (2026-09-06)
+
+### Added
+- Added a new indigo and cyan ClipForge mark, a matching Windows executable icon, browser favicons, a README banner, and a GitHub social preview.
+- Added verified browser and desktop product screenshots with rights-safe demo media, plus an offscreen capture script that can refresh both images without taking over the active display.
+- Release builds now publish a versioned executable, strict provenance manifest, and SHA-256 checksum file to `dist/` after the packaged media smoke passes.
+
+### Changed
+- Rebuilt the README around the browser and desktop workflows, clearer privacy claims, direct launch and download paths, and a shorter feature overview.
+- Replaced decorative browser emoji with restrained labels and branded empty states, and added the product mark to the desktop sidebar.
+- Added website preview metadata and refreshed the offline cache so the new favicon and in-product brand assets remain available after the first load.
+- Release packaging now rejects unrelated ICU binaries found on the developer PATH, preventing broken Qt startup in clean Windows builds.
+- The desktop filter panel now fits the supported 1280×860 layout in both themes without horizontal scrolling.
+- Packaged GUI smoke checks now run offscreen so local release verification never takes over the active display.
+
+## [v0.5.3] (2026-08-12)
 
 ### Changed
 - Centralized external FFmpeg, NVDEC, and Qt security decisions in a versioned runtime policy; capability probes and redacted diagnostics now report the actual runtime identity and policy state.
@@ -34,7 +49,7 @@ All notable changes to ClipForge will be documented in this file.
 - Batch processing now starts multiple durable queue jobs up to a configurable CPU-safe cap, reduced when hardware encoder probes report fewer usable encoder capabilities; progress, cancellation, output validation, and recovery remain journaled per job.
 - Added a delayed, opt-out GitHub release metadata check with strict HTTPS/redirect/size validation, SemVer comparison, provenance-asset policy reporting, and no automatic download or install path.
 
-## [v0.5.2] - 2026-07-29
+## [v0.5.2] (2026-07-29)
 
 ### Added
 - Headless Chromium behavior coverage for project security/migration/relinking, transitions, media failures, job cancellation, export preflight, focus, quota failure, and 900×700 layout.
@@ -99,12 +114,12 @@ All notable changes to ClipForge will be documented in this file.
 - Browser startup no longer loops when cross-origin isolation is unavailable, FFmpeg startup is time-bounded, and inline controls remain callable.
 - Browser projects no longer discard all usable source identity, and export can no longer silently omit unsupported timeline state.
 
-## [v0.5.1] - 2026-06-15
+## [v0.5.1] (2026-06-15)
 
 ### Fixed
 - Web editor: FFmpeg now starts on GitHub Pages by loading the `@ffmpeg/ffmpeg` wrapper worker through a same-origin blob module instead of constructing a cross-origin CDN worker directly.
 
-## [v0.5.0] - Unreleased
+## [v0.5.0] (Unreleased)
 
 ### Added (Round 2)
 - Smart Cut trim mode: re-encodes only at cut boundaries, stream-copies the middle for near-lossless frame-accurate trims
@@ -114,18 +129,18 @@ All notable changes to ClipForge will be documented in this file.
 
 - RIFE frame interpolation upgraded from v4.6 to v4.25 default; model selector added (v4.25, v4.6, v4.22, v4)
 - Batch disk-space pre-check now uses `estimate_output_size()` per file for convert/downscale operations
-- SPAN upscaling engine added alongside Real-ESRGAN — ~7x faster for time-sensitive workflows; engine selector in AI Enhance panel with per-engine model lists
+- SPAN upscaling engine added alongside Real-ESRGAN: ~7x faster for time-sensitive workflows; engine selector in AI Enhance panel with per-engine model lists
 - Output overwrite confirmation dialog for Trim, Convert, and Filters panels (OS-independent)
 - Whisper model selector now shows download sizes (e.g., "large (~3 GB)") to warn before large downloads
 
-### Fixed (Round 3 — engineering audit)
-- Smart Cut: head segment was computed but never used — now properly re-encodes the pre-keyframe section and includes it in the concat
+### Fixed (Round 3: engineering audit)
+- Smart Cut: head segment was computed but never used: now properly re-encodes the pre-keyframe section and includes it in the concat
 - Smart Cut: removed dead `next_kf_after_start` variable
 - Trim mode radio: unchecking the active mode no longer leaves all modes unchecked
 - Silence detection: FFmpeg log output now connected to console (was running silently)
 - Silence removal: added overwrite confirmation dialog (was missing)
 - Convert panel: CRF spinner range now adjusts dynamically (0-63 for AV1, 0-51 for H.264/H.265)
-- Web editor: blob URL memory leaks fixed — export and save now revoke blob URLs after use
+- Web editor: blob URL memory leaks fixed: export and save now revoke blob URLs after use
 - Removed dead `short` variable in HW encoder status display
 
 ### Fixed (Round 2)
@@ -136,8 +151,8 @@ All notable changes to ClipForge will be documented in this file.
 - Non-FFmpeg process failures now show last 3 stderr lines as error hint instead of "FFmpeg exited with code X"
 
 ### Changed
-- **Split 4423-line monolith into `clipforge/` package** — 18 modules across constants, theme, settings, tools, workers, widgets, 8 panel files, and app. Each module under 575 lines. `python -m clipforge` or `python clipforge.py` both work.
-- Extracted pure utility functions into `clipforge_utils.py` — no PyQt6 dependency, clean imports
+- **Split 4423-line monolith into `clipforge/` package**: 18 modules across constants, theme, settings, tools, workers, widgets, 8 panel files, and app. Each module under 575 lines. `python -m clipforge` or `python clipforge.py` both work.
+- Extracted pure utility functions into `clipforge_utils.py`: no PyQt6 dependency, clean imports
 - Tests now import from `clipforge_utils` instead of duplicating function implementations
 
 ### Added
@@ -147,7 +162,7 @@ All notable changes to ClipForge will be documented in this file.
 - Process tree cleanup: cancelling a job now kills child processes (e.g., realesrgan) via taskkill /T (Windows) or killpg (Unix)
 - Web editor: upgraded ffmpeg.wasm from 0.10.1 to 0.12.x (new API, multi-thread core when SharedArrayBuffer available)
 - Web editor: full undo/redo system (Ctrl+Z / Ctrl+Shift+Z) with 50-deep history for all clip operations
-- Web editor: multi-clip export — all video clips on timeline are now included in export via concat demuxer
+- Web editor: multi-clip export: all video clips on timeline are now included in export via concat demuxer
 - FFmpeg command preview is now editable with "Run Custom" button to execute modified commands; "Reset" button regenerates from settings
 - Before/after filter preview: side-by-side original vs filtered frame comparison in Filters panel
 - Accessibility: accessible names on nav buttons, player controls, file open button; high-contrast theme option via `high_contrast` setting
@@ -170,11 +185,11 @@ All notable changes to ClipForge will be documented in this file.
 - Web editor: media filenames and clip names are HTML-escaped to prevent XSS
 - All bare `except Exception:` blocks replaced with specific exception types (OSError, json.JSONDecodeError, etc.)
 
-## [v0.4.0] - %Y->- (HEAD -> main, origin/main, origin/HEAD)
+## [v0.4.0]
 
 - Added: Add files via upload
 
-## Roadmap archive — 2026-08-10 — ROADMAP.md
+## Roadmap archive (2026-08-10, ROADMAP.md)
 
 <details>
 <summary>Original roadmap snapshot</summary>
@@ -213,10 +228,10 @@ All-in-one PyQt6 FFmpeg front-end with AI upscale (Real-ESRGAN) and frame interp
 
 ## Competitive Research
 
-- **HandBrake** — Best-in-class preset system and queue UX; ClipForge should steal the "add to queue" button placement and the side-by-side preset tree.
-- **Shutter Encoder** — Covers a huge surface area (subs, DVD, broadcast) with a single UI; useful reference for tool grouping and sidebar taxonomy.
-- **LosslessCut** — The gold standard for frame-accurate lossless trims with explicit cutpoints and markers; mirror its visible segment workflow. Keyboard shortcuts are blocked by repository policy; use visible transport/marker controls.
-- **FFmpeg Batch AV Converter** — Text-driven power tool; the "FFmpeg command preview" idea is validated there and worth making editable, not just read-only.
+- **HandBrake**: Excellent preset system and queue UX; ClipForge should steal the "add to queue" button placement and the side-by-side preset tree.
+- **Shutter Encoder**: Covers a huge surface area (subs, DVD, broadcast) with a single UI; useful reference for tool grouping and sidebar taxonomy.
+- **LosslessCut**: The gold standard for frame-accurate lossless trims with explicit cutpoints and markers; mirror its visible segment workflow. Keyboard shortcuts are blocked by repository policy; use visible transport/marker controls.
+- **FFmpeg Batch AV Converter**: Text-driven power tool; the "FFmpeg command preview" idea is validated there and worth making editable, not just read-only.
 
 ## Nice-to-Haves
 
@@ -230,98 +245,98 @@ All-in-one PyQt6 FFmpeg front-end with AI upscale (Real-ESRGAN) and frame interp
 ## Open-Source Research (Round 2)
 
 ### Related OSS Projects
-- **Zulko/moviepy** — https://github.com/Zulko/moviepy — MIT Python video editor backed by ffmpeg; reference for concat/composite/timing primitives.
-- **TNTwise/REAL-Video-Enhancer** — https://github.com/TNTwise/REAL-Video-Enhancer — Historical reference for upscale / interpolation / decompress / denoise UX. Research update (2026-07-29): upstream was archived on 2026-07-13; do not make it a runtime, update, or distribution dependency.
-- **valkjsaaa/ffmpeg-smart-trim** — https://github.com/valkjsaaa/ffmpeg-smart-trim — Precise trim with minimum re-encoding at segment boundaries only.
-- **addyosmani/video-compress** — https://github.com/addyosmani/video-compress — React + ffmpeg.wasm client-side compression; reference for a future browser companion.
-- **dinoosauro/ffmpeg-web** — https://github.com/dinoosauro/ffmpeg-web — Web + Electron UI; two-engine strategy (wasm vs native).
-- **EncodeGUI / encode-gooey** — reference for AI-transcoder UX with upscaling features built in.
-- **ffmpeg-gui topic** — https://github.com/topics/ffmpeg-gui — broader catalog of GUI wrappers.
-- **topic: video-crop** — https://github.com/topics/video-crop — includes GUIs that emit 22 presets across 16:9 / 4:3 / 1:1 aspect groups.
+- **Zulko/moviepy** ([repository](https://github.com/Zulko/moviepy)). MIT Python video editor backed by ffmpeg; reference for concat/composite/timing primitives.
+- **TNTwise/REAL-Video-Enhancer** ([repository](https://github.com/TNTwise/REAL-Video-Enhancer)). Historical reference for upscale / interpolation / decompress / denoise UX. Research update (2026-07-29): upstream was archived on 2026-07-13; do not make it a runtime, update, or distribution dependency.
+- **valkjsaaa/ffmpeg-smart-trim** ([repository](https://github.com/valkjsaaa/ffmpeg-smart-trim)). Precise trim with minimum re-encoding at segment boundaries only.
+- **addyosmani/video-compress** ([repository](https://github.com/addyosmani/video-compress)). React + ffmpeg.wasm client-side compression; reference for a future browser companion.
+- **dinoosauro/ffmpeg-web** ([repository](https://github.com/dinoosauro/ffmpeg-web)). Web + Electron UI; two-engine strategy (wasm vs native).
+- **EncodeGUI / encode-gooey**: reference for AI-transcoder UX with upscaling features built in.
+- **ffmpeg-gui topic** ([GitHub](https://github.com/topics/ffmpeg-gui)). Broader catalog of GUI wrappers.
+- **video-crop topic** ([GitHub](https://github.com/topics/video-crop)). Includes GUIs that emit 22 presets across 16:9 / 4:3 / 1:1 aspect groups.
 
 ### Features to Borrow
-- **Upscale + interpolation on the same job graph** (REAL-Video-Enhancer) — a source video runs through `decompress → RIFE (2x/4x) → Real-ESRGAN (2x/4x) → encode` as a single chained job with shared frame cache, not three separate passes that re-extract frames.
-- **NCNN/Vulkan backend path** (REAL-Video-Enhancer) — portable binaries for non-CUDA users (AMD/Intel Arc/Apple); avoids the CUDA gating that limits ClipForge's AI features as of 2026-07-25.
-- **Decompress / denoise model pre-pass** (REAL-Video-Enhancer) — a `hqdn3d` + `scxvid`-style denoise *before* upscale dramatically improves final quality; expose as a toggle on the Upscale card.
-- **Segment-precise trim** (ffmpeg-smart-trim) — re-encode only the 1–2 sec around the cut points and stream-copy the middle; gives both "frame precise" and "fast" in one mode.
-- **22-preset aspect-ratio crop grid** (video-crop topic) — single pane with 22 crop presets grouped by aspect; cleaner than the current 5-preset row.
-- **Live FFmpeg command preview + copyable** (already in ClipForge) — extend by adding a "Generate bash script" button that emits the whole batch as a self-contained `.sh`/`.ps1`, so power users can rerun on a server.
-- **Two-engine strategy** (dinoosauro/ffmpeg-web) — same UI, WASM fallback, for the future web-companion deliverable.
-- **MoviePy-style composition timeline** (Zulko/moviepy) — expose a mini-timeline where Trim + Fade + Overlay can be stacked as a pipeline, not just one-op-at-a-time; important for the "combine filters" use case.
-- **Real-ESRGAN-Video and RIFE-v4.22 updates** — upstream RIFE has moved to 4.22/4.25 with better motion handling; pin + document the active version and an upgrade lane.
+- **Upscale + interpolation on the same job graph** (REAL-Video-Enhancer): a source video runs through `decompress → RIFE (2x/4x) → Real-ESRGAN (2x/4x) → encode` as a single chained job with shared frame cache, not three separate passes that re-extract frames.
+- **NCNN/Vulkan backend path** (REAL-Video-Enhancer): portable binaries for non-CUDA users (AMD/Intel Arc/Apple); avoids the CUDA gating that limits ClipForge's AI features as of 2026-07-25.
+- **Decompress / denoise model pre-pass** (REAL-Video-Enhancer): a `hqdn3d` + `scxvid`-style denoise *before* upscale dramatically improves final quality; expose as a toggle on the Upscale card.
+- **Segment-precise trim** (ffmpeg-smart-trim): re-encode only the 1 to 2 sec around the cut points and stream-copy the middle; gives both "frame precise" and "fast" in one mode.
+- **22-preset aspect-ratio crop grid** (video-crop topic): single pane with 22 crop presets grouped by aspect; cleaner than the current 5-preset row.
+- **Live FFmpeg command preview + copyable** (already in ClipForge): extend by adding a "Generate bash script" button that emits the whole batch as a self-contained `.sh`/`.ps1`, so power users can rerun on a server.
+- **Two-engine strategy** (dinoosauro/ffmpeg-web): same UI, WASM fallback, for the future web-companion deliverable.
+- **MoviePy-style composition timeline** (Zulko/moviepy): expose a mini-timeline where Trim + Fade + Overlay can be stacked as a pipeline, not just one-op-at-a-time; important for the "combine filters" use case.
+- **Real-ESRGAN-Video and RIFE-v4.22 updates**: upstream RIFE has moved to 4.22/4.25 with better motion handling; pin + document the active version and an upgrade lane.
 
 ### Patterns & Architectures Worth Studying
-- **Frame-cache directory shared across AI passes** (REAL-Video-Enhancer) — `workdir/{jobid}/frames/` reused by upscale then interpolation, so the extract step doesn't happen twice.
-- **Executable auto-detection** (REAL-Video-Enhancer, EncodeGUI) — at startup, probe for `ffmpeg`/`ffprobe`/`realesrgan-ncnn-vulkan`/`rife-ncnn-vulkan` on PATH; if missing, auto-download platform-specific binaries from BtbN/FFmpeg-Builds + the NCNN upstream releases.
-- **Qt worker with queue + cancel tokens** — ClipForge already uses PyQt threads; borrowing the MoviePy subprocess-supervisor pattern (stdout tailing + periodic progress parse) simplifies cancel semantics.
-- **Resumable frame pipeline** (REAL-Video-Enhancer) — cache per-frame outputs with content-hash keys so interrupted upscale jobs resume where they stopped; matches ClipForge's existing "resume interrupted jobs" ethos.
-- **JSON-schema'd preset format shared with CLI** — define the schema and headless contract first; as of 2026-07-25 no `clipforge-cli` entry point or manifest-backed schema is present in the repository.
+- **Frame-cache directory shared across AI passes** (REAL-Video-Enhancer): `workdir/{jobid}/frames/` reused by upscale then interpolation, so the extract step doesn't happen twice.
+- **Executable auto-detection** (REAL-Video-Enhancer, EncodeGUI): at startup, probe for `ffmpeg`/`ffprobe`/`realesrgan-ncnn-vulkan`/`rife-ncnn-vulkan` on PATH; if missing, auto-download platform-specific binaries from BtbN/FFmpeg-Builds + the NCNN upstream releases.
+- **Qt worker with queue + cancel tokens**: ClipForge already uses PyQt threads; borrowing the MoviePy subprocess-supervisor pattern (stdout tailing + periodic progress parse) simplifies cancel semantics.
+- **Resumable frame pipeline** (REAL-Video-Enhancer): cache per-frame outputs with content-hash keys so interrupted upscale jobs resume where they stopped; matches ClipForge's existing "resume interrupted jobs" ethos.
+- **JSON-schema'd preset format shared with CLI**: define the schema and headless contract first; as of 2026-07-25 no `clipforge-cli` entry point or manifest-backed schema is present in the repository.
 
 ## Research-Driven Additions
 
-### P1 — Trustworthy media workflows
+### P1: Trustworthy media workflows
 
-- [ ] P1 — Keep every desktop operation responsive and cancellable
-  Why: Probing/frame extraction/hardware detection can block the GUI for 10–15 seconds, most panels expose no Cancel, and shutdown does not verify workers/processes actually stopped.
+- [ ] P1: Keep every desktop operation responsive and cancellable
+  Why: Probing/frame extraction/hardware detection can block the GUI for 10 to 15 seconds, most panels expose no Cancel, and shutdown does not verify workers/processes actually stopped.
   Evidence: `clipforge/tools.py:138-211`, `clipforge/tools.py:279-500`, `clipforge/widgets.py:976`, `clipforge/app.py:479-505`
   Touches: `clipforge/tools.py`, `clipforge/app.py`, `clipforge/widgets.py`, all long-running panels, worker/shutdown tests
   Acceptance: Media inspection and capability checks run off the GUI thread with timeout/status; every long operation exposes a race-free Cancel; close waits for confirmed termination or reports forced cleanup; responsiveness and stubborn-process tests pass.
   Complexity: L
 
-- [ ] P1 — Unify browser timeline preview and export semantics
+- [ ] P1: Unify browser timeline preview and export semantics
   Why: Preview plays one source without clip in-points, boundaries, transforms, or track state, while export consumes a different subset of project state.
   Evidence: `editor.js:1112`, `editor.js:1413-1516`, `editor.js:1553-1830`; Mediabunny/WebCodecs composition practice
   Touches: browser timeline model, preview compositor, export planner, `editor.js`, tests
   Acceptance: One resolved timeline function maps global time to active clips/source time/transforms/mute/solo and is consumed by both preview and export; unsupported state is blocked explicitly; golden projects prove preview/export frame and audio-state parity.
   Complexity: XL
 
-### P2 — Controlled expansion
+### P2: Controlled expansion
 
-- [ ] P2 — Add quota-aware cache identity and lifecycle controls
+- [ ] P2: Add quota-aware cache identity and lifecycle controls
   Why: Browser proxies can collide on name/size/mtime and prune by count, while desktop frame caches lack user-visible usage, integrity depth, limits, and purge.
   Evidence: `editor.js:551-651`, `editor.js:2085-2145`, `clipforge/ai_tools.py:299-390`; MDN Storage API/OPFS
   Touches: browser storage/proxy code, `clipforge/ai_tools.py`, settings UI, diagnostics, tests
   Acceptance: Bounded sampled-content fingerprints prevent false relinks without hashing entire large files; browser storage preflights quota and prunes byte-based LRU; desktop/browser surfaces show usage/limits and explicit purge; corrupt/incomplete entries are detected and recoverable.
   Complexity: M
 
-- [ ] P2 — Export browser diagnostics and strengthen redaction
+- [ ] P2: Export browser diagnostics and strengthen redaction
   Why: Browser failures are limited to console/toasts, while desktop redaction does not cover URL credentials/query tokens, sensitive options, or private media metadata.
   Evidence: `clipforge/diagnostics.py:33-51`, `editor.js` IndexedDB/runtime error paths
   Touches: `clipforge/diagnostics.py`, browser diagnostics module/UI, tests
   Acceptance: Both clients export bounded version/capability/job/storage/error reports; default redaction removes local paths, URL credentials/tokens, configured secret options, and identified private metadata; fixtures prove secrets do not appear.
   Complexity: M
 
-- [ ] P2 — Probe real FFmpeg hardware capability
+- [ ] P2: Probe real FFmpeg hardware capability
   Why: After the P1 asynchronous inspection boundary exists, presence, advertised encoder names, and wrapper versions still do not prove device usability, required filter/codec combinations, or a supported native libmpv.
   Evidence: `clipforge/tools.py:68-160`, `clipforge/mpv_backend.py:106`; HandBrake capability-aware presets; mpv GHSA-546v-22c3-7927
   Touches: `clipforge/tools.py`, `clipforge/panels/convert.py`, `clipforge/mpv_backend.py`, diagnostics, capability cache/tests
   Acceptance: Tiny probes reuse the P1 worker boundary to verify each exposed hardware path; results are cached per binary/device, visible in diagnostics, and disable unsupported choices with a reason; native libmpv version is reported and versions below 0.41.0 warn or fall back.
   Complexity: M
 
-- [ ] P2 — Split the browser editor into explicit modules
+- [ ] P2: Split the browser editor into explicit modules
   Why: Project schema, storage, jobs, preview, export, actions, and DOM rendering share mutable globals in a 2,328-line file, making security and state invariants hard to test.
   Evidence: `editor.js`; seven ffmpeg.wasm loader follow-up commits on 2026-06-15
   Touches: `editor.js`, new JavaScript modules, `index.html`, browser tests
   Acceptance: Separate project/store, media/storage, jobs, timeline/actions, preview, export, and view modules expose narrow APIs; no behavior regresses; direct unit tests cover reducers/schema/planning without a DOM.
   Complexity: L
 
-- [ ] P2 — Remove or complete misleading browser controls
+- [ ] P2: Remove or complete misleading browser controls
   Why: The visible Edit menu is empty and Slip/Hand tools are selectable but have no behavior.
   Evidence: `editor.js:857`, `editor.js:2259`, `index.html:1168`
   Touches: `editor.js`, `index.html`, browser tests
   Acceptance: Each visible tool/menu action either performs its labeled operation with undo/keyboard/pointer coverage or is removed/disabled with explanatory copy; no selectable no-op remains.
   Complexity: M
 
-### P3 — Future
+### P3: Future
 
-- [ ] P3 — Evaluate Mediabunny as ffmpeg.wasm replacement for web editor
+- [ ] P3: Evaluate Mediabunny as ffmpeg.wasm replacement for web editor
   Why: Mediabunny is an active pure-TypeScript, progressive-I/O WebCodecs toolkit that can avoid ffmpeg.wasm whole-file memory costs for supported codecs
   Evidence: https://mediabunny.dev/; https://github.com/Vanilagy/mediabunny; research refresh 2026-07-29
   Touches: `editor.js`, `index.html`
   Acceptance: Spike browser export using Mediabunny + WebCodecs; benchmark peak memory, time, output parity, codec coverage, lossless-trim limitations, and Safari/Firefox/Chromium fallback against current FFmpeg.wasm
   Complexity: L
 
-- [ ] P3 — Add i18n framework for future localization
+- [ ] P3: Add i18n framework for future localization
   Why: ClipForge has no internationalization; all strings are hardcoded in English
   Evidence: OpenShot and Shotcut release histories; Qt6 translation tooling
   Touches: User-visible strings in `clipforge/`, `index.html`, and `editor.js`

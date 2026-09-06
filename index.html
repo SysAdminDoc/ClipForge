@@ -1,12 +1,23 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <link rel="icon" href="./favicon.svg">
+    <link rel="icon" type="image/png" sizes="32x32" href="./assets/brand/clipforge-mark-32.png">
+    <link rel="icon" type="image/png" sizes="192x192" href="./assets/brand/clipforge-mark-192.png">
+    <link rel="apple-touch-icon" href="./assets/brand/clipforge-mark-192.png">
     <meta name="theme-color" content="#1e1e2e">
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; connect-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'">
-    <title>ClipForge - Professional Video Editor</title>
+    <meta name="description" content="Edit video locally in your browser with a private timeline powered by FFmpeg.wasm.">
+    <meta property="og:type" content="website">
+    <meta property="og:title" content="ClipForge | Local Video Editor">
+    <meta property="og:description" content="Edit video locally in your browser with a private timeline powered by FFmpeg.wasm.">
+    <meta property="og:image" content="./assets/brand/clipforge-social-preview.png">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="ClipForge | Local Video Editor">
+    <meta name="twitter:description" content="Edit video locally in your browser with a private timeline powered by FFmpeg.wasm.">
+    <meta name="twitter:image" content="./assets/brand/clipforge-social-preview.png">
+    <title>ClipForge | Local Video Editor</title>
     <script src="bootstrap.js" defer></script>
     <!-- The pinned, locally vendored ffmpeg.wasm runtime is loaded by editor.js. -->
     <style>
@@ -125,12 +136,9 @@
         .logo-icon {
             width: 28px;
             height: 28px;
-            background: linear-gradient(135deg, var(--accent), var(--purple));
-            border-radius: 6px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 14px;
+            display: block;
+            flex: 0 0 auto;
+            object-fit: contain;
         }
         .project-name {
             font-size: 13px;
@@ -367,7 +375,12 @@
             align-items: center;
             gap: 12px;
         }
-        .preview-placeholder-icon { font-size: 48px; opacity: 0.2; }
+        .preview-placeholder-mark {
+            width: 76px;
+            height: 76px;
+            object-fit: contain;
+            opacity: 0.34;
+        }
         .preview-placeholder-text { font-size: 13px; color: var(--text-2); line-height: 1.5; }
         
         .preview-controls {
@@ -379,13 +392,15 @@
             border-top: 1px solid var(--border);
         }
         .transport-btn {
-            width: 36px;
+            min-width: 44px;
             height: 36px;
+            padding: 0 9px;
             background: var(--bg-3);
             border: none;
             border-radius: var(--radius);
             color: var(--text-1);
-            font-size: 14px;
+            font-size: 10px;
+            font-weight: 650;
             cursor: pointer;
             display: flex;
             align-items: center;
@@ -397,7 +412,7 @@
         .transport-btn:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
         .transport-btn:active { transform: scale(0.92); }
         .transport-btn.play {
-            width: 44px;
+            width: 48px;
             height: 44px;
             background: var(--accent-solid);
             color: white;
@@ -430,7 +445,8 @@
             background: none;
             border: none;
             color: var(--text-2);
-            font-size: 16px;
+            font-size: 10px;
+            font-weight: 650;
             cursor: pointer;
         }
         .volume-slider {
@@ -534,7 +550,16 @@
             text-align: left;
         }
         .effect-item:hover { background: var(--bg-3); }
-        .effect-icon { font-size: 14px; }
+        .effect-icon {
+            min-width: 24px;
+            padding: 3px 4px;
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            color: var(--text-2);
+            font-size: 9px;
+            font-weight: 700;
+            text-align: center;
+        }
         .effect-name { font-size: 12px; color: var(--text-1); }
         
         /* Transitions */
@@ -555,7 +580,17 @@
         }
         .transition-item:hover { border-color: var(--border); background: var(--bg-3); }
         .transition-item.selected { border-color: var(--accent); background: var(--accent-dim); }
-        .transition-icon { font-size: 20px; margin-bottom: 4px; }
+        .transition-icon {
+            min-width: 30px;
+            margin-bottom: 6px;
+            padding: 4px 5px;
+            border: 1px solid var(--border);
+            border-radius: 5px;
+            color: var(--text-2);
+            font-size: 10px;
+            font-weight: 700;
+            text-align: center;
+        }
         .transition-name { font-size: 10px; color: var(--text-2); }
         
         /* Timeline */
@@ -1043,11 +1078,12 @@
         }
         .modal-title { font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
         .modal-close {
-            width: 30px;
+            min-width: 54px;
             height: 30px;
+            padding: 0 10px;
             background: var(--bg-3);
             border: none;
-            border-radius: 50%;
+            border-radius: var(--radius);
             color: var(--text-2);
             cursor: pointer;
             display: flex;
@@ -1158,13 +1194,13 @@
             </div>
             <button class="menu-item" data-action="export-browser-diagnostics" data-i18n="diagnostics">Diagnostics</button>
             <div class="menu-spacer"></div>
-            <div class="menu-item" style="color: var(--text-3); cursor: default;">v0.5.3</div>
+            <div class="menu-item" style="color: var(--text-3); cursor: default;">v0.5.4</div>
         </div>
         
         <!-- Header -->
         <div class="header">
             <div class="logo">
-                <div class="logo-icon" aria-hidden="true">🎬</div>
+                <img class="logo-icon" src="./assets/brand/clipforge-mark-128.png" alt="" width="28" height="28">
                 ClipForge
             </div>
             <div class="project-name">Untitled Project</div>
@@ -1174,9 +1210,9 @@
                     <span id="statusText" data-i18n="loading">Loading...</span>
                 </div>
                 <button class="btn btn-sm" id="cancelJobButton" data-action="cancel-job" hidden data-i18n-aria-label="cancelJob"><span data-i18n="cancelJob">Cancel job</span></button>
-                <button class="btn" data-action="open-project" data-i18n-aria-label="openProject"><span aria-hidden="true">📂</span> <span data-i18n="open">Open</span></button>
-                <button class="btn" data-action="save-project" data-i18n-aria-label="save"><span aria-hidden="true">💾</span> <span data-i18n="save">Save</span></button>
-                <button class="btn primary" id="exportButton" data-action="show-export" data-i18n-aria-label="exportVideo"><span aria-hidden="true">⬇️</span> <span data-i18n="export">Export</span></button>
+                <button class="btn" data-action="open-project" data-i18n-aria-label="openProject"><span data-i18n="open">Open</span></button>
+                <button class="btn" data-action="save-project" data-i18n-aria-label="save"><span data-i18n="save">Save</span></button>
+                <button class="btn primary" id="exportButton" data-action="show-export" data-i18n-aria-label="exportVideo"><span data-i18n="export">Export</span></button>
             </div>
         </div>
         
@@ -1217,17 +1253,17 @@
                 <div class="tab-panel media-list" id="mediaTabPanel" role="tabpanel" aria-labelledby="mediaTab">
                     <div id="mediaList" role="region" aria-label="Project media">
                         <div style="text-align: center; padding: 40px 20px; color: var(--text-3);">
-                            <div style="font-size: 32px; margin-bottom: 12px;" aria-hidden="true">📂</div>
+                            <img src="./assets/brand/clipforge-mark-64.png" alt="" width="44" height="44" style="margin-bottom: 12px; opacity: 0.5;">
                             <div style="font-size: 12px;" data-i18n="noMedia">No media imported</div>
                         </div>
                     </div>
                 </div>
                 <div class="tab-panel media-list" id="effectsTabPanel" role="tabpanel" aria-labelledby="effectsTab" hidden>
                     <div class="effects-list">
-                        <button class="effect-item" data-action="quick-effect" data-effect="cinematic"><span class="effect-icon" aria-hidden="true">🎞</span><span class="effect-name" data-i18n="cinematicContrast">Cinematic contrast</span></button>
-                        <button class="effect-item" data-action="quick-effect" data-effect="bright"><span class="effect-icon" aria-hidden="true">☀</span><span class="effect-name" data-i18n="brighten">Brighten</span></button>
-                        <button class="effect-item" data-action="quick-effect" data-effect="mono"><span class="effect-icon" aria-hidden="true">◐</span><span class="effect-name" data-i18n="monochrome">Monochrome</span></button>
-                        <button class="effect-item" data-action="quick-effect" data-effect="reset"><span class="effect-icon" aria-hidden="true">↺</span><span class="effect-name" data-i18n="resetColor">Reset color</span></button>
+                        <button class="effect-item" data-action="quick-effect" data-effect="cinematic"><span class="effect-icon" aria-hidden="true">CN</span><span class="effect-name" data-i18n="cinematicContrast">Cinematic contrast</span></button>
+                        <button class="effect-item" data-action="quick-effect" data-effect="bright"><span class="effect-icon" aria-hidden="true">BR</span><span class="effect-name" data-i18n="brighten">Brighten</span></button>
+                        <button class="effect-item" data-action="quick-effect" data-effect="mono"><span class="effect-icon" aria-hidden="true">BW</span><span class="effect-name" data-i18n="monochrome">Monochrome</span></button>
+                        <button class="effect-item" data-action="quick-effect" data-effect="reset"><span class="effect-icon" aria-hidden="true">RS</span><span class="effect-name" data-i18n="resetColor">Reset color</span></button>
                     </div>
                 </div>
             </div>
@@ -1240,7 +1276,7 @@
                         <video class="preview-video" id="previewVideo" style="display: none;"></video>
                         <canvas id="previewCanvas" style="display: none; max-width: 100%; max-height: 100%;"></canvas>
                         <div class="preview-placeholder" id="previewPlaceholder">
-                            <div class="preview-placeholder-icon">▶</div>
+                            <img class="preview-placeholder-mark" src="./assets/brand/clipforge-mark-128.png" alt="">
                             <div class="preview-placeholder-text" data-i18n="previewHint">Drop media files here or use the import panel to get started</div>
                         </div>
                     </div>
@@ -1248,11 +1284,11 @@
                 
                 <!-- Preview Controls -->
                 <div class="preview-controls">
-                    <button class="transport-btn" data-action="go-start" data-i18n-title="goToStart" data-i18n-aria-label="goToStart" aria-label="Go to start">⏮</button>
-                    <button class="transport-btn" data-action="step-backward" data-i18n-title="stepBack" data-i18n-aria-label="stepBackward" aria-label="Step backward">⏪</button>
-                    <button class="transport-btn play" id="playBtn" data-action="toggle-play" data-i18n-aria-label="playPreview" aria-label="Play preview">▶</button>
-                    <button class="transport-btn" data-action="step-forward" data-i18n-title="stepForward" data-i18n-aria-label="stepForward" aria-label="Step forward">⏩</button>
-                    <button class="transport-btn" data-action="go-end" data-i18n-title="goToEnd" data-i18n-aria-label="goToEnd" aria-label="Go to end">⏭</button>
+                    <button class="transport-btn" data-action="go-start" data-i18n-title="goToStart" data-i18n-aria-label="goToStart" aria-label="Go to start">Start</button>
+                    <button class="transport-btn" data-action="step-backward" data-i18n-title="stepBack" data-i18n-aria-label="stepBackward" aria-label="Step backward">Back</button>
+                    <button class="transport-btn play" id="playBtn" data-action="toggle-play" data-i18n-aria-label="playPreview" aria-label="Play preview">Play</button>
+                    <button class="transport-btn" data-action="step-forward" data-i18n-title="stepForward" data-i18n-aria-label="stepForward" aria-label="Step forward">Next</button>
+                    <button class="transport-btn" data-action="go-end" data-i18n-title="goToEnd" data-i18n-aria-label="goToEnd" aria-label="Go to end">End</button>
                     
                     <div class="timecode">
                         <span id="currentTime">00:00:00:00</span>
@@ -1261,7 +1297,7 @@
                     <span class="timecode-total" id="totalTime">00:00:00:00</span>
                     
                     <div class="volume-control">
-                        <button class="volume-btn" data-action="toggle-mute" data-i18n-aria-label="mutePreview" aria-label="Mute preview audio" aria-pressed="false">🔊</button>
+                        <button class="volume-btn" data-action="toggle-mute" data-i18n-aria-label="mutePreview" aria-label="Mute preview audio" aria-pressed="false">Mute</button>
                         <input type="range" class="volume-slider" id="volumeSlider" min="0" max="100" value="100" data-i18n-aria-label="previewVolume" aria-label="Preview volume" data-input-action="preview-volume">
                     </div>
                 </div>
@@ -1270,18 +1306,18 @@
                 <div class="timeline-section">
                     <div class="timeline-toolbar">
                         <div class="timeline-tools">
-                            <button class="tool-btn active" data-tool="select" data-action="set-tool" data-i18n-title="selectionShortcut" data-i18n-aria-label="selectionTool" aria-label="Selection tool" aria-pressed="true">🖱️</button>
-                            <button class="tool-btn" data-tool="razor" data-action="set-tool" data-i18n-title="razorShortcut" data-i18n-aria-label="razorTool" aria-label="Razor tool" aria-pressed="false">✂️</button>
-                            <button class="tool-btn" data-tool="slip" data-action="set-tool" data-i18n-title="slipShortcut" data-i18n-aria-label="slipTool" aria-label="Slip tool" aria-pressed="false">↔️</button>
-                            <button class="tool-btn" data-tool="hand" data-action="set-tool" data-i18n-title="handShortcut" data-i18n-aria-label="handTool" aria-label="Hand tool" aria-pressed="false">✋</button>
+                            <button class="tool-btn active" data-tool="select" data-action="set-tool" data-i18n-title="selectionShortcut" data-i18n-aria-label="selectionTool" aria-label="Selection tool" aria-pressed="true">V</button>
+                            <button class="tool-btn" data-tool="razor" data-action="set-tool" data-i18n-title="razorShortcut" data-i18n-aria-label="razorTool" aria-label="Razor tool" aria-pressed="false">C</button>
+                            <button class="tool-btn" data-tool="slip" data-action="set-tool" data-i18n-title="slipShortcut" data-i18n-aria-label="slipTool" aria-label="Slip tool" aria-pressed="false">Y</button>
+                            <button class="tool-btn" data-tool="hand" data-action="set-tool" data-i18n-title="handShortcut" data-i18n-aria-label="handTool" aria-label="Hand tool" aria-pressed="false">H</button>
                         </div>
                         
-                        <button class="btn btn-sm" data-action="split-clip" data-i18n-title="splitShortcut"><span aria-hidden="true">✂️</span> <span data-i18n="split">Split</span></button>
-                        <button class="btn btn-sm" data-action="delete-selected" data-i18n-title="deleteShortcut"><span aria-hidden="true">🗑️</span> <span data-i18n="delete">Delete</span></button>
-                        <button class="btn btn-sm" data-action="add-transition" data-i18n-title="addDissolve"><span aria-hidden="true">🔀</span> <span data-i18n="dissolve">Dissolve</span></button>
+                        <button class="btn btn-sm" data-action="split-clip" data-i18n-title="splitShortcut"><span data-i18n="split">Split</span></button>
+                        <button class="btn btn-sm" data-action="delete-selected" data-i18n-title="deleteShortcut"><span data-i18n="delete">Delete</span></button>
+                        <button class="btn btn-sm" data-action="add-transition" data-i18n-title="addDissolve"><span data-i18n="dissolve">Dissolve</span></button>
                         
                         <div class="timeline-zoom">
-                            <span style="font-size: 12px;">🔍</span>
+                            <span style="font-size: 10px; color: var(--text-2);">Zoom</span>
                             <input type="range" class="zoom-slider" id="zoomSlider" min="10" max="200" value="50" data-i18n-aria-label="timelineZoom" data-input-action="timeline-zoom">
                             <span class="zoom-value" id="zoomValue">50%</span>
                         </div>
@@ -1300,8 +1336,8 @@
                                     <div class="track-type">Primary</div>
                                 </div>
                                 <div class="track-controls">
-                                    <button class="track-btn active" data-track-control="visible" data-track="video" title="Toggle visibility" aria-label="Toggle Video 1 visibility" aria-pressed="true">👁</button>
-                                    <button class="track-btn" data-track-control="locked" data-track="video" title="Lock track" aria-label="Lock Video 1 track" aria-pressed="false">🔒</button>
+                                    <button class="track-btn active" data-track-control="visible" data-track="video" title="Toggle visibility" aria-label="Toggle Video 1 visibility" aria-pressed="true">V</button>
+                                    <button class="track-btn" data-track-control="locked" data-track="video" title="Lock track" aria-label="Lock Video 1 track" aria-pressed="false">L</button>
                                 </div>
                             </div>
                             <div class="track-header audio">
@@ -1311,7 +1347,7 @@
                                     <div class="track-type">Linked</div>
                                 </div>
                                 <div class="track-controls">
-                                    <button class="track-btn" data-track-control="muted" data-track="audio" title="Mute" aria-label="Mute Audio 1 track" aria-pressed="false">🔇</button>
+                                    <button class="track-btn" data-track-control="muted" data-track="audio" title="Mute" aria-label="Mute Audio 1 track" aria-pressed="false">M</button>
                                     <button class="track-btn" data-track-control="solo" data-track="audio" title="Solo" aria-label="Solo Audio 1 track" aria-pressed="false">S</button>
                                 </div>
                             </div>
@@ -1322,7 +1358,7 @@
                                     <div class="track-type">Background</div>
                                 </div>
                                 <div class="track-controls">
-                                    <button class="track-btn" data-track-control="muted" data-track="music" title="Mute" aria-label="Mute Music track" aria-pressed="false">🔇</button>
+                                    <button class="track-btn" data-track-control="muted" data-track="music" title="Mute" aria-label="Mute Music track" aria-pressed="false">M</button>
                                     <button class="track-btn" data-track-control="solo" data-track="music" title="Solo" aria-label="Solo Music track" aria-pressed="false">S</button>
                                 </div>
                             </div>
@@ -1402,10 +1438,10 @@
                     <div class="properties-section">
                         <div class="properties-section-title">Quick Transitions</div>
                         <div class="transitions-grid">
-                            <button class="transition-item" data-transition="dissolve" data-action="select-transition" aria-label="Cross dissolve transition" aria-pressed="false"><span class="transition-icon" aria-hidden="true">🔀</span><span class="transition-name">Cross Dissolve</span></button>
-                            <button class="transition-item" data-transition="fade" data-action="select-transition" aria-label="Fade to black transition" aria-pressed="false"><span class="transition-icon" aria-hidden="true">🌑</span><span class="transition-name">Fade to Black</span></button>
-                            <button class="transition-item" data-transition="wipe" data-action="select-transition" aria-label="Wipe transition" aria-pressed="false"><span class="transition-icon" aria-hidden="true">➡️</span><span class="transition-name">Wipe</span></button>
-                            <button class="transition-item" data-transition="zoom" data-action="select-transition" aria-label="Zoom transition" aria-pressed="false"><span class="transition-icon" aria-hidden="true">🔍</span><span class="transition-name">Zoom</span></button>
+                            <button class="transition-item" data-transition="dissolve" data-action="select-transition" aria-label="Cross dissolve transition" aria-pressed="false"><span class="transition-icon" aria-hidden="true">CD</span><span class="transition-name">Cross Dissolve</span></button>
+                            <button class="transition-item" data-transition="fade" data-action="select-transition" aria-label="Fade to black transition" aria-pressed="false"><span class="transition-icon" aria-hidden="true">FB</span><span class="transition-name">Fade to Black</span></button>
+                            <button class="transition-item" data-transition="wipe" data-action="select-transition" aria-label="Wipe transition" aria-pressed="false"><span class="transition-icon" aria-hidden="true">WI</span><span class="transition-name">Wipe</span></button>
+                            <button class="transition-item" data-transition="zoom" data-action="select-transition" aria-label="Zoom transition" aria-pressed="false"><span class="transition-icon" aria-hidden="true">ZO</span><span class="transition-name">Zoom</span></button>
                         </div>
                     </div>
                 </div>
@@ -1427,15 +1463,15 @@
     
     <!-- Context Menu -->
     <div class="context-menu" id="contextMenu" role="menu" aria-label="Clip actions" aria-hidden="true">
-        <div class="context-item" role="menuitem" tabindex="-1" data-action="cut-clip"><span aria-hidden="true">✂️</span> Cut <span class="context-shortcut">Ctrl+X</span></div>
-        <div class="context-item" role="menuitem" tabindex="-1" data-action="copy-clip"><span aria-hidden="true">📋</span> Copy <span class="context-shortcut">Ctrl+C</span></div>
-        <div class="context-item" role="menuitem" tabindex="-1" data-action="paste-clip"><span aria-hidden="true">📄</span> Paste <span class="context-shortcut">Ctrl+V</span></div>
+        <div class="context-item" role="menuitem" tabindex="-1" data-action="cut-clip">Cut <span class="context-shortcut">Ctrl+X</span></div>
+        <div class="context-item" role="menuitem" tabindex="-1" data-action="copy-clip">Copy <span class="context-shortcut">Ctrl+C</span></div>
+        <div class="context-item" role="menuitem" tabindex="-1" data-action="paste-clip">Paste <span class="context-shortcut">Ctrl+V</span></div>
         <div class="context-divider" role="separator"></div>
-        <div class="context-item" role="menuitem" tabindex="-1" data-action="split-clip"><span aria-hidden="true">✂️</span> Split <span class="context-shortcut">S</span></div>
-        <div class="context-item" role="menuitem" tabindex="-1" data-action="delete-selected"><span aria-hidden="true">🗑️</span> Delete <span class="context-shortcut">Del</span></div>
+        <div class="context-item" role="menuitem" tabindex="-1" data-action="split-clip">Split <span class="context-shortcut">S</span></div>
+        <div class="context-item" role="menuitem" tabindex="-1" data-action="delete-selected">Delete <span class="context-shortcut">Del</span></div>
         <div class="context-divider" role="separator"></div>
-        <div class="context-item" role="menuitem" tabindex="-1" data-action="add-transition"><span aria-hidden="true">🔀</span> Add Transition</div>
-        <div class="context-item" role="menuitem" tabindex="-1" data-action="unlink-audio"><span aria-hidden="true">🔗</span> Unlink Audio</div>
+        <div class="context-item" role="menuitem" tabindex="-1" data-action="add-transition">Add Transition</div>
+        <div class="context-item" role="menuitem" tabindex="-1" data-action="unlink-audio">Unlink Audio</div>
     </div>
     
     <!-- Export Modal -->
@@ -1443,7 +1479,7 @@
         <div class="modal-content">
             <div class="modal-header">
                 <span class="modal-title" id="exportModalTitle">Export Video</span>
-                        <button class="modal-close" data-action="hide-export" aria-label="Close export dialog">✕</button>
+                <button class="modal-close" data-action="hide-export" aria-label="Close export dialog">Close</button>
             </div>
             <div class="modal-body">
                 <div class="export-preflight" id="exportPreflight" role="status" aria-live="polite"></div>
@@ -1498,6 +1534,6 @@
     <!-- Toast Container -->
     <div class="toast-container" id="toastContainer" aria-live="polite" aria-relevant="additions"></div>
     
-    <script src="editor.js?v=0.5.3" defer></script>
+    <script src="editor.js?v=0.5.4" defer></script>
 </body>
 </html>

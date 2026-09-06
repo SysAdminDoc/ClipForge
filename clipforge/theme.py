@@ -24,7 +24,6 @@ QMainWindow, QWidget {{
     color: {C['lavender']};
     font-size: 17px;
     font-weight: 700;
-    padding: 18px 16px 14px 16px;
     letter-spacing: 0.3px;
 }}
 #sectionLabel {{
