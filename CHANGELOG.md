@@ -2,6 +2,15 @@
 
 All notable changes to ClipForge will be documented in this file.
 
+## [v0.5.5] (2026-09-07)
+
+### Added
+- Preserved all four original visual studies without altering their source bytes. The archive includes selection metadata and the untouched approved master.
+- Added direct README paths to the production artwork, concept archive, selection record, and selected master.
+
+### Changed
+- Advanced the desktop, browser, README, and Windows package metadata to v0.5.5 for the verified archive release.
+
 ## [v0.5.4] (2026-09-06)
 
 ### Added

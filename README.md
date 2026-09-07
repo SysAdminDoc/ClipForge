@@ -1,8 +1,8 @@
-# ClipForge v0.5.4
+# ClipForge v0.5.5
 
 ![ClipForge](assets/brand/clipforge-banner.png)
 
-[![Version](https://img.shields.io/badge/version-0.5.4-6366f1)](https://github.com/SysAdminDoc/ClipForge/releases/latest)
+[![Version](https://img.shields.io/badge/version-0.5.5-6366f1)](https://github.com/SysAdminDoc/ClipForge/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT-22c55e)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-64748b)
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776ab?logo=python&logoColor=white)
@@ -147,6 +147,17 @@ node --check coi-serviceworker.js
 Version metadata starts in `clipforge/version.py`. Use
 `py -3.12 scripts\sync_version.py --set X.Y.Z` to update the desktop app,
 browser editor, README badge, and Windows executable metadata together.
+
+## Brand assets
+
+Production artwork lives in [`assets/brand`](assets/brand/). The
+[concept archive](assets/brand/concepts/) preserves the four original visual
+studies without altering their source bytes. Its
+[`selection.json`](assets/brand/concepts/selection.json) record identifies
+direction 03 as the approved cut-and-play refinement and direction 04 as the
+supporting demo footage. The
+[`selected master`](assets/brand/clipforge-selected-master.png) is an untouched
+copy of the approved direction.
 
 ## License
 
