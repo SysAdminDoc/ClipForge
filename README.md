@@ -8,6 +8,16 @@
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776ab?logo=python&logoColor=white)
 [![Web editor](https://img.shields.io/badge/open-web%20editor-22d3ee)](https://sysadmindoc.github.io/ClipForge/)
 
+<p align="center">
+  <a href="https://ko-fi.com/X8K126YVER">
+    <img height="42" src="https://storage.ko-fi.com/cdn/kofi2.png?v=3" alt="Buy me a coffee on Ko-fi" />
+  </a>
+</p>
+
+<p align="center">
+  <sub><em>If this project helps you, a coffee helps me keep working on it.</em></sub>
+</p>
+
 ClipForge is a private video editor with two ways to work. Open the browser
 timeline for a quick cut with no upload. Use the desktop app when you need
 format control, local AI tools, stream inspection, or a durable batch queue.
